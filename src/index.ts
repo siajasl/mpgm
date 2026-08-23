@@ -156,6 +156,20 @@ export {
   exchangeSchema,
 } from './elicit/session.js';
 export { ScriptedIo, TerminalIo } from './elicit/io.js';
+export type {
+  ApprovalPacket,
+  CriterionResult,
+  GateEvidence,
+  GateManagerOptions,
+  PacketNarrative,
+} from './gate/manager.js';
+export {
+  canProceed,
+  GateError,
+  GateManager,
+  gateOracleFromState,
+  isApproved,
+} from './gate/manager.js';
 export {
   ArtifactStore,
   ArtifactStoreError,
