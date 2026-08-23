@@ -42,6 +42,22 @@ export interface GateState {
   readonly artifactRefs: readonly ArtifactRef[];
 }
 
+/**
+ * A panel's counted result (ORC-4).
+ *
+ * Kept in folded state so `status` and the gate can read a panel's outcome
+ * without re-reading every judge's session.
+ */
+export interface VoteState {
+  /** The tally step that counted it. */
+  readonly taskId: string;
+  /** The panel node it belongs to. */
+  readonly node: string;
+  readonly rule: string;
+  readonly carried: boolean;
+  readonly summary: string;
+}
+
 export type EffectStatus = 'pending' | 'completed' | 'failed' | 'escalated';
 
 /**
@@ -79,6 +95,8 @@ export interface RunState {
   readonly phaseHistory: readonly string[];
   readonly tasks: Readonly<Record<string, TaskState>>;
   readonly gates: Readonly<Record<string, GateState>>;
+  /** Tally step id → what the kernel counted (ORC-4). */
+  readonly votes: Readonly<Record<string, VoteState>>;
   readonly effects: Readonly<Record<string, EffectState>>;
   readonly usage: Usage;
   readonly interventions: number;

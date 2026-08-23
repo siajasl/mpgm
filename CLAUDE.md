@@ -40,6 +40,7 @@ When changing them:
 - Artifacts (versioned markdown + frontmatter in git) are the only interface between phases — never transcripts. Gate truth lives in the event log; git tags are derived markers.
 - Trace links: frontmatter + commit trailers are source of truth; the SQLite index is derived, rebuildable.
 - Policy enforced outside the model (`canUseTool` allowlists); secrets injected at tool boundary, never session env; redaction/egress filtering at log-write and context-assembly (ships in P1, not later).
+- ORC-4 pattern nodes (`fan-out`, `pipeline`, `critic-of`, `panel`) are expanded into an ordinary task graph **at load time**, so nothing downstream of the loader knows a task came from a pattern. A panel's ballots are counted by the kernel and logged (`VoteTallied`); exactly one task writes each artifact.
 - Side effects: `EffectIntended` event first; resume resolves pending intents via per-contract effect checks.
 - Integrations only via MCP capability contracts (`ci.checks`, `pm.github`, …) in `contracts/`; the GitHub PM board is a derived, event-driven projection — inbound GitHub activity becomes triaged signals, never direct mutations.
 

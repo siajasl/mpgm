@@ -45,6 +45,7 @@ export type {
   TaskState,
   TaskStatus,
   Usage,
+  VoteState,
 } from './state/kernel-state.js';
 export { emptyState, zeroUsage } from './state/kernel-state.js';
 export type { PayloadOf } from './state/reduce.js';
@@ -91,19 +92,61 @@ export {
 export { loadRoleFile, parseRole, RoleLoadError, RoleRegistry } from './role/loader.js';
 export type {
   ArtifactTemplate,
+  Ballot,
+  CriticNode,
+  FanOutNode,
   GateCriterion,
   GateDefinition,
-  Playbook,
+  InputTemplate,
+  MemberSpec,
+  PanelNode,
+  PipelineNode,
+  PipelineStage,
   PlaybookDefinition,
+  PlaybookNode,
   TaskTemplate,
+  VoteRule,
 } from './playbook/definition.js';
 export {
   artifactTemplateSchema,
+  ballotSchema,
+  criticNodeSchema,
+  fanOutNodeSchema,
   gateCriterionSchema,
   gateSchema,
+  inputTemplateSchema,
+  panelNodeSchema,
+  pipelineNodeSchema,
+  pipelineStageSchema,
+  playbookNodeSchema,
   playbookSchema,
   taskTemplateSchema,
+  voteRuleSchema,
 } from './playbook/definition.js';
+export type {
+  GraphStep,
+  Playbook,
+  SessionStep,
+  TallyStep,
+  TaskGraph,
+} from './playbook/graph.js';
+export { expandPlaybook, memberCount } from './playbook/graph.js';
+export type {
+  BlockedStep,
+  DispatchDecision,
+  SchedulableStep,
+  ScheduleReport,
+  ScheduleRequest,
+  StepOutcome,
+} from './orchestrator/scheduler.js';
+export { schedule, SchedulerError } from './orchestrator/scheduler.js';
+export type {
+  ApprovalTally,
+  CastBallot,
+  ChoiceTally,
+  Tally,
+} from './orchestrator/tally.js';
+export { tally, TallyError } from './orchestrator/tally.js';
 export {
   loadPlaybookFile,
   parsePlaybook,
@@ -136,6 +179,8 @@ export { loadKnowledgeBase, parseKbDocument } from './context/knowledge-base.js'
 export type {
   AssembledContext,
   AssembleRequest,
+  TaskSpec,
+  UpstreamResult,
   WithheldItem,
 } from './context/assembler.js';
 export { assembleContext } from './context/assembler.js';
@@ -213,7 +258,7 @@ export {
   projectOutputSchemas,
 } from './schemas.js';
 export type { PhaseOutcome, PhaseResult, PhaseRunOptions } from './phase/runner.js';
-export { runPhase } from './phase/runner.js';
+export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
 export type { CliContext, CommandResult } from './cli/commands.js';
 export { approve, chat, intervene, replay, run, status } from './cli/commands.js';
 export type { Verb } from './cli/main.js';

@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.5 — model as dispatch-time session parameter (§4.2) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.6 — pattern-primitive expansion semantics (§4.1) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -80,7 +80,7 @@ Git hosting, CI, scanners, IaC, and telemetry are reached only through MCP serve
 A deterministic state machine, no LLM calls. Owns:
 - **Phase graph:** the eight SDLC phases with entry/exit gates; re-entry per ORC-1 emits `PhaseReopened` and cascades gate invalidation through the trace index (ORC-6).
 - **Plan graph:** plan phases → milestones → tasks (PLN-1) loaded from the gated Plan artifact; scheduler dispatches tasks whose dependencies are complete, up to the configured concurrency limit.
-- **Pattern primitives (ORC-4):** the task-graph schema includes declarative multi-agent nodes — `fan-out{n}/collect`, `pipeline`, `critic-of <task>` (adversarial review), and `panel{n, vote}` (judge panels) — expanded by the kernel into ordinary tasks; DSG-3's critic panel and DSG-1's candidate-selection judging are playbook uses of these primitives.
+- **Pattern primitives (ORC-4):** the task-graph schema includes declarative multi-agent nodes — `fan-out{n}/collect`, `pipeline`, `critic-of <task>` (adversarial review), and `panel{n, vote}` (judge panels) — expanded by the kernel into ordinary tasks; DSG-3's critic panel and DSG-1's candidate-selection judging are playbook uses of these primitives. Expansion is a pure function of the playbook, so a replayed run reconstructs the same graph. Two consequences are load-time rules rather than run-time surprises: exactly one task writes each artifact (fan-out workers and panel judges therefore produce none — their collector or tally does), and a `critic-of` runs a different role from the one that produced its target, since a reviewer sharing the author's role shares its blind spots. A panel's ballots are **counted by the kernel**, not summarised by a further agent, and the count is logged (`VoteTallied`) because `TaskCompleted` does not carry task output; a `vote-carried` gate criterion reads it.
 - **Budgets:** per-run/phase/task token, cost, and step budgets checked on every SDK usage event, plus independent kernel-side timers per session so wall-clock bounds fire even on a hung or silent session; breach → `BudgetExceeded` → terminate session, escalate (AGT-4, NFR-2).
 - **Gate manager:** collects exit-criteria checks (automated + agent-produced), presents an approval packet (options, trade-offs, recommendation — HIL-4) to the CLI, records decisions (HIL-5). Auto-approval only where the operator has configured criteria (HIL-1).
 - **Replan policy:** classifies plan deltas — intra-milestone task reorder/split = autonomous + logged; milestone/plan-phase/design-touching changes = Plan gate re-entry (PLN-4).
@@ -130,7 +130,7 @@ An event-driven **PM projector** subscribes to the kernel event stream and maint
 
 ## 5. Data Model (kernel)
 
-Event log (append-only): `RunStarted, PhaseEntered, TaskDispatched, SessionUsage, ToolCallLogged, TaskCompleted{artifactRefs}, ValidationFailed, GatePresented, GateApproved/Rejected{by}, PhaseReopened, GateInvalidated, BudgetExceeded, OperatorIntervened, ...` — each `{seq, ts, runId, type, payload, schemaVersion}`.
+Event log (append-only): `RunStarted, PhaseEntered, TaskDispatched, SessionUsage, ToolCallLogged, TaskCompleted{artifactRefs}, ValidationFailed, VoteTallied{rule, carried, ballots}, GatePresented, GateApproved/Rejected{by}, PhaseReopened, GateInvalidated, BudgetExceeded, OperatorIntervened, ...` — each `{seq, ts, runId, type, payload, schemaVersion}`.
 
 Derived (rebuildable) tables: `runs, tasks, gates, budgets, trace_links, metrics`. Artifacts and roles live in git only (ADR-3) — the DB stores references (path + commit hash), never artifact content; large session transcripts/tool outputs live as content-addressed blobs referenced from events (ADR-2).
 

@@ -20,6 +20,7 @@ import type {
   taskDispatched,
   toolCallLogged,
   validationFailed,
+  voteTallied,
 } from '../event/catalog.js';
 import {
   emptyState,
@@ -31,6 +32,7 @@ import {
   type RunState,
   type TaskState,
   type Usage,
+  type VoteState,
 } from './kernel-state.js';
 
 /**
@@ -39,7 +41,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 4;
+export const REDUCER_VERSION = 5;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -141,6 +143,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         phaseHistory: [],
         tasks: {},
         gates: {},
+        votes: {},
         effects: {},
         usage: zeroUsage,
         interventions: 0,
@@ -328,6 +331,23 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       return withRun(
         state,
         withGate(run, { ...gate, status: 'invalidated', reason: payload.cause }),
+        seq,
+      );
+    }
+
+    case 'VoteTallied': {
+      const payload = event.payload as PayloadOf<typeof voteTallied>;
+      const run = requireRun(state, event.runId, type);
+      const vote: VoteState = {
+        taskId: payload.taskId,
+        node: payload.node,
+        rule: payload.rule,
+        carried: payload.carried,
+        summary: payload.summary,
+      };
+      return withRun(
+        state,
+        { ...run, votes: { ...run.votes, [payload.taskId]: vote } },
         seq,
       );
     }
