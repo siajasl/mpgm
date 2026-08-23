@@ -49,3 +49,8 @@ jobs:
 
       - name: Test
         run: npm run test
+
+      # PLAN M1.1 verification: a synthetic run killed at arbitrary points must
+      # resume identically, and replay must reproduce it byte-for-byte.
+      - name: Milestone M1.1 crash/restart demo
+        run: npm run demo:crash
