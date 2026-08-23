@@ -1,0 +1,68 @@
+phase: definition
+description: >
+  Establish what is being built and why, before any solution shape is chosen.
+  Produces a Definition artifact covering problem, goals, non-goals,
+  stakeholders, constraints, assumptions and success metrics (DEF-1).
+
+artifacts:
+  definition-brief:
+    schema: definition.v1
+    path: artifacts/definition/brief.md
+    description: >
+      The gated statement of intent for the project. Everything downstream
+      traces to it.
+  ambiguity-findings:
+    schema: findings.v1
+    path: artifacts/definition/ambiguities.md
+    description: >
+      Ambiguities and contradictions found in the stated intent, each with its
+      resolution or an explicit decision to accept it (DEF-2).
+
+tasks:
+  - id: draft-brief
+    role: analyst
+    description: >
+      Turn the elicitation material into a structured Definition artifact.
+    prompt: >
+      From the supplied elicitation transcript and any existing project
+      material, produce the Definition artifact. State the problem, goals,
+      non-goals, stakeholders, constraints, assumptions and success metrics.
+      Record only what the material supports; where it is silent, say so
+      rather than inventing a plausible answer.
+    produces: definition-brief
+
+  - id: challenge-brief
+    role: reviewer
+    description: >
+      Adversarially review the draft for ambiguity and contradiction (DEF-2).
+    prompt: >
+      Review the Definition artifact against the elicitation material. Find
+      ambiguities, contradictions, and goals stated without a way to tell
+      whether they have been met. For each, say what is unclear and what
+      would resolve it. Do not rewrite the artifact; report findings.
+    dependsOn: [draft-brief]
+    produces: ambiguity-findings
+
+gate:
+  id: definition-gate
+  description: >
+    The Definition artifact is complete enough to derive requirements from,
+    and its known ambiguities have been resolved or knowingly accepted.
+  autoApprove: false
+  criteria:
+    - id: brief-present
+      kind: artifact-exists
+      description: A Definition artifact exists and validates against its schema.
+      artifact: definition-brief
+
+    - id: findings-present
+      kind: artifact-exists
+      description: The adversarial review has been recorded.
+      artifact: ambiguity-findings
+
+    - id: ambiguities-resolved
+      kind: agent-assertion
+      description: >
+        Every finding is resolved or explicitly accepted; none is left open
+        without a decision.
+      fromTask: challenge-brief
