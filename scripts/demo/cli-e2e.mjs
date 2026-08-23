@@ -5,11 +5,13 @@
  * real argument parsing and the real command implementations without making
  * model calls. The live path is the M1.3 demo.
  */
-import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  listGateTags,
   projectArtifactSchemas,
   projectOutputSchemas,
   runCli,
@@ -52,6 +54,7 @@ const findings = {
     },
   ],
   summary: 'One ambiguity found and resolved; the brief otherwise holds up.',
+  allResolved: true,
 };
 
 /** Scripted sessions, in the order the phase and chat will consume them. */
@@ -75,6 +78,15 @@ try {
   for (const directory of ['roles', 'phases', 'kb']) {
     cpSync(join(projectRoot, directory), join(workspace, directory), { recursive: true });
   }
+  // A git repo of its own, so `approve --tag` is actually exercised. Without
+  // one the tagging branch is skipped silently, which is how the M1.3 demo
+  // shipped with the --tag flag never reaching the command.
+  execFileSync('git', ['init', '--quiet'], { cwd: workspace });
+  execFileSync('git', ['config', 'user.email', 'e2e@example.com'], { cwd: workspace });
+  execFileSync('git', ['config', 'user.name', 'mpgm e2e'], { cwd: workspace });
+  writeFileSync(join(workspace, '.gitignore'), '.mpgm/\n');
+  execFileSync('git', ['add', '-A'], { cwd: workspace });
+  execFileSync('git', ['commit', '--quiet', '-m', 'sample project'], { cwd: workspace });
 
   const lines = [];
   const context = {
@@ -159,6 +171,11 @@ try {
     ran.output,
   );
   check(
+    'the assertion criterion reads the reviewer attestation, not "it ran"',
+    ran.output.includes('challenge-brief.allResolved = true'),
+    ran.output,
+  );
+  check(
     'the packet carries options, trade-offs and a recommendation',
     ran.output.includes('Options') &&
       ran.output.includes('Trade-offs') &&
@@ -177,11 +194,17 @@ try {
     'r1',
     '--by',
     'macg',
+    '--tag',
   ]);
   check(
     'approve records the decision',
     approved.output.includes('approved by macg'),
     approved.output,
+  );
+  check(
+    'approve --tag writes the derived git tag',
+    listGateTags(workspace).length > 0,
+    listGateTags(workspace).join(', ') || 'no tags written',
   );
 
   const after = await call(['status', '--run', 'r1']);
@@ -216,6 +239,23 @@ try {
   check(
     'an unknown verb is refused with usage',
     !unknown.result.ok && unknown.output.includes('mpgm run <phase>'),
+  );
+
+  // A phase whose required input is absent must refuse to run. Running anyway
+  // is how the M1.3 demo produced a confident artifact about material nobody
+  // supplied.
+  rmSync(join(workspace, 'artifacts', 'definition', 'elicitation.v1.md'), {
+    force: true,
+  });
+  const starved = await call(['run', 'definition', '--run', 'r2']);
+  check(
+    'a missing required input blocks the phase',
+    !starved.result.ok && starved.output.includes('required input'),
+    starved.output,
+  );
+  check(
+    'the elicitation artifact was genuinely removed',
+    !existsSync(join(workspace, 'artifacts', 'definition', 'elicitation.v1.md')),
   );
 
   process.stdout.write('\nCoverage\n');

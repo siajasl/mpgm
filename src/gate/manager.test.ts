@@ -100,11 +100,11 @@ function evidenceFor(
     store,
     evidence: {
       artifacts,
-      assertions: {
+      outputs: {
         'challenge-brief': {
-          met: opts.resolved !== false,
-          detail:
-            opts.resolved === false ? '2 findings still open' : 'all findings resolved',
+          findings: [],
+          summary: opts.resolved === false ? '2 findings still open' : 'all resolved',
+          allResolved: opts.resolved !== false,
         },
       },
     } satisfies GateEvidence,
@@ -218,7 +218,10 @@ describe('the approval packet (HIL-4)', () => {
       expect(byId['brief-present']?.met).toBe(true);
       expect(byId['findings-present']?.met).toBe(false);
       expect(byId['findings-present']?.detail).toMatch(/has not been produced/);
-      expect(byId['ambiguities-resolved']?.detail).toBe('2 findings still open');
+      expect(byId['ambiguities-resolved']?.met).toBe(false);
+      expect(byId['ambiguities-resolved']?.detail).toBe(
+        'challenge-brief.allResolved = false',
+      );
       expect(packet.recommendation).toMatch(/Do not approve yet: 2/);
     } finally {
       db.close();
@@ -236,6 +239,58 @@ describe('the approval packet (HIL-4)', () => {
 
       expect(packet.options).toStrictEqual(['Ship it']);
       expect(packet.recommendation).toBe('Approve, with the glossary gap noted.');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('agent assertions are read, not assumed', () => {
+  it('is unmet when the task reported no such field', () => {
+    const { db, gates } = harness();
+    try {
+      const { evidence } = evidenceFor(newRoot());
+      const packet = gates.present('run-1', playbook, {
+        artifacts: evidence.artifacts,
+        // The task ran and produced output, but says nothing about resolution.
+        outputs: { 'challenge-brief': { findings: [], summary: 'done' } },
+      });
+
+      const criterion = packet.criteria.find((c) => c.id === 'ambiguities-resolved');
+      expect(criterion?.met).toBe(false);
+      expect(criterion?.detail).toMatch(/reported no boolean 'allResolved'/);
+      expect(packet.allMet).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is unmet when the task has not reported at all', () => {
+    const { db, gates } = harness();
+    try {
+      const { evidence } = evidenceFor(newRoot());
+      const packet = gates.present('run-1', playbook, {
+        artifacts: evidence.artifacts,
+        outputs: {},
+      });
+
+      expect(
+        packet.criteria.find((c) => c.id === 'ambiguities-resolved')?.detail,
+      ).toMatch(/has not reported/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('follows the attestation when the task says the gate should stay shut', () => {
+    const { db, gates } = harness();
+    try {
+      const { evidence } = evidenceFor(newRoot(), { resolved: false });
+      const packet = gates.present('run-1', playbook, evidence);
+
+      // Completing successfully while reporting unresolved findings must not
+      // open the gate.
+      expect(packet.allMet).toBe(false);
     } finally {
       db.close();
     }
@@ -332,7 +387,7 @@ describe('approval freezes the artifact (ART-1)', () => {
       }
       gates.present('run-1', playbook, {
         artifacts: { 'definition-brief': brief },
-        assertions: {},
+        outputs: {},
       });
       gates.approve('run-1', 'definition-gate', 'macg');
 
