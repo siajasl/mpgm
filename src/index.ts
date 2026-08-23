@@ -99,6 +99,8 @@ export type {
   ToolDenial,
   ToolGate,
 } from './agent/session.js';
+export type { BudgetBreach, BudgetKind, Now } from './agent/budget.js';
+export { BudgetLedger, runWithWallClock } from './agent/budget.js';
 export { OutputSchemaRegistry } from './agent/output-registry.js';
 export { ScriptedProvider, scriptedSuccess } from './agent/scripted-provider.js';
 export { ClaudeAgentProvider } from './agent/claude-provider.js';

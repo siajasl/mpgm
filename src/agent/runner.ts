@@ -1,5 +1,6 @@
 import type { EventLog } from '../event/store.js';
 import type { Role } from '../role/definition.js';
+import { BudgetLedger, runWithWallClock, type Now } from './budget.js';
 import type { OutputSchemaRegistry } from './output-registry.js';
 import type { AgentSessionProvider, SessionRequest, SessionResult } from './session.js';
 
@@ -43,6 +44,8 @@ export interface SessionRunnerOptions {
    * it on the hundredth attempt either, and each try costs tokens.
    */
   readonly maxValidationAttempts?: number;
+  /** Injectable clock, so elapsed-time behaviour is testable. */
+  readonly now?: Now;
 }
 
 export const DEFAULT_MAX_VALIDATION_ATTEMPTS = 3;
@@ -52,12 +55,14 @@ export class SessionRunner {
   readonly #provider: AgentSessionProvider;
   readonly #schemas: OutputSchemaRegistry;
   readonly #maxAttempts: number;
+  readonly #now: Now | undefined;
 
   constructor(options: SessionRunnerOptions) {
     this.#log = options.log;
     this.#provider = options.provider;
     this.#schemas = options.schemas;
     this.#maxAttempts = options.maxValidationAttempts ?? DEFAULT_MAX_VALIDATION_ATTEMPTS;
+    this.#now = options.now;
 
     if (this.#maxAttempts < 1) {
       throw new Error('maxValidationAttempts must be at least 1');
@@ -77,6 +82,12 @@ export class SessionRunner {
     });
 
     let lastIssues: readonly string[] = [];
+    // One ledger per task: retries share the budget, because three sessions
+    // that each stay under the limit can still blow through it together.
+    const ledger =
+      this.#now === undefined
+        ? new BudgetLedger(role.budgets)
+        : new BudgetLedger(role.budgets, this.#now);
 
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
       const sessionRequest: SessionRequest = {
@@ -86,19 +97,44 @@ export class SessionRunner {
         // information needed to do better than repeat itself (AGT-3).
         prompt: this.#promptFor(request.prompt, lastIssues),
         allowedTools: role.tools.allow,
-        maxTurns: role.budgets.steps,
-        maxBudgetUsd: role.budgets.costUsd,
+        // What is left of the task's budget, not the whole of it.
+        maxTurns: ledger.remainingSteps,
+        maxBudgetUsd: ledger.remainingCostUsd,
         outputJsonSchema,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       };
 
-      const result = await this.#provider.run(sessionRequest);
+      const result = await runWithWallClock(
+        (signal) => this.#provider.run({ ...sessionRequest, signal }),
+        ledger.remainingSeconds,
+      );
+      ledger.record(result.usage, result.turns);
       this.#recordSession(runId, taskId, role, result);
 
       if (result.termination !== 'completed') {
         return {
           status: 'blocked',
           reason: `session terminated: ${result.termination}${result.errorMessage ? ` — ${result.errorMessage}` : ''}`,
+          attempts: attempt,
+          lastIssues,
+        };
+      }
+
+      const breach = ledger.breach();
+      if (breach !== null) {
+        this.#log.append({
+          runId,
+          type: 'BudgetExceeded',
+          payload: {
+            taskId,
+            kind: breach.kind,
+            limit: breach.limit,
+            observed: breach.observed,
+          },
+        });
+        return {
+          status: 'blocked',
+          reason: `budget exceeded: ${breach.kind} (limit ${String(breach.limit)}, used ${String(breach.observed)})`,
           attempts: attempt,
           lastIssues,
         };
