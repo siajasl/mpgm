@@ -1,5 +1,11 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+  HookCallback,
+  HookInput,
+  HookJSONOutput,
+  PreToolUseHookInput,
+} from '@anthropic-ai/claude-agent-sdk';
+import type {
   AgentSessionProvider,
   SessionRequest,
   SessionResult,
@@ -41,6 +47,13 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
         // a role's toolset is the whole of its permission (AGT-2).
         settingSources: [],
         abortController: controller,
+        // Enforcement lives in PreToolUse, not canUseTool. canUseTool is only
+        // consulted when the CLI decides a permission *prompt* is warranted,
+        // and read-only tools never prompt -- so a Read would execute, and be
+        // logged nowhere, without the gate ever running. PreToolUse fires for
+        // every tool call whatever the permission mode.
+        ...gateHooks(request.canUseTool),
+        // Kept as a second layer for the prompting path.
         ...gateOption(request.canUseTool),
       },
     });
@@ -100,6 +113,43 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
       errorMessage: 'session ended without a result message',
     };
   }
+}
+
+/**
+ * Install the kernel's tool gate as a PreToolUse hook.
+ *
+ * This is the authoritative enforcement point: it runs before every tool
+ * execution, including tools the CLI would otherwise auto-approve without
+ * consulting `canUseTool`.
+ */
+function gateHooks(gate: ToolGate | undefined): {
+  hooks?: { PreToolUse: { hooks: HookCallback[] }[] };
+} {
+  if (gate === undefined) {
+    return {};
+  }
+
+  const callback = async (input: HookInput): Promise<HookJSONOutput> => {
+    const preToolUse = input as PreToolUseHookInput;
+    const toolInput =
+      typeof preToolUse.tool_input === 'object' && preToolUse.tool_input !== null
+        ? (preToolUse.tool_input as Record<string, unknown>)
+        : {};
+
+    const decision = await gate(preToolUse.tool_name, toolInput);
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: decision.behavior === 'allow' ? 'allow' : 'deny',
+        ...(decision.behavior === 'deny'
+          ? { permissionDecisionReason: decision.reason }
+          : {}),
+      },
+    };
+  };
+
+  return { hooks: { PreToolUse: [{ hooks: [callback] }] } };
 }
 
 /**

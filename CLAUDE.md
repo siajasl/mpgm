@@ -10,7 +10,13 @@ mpgm is an agentic harness driving the full SDLC via Claude Agent SDK sessions u
 
 Build precedes test: crash fixtures run as subprocesses against `dist/`, because Node strips TS types but will not resolve a `.js` specifier to a `.ts` file. Milestone verification demos live in `scripts/demo/`. `demo:crash` (M1.1) is offline and runs in CI; `demo:agent` (M1.2) makes real model calls, so it is operator-run and needs credentials — it is deliberately not in CI, since a verification that silently skipped itself would be worse than none.
 
-SDK wiring worth not relearning: pass a role's toolset as `tools` (restricts availability), never `allowedTools` (auto-approves, and silently bypasses `canUseTool` — so path policy stops being enforced). Strip `$schema` from `z.toJSONSchema` output; the CLI rejects the dialect URI. A result with `subtype: 'success'` can still carry `is_error`.
+SDK wiring worth not relearning:
+- Policy is enforced in a **`PreToolUse` hook**, not `canUseTool`. `canUseTool` only runs when the CLI decides a permission *prompt* is warranted, and read-only tools never prompt — so a `Read` executes ungated and unlogged. `PreToolUse` fires for every tool call.
+- Pass a role's toolset as `tools` (restricts availability), never `allowedTools` (auto-approves, bypassing the callback).
+- Strip `$schema` from `z.toJSONSchema` output; the CLI rejects the dialect URI.
+- A result with `subtype: 'success'` can still carry `is_error` (an auth failure looks exactly like this).
+
+None of the above is reachable by offline tests — `demo:agent` is the only thing that exercises the real wiring, which is why it is a milestone gate rather than a convenience.
 
 TypeScript is pinned to 6.0.3, not the 7.x line: typescript-eslint requires `<6.1.0`, and type-aware rules (`no-floating-promises` above all) matter more here than the native compiler. Revisit when typescript-eslint supports TS 7. Prettier deliberately ignores markdown — the foundation documents are hand-aligned and gated artifacts must not be mechanically reformatted.
 
