@@ -1,11 +1,11 @@
 # PLAN — mpgm Build Plan
 
-**Status:** v0.2 — reviewed draft, awaiting operator sign-off (Plan gate) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.3 · [DESIGN.md](DESIGN.md) v0.3. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Status:** v0.3 — adds PM projection tasks (PMG) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.4. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 
-mpgm cannot yet drive its own development. **P1 through M3.1 are executed by operator-driven Claude Code sessions** following this plan manually; **from T3.1.7 (end of M3.1) mpgm dogfoods** — the harness executes its own remaining plan, with gaps worked around manually and logged as defects. Self-hosting requires the kernel, playbooks, and the complete implement loop (worktrees + merge checks + review), which M3.1 itself delivers; plan-ingestion is de-risked earlier by T2.2.7 (R6). Until the eval harness lands (T5.2.1a), role definitions are **frozen** at switchover — any P3–P4 role change requires operator approval and a logged exemption, preserving AGT-6.
+mpgm cannot yet drive its own development. **P1 through M3.1 are executed by operator-driven Claude Code sessions** following this plan manually; **from T3.1.8 (end of M3.1) mpgm dogfoods** — the harness executes its own remaining plan, with gaps worked around manually and logged as defects. Self-hosting requires the kernel, playbooks, and the complete implement loop (worktrees + merge checks + review), which M3.1 itself delivers; plan-ingestion is de-risked earlier by T2.2.7 (R6). Until the eval harness lands (T5.2.1a), role definitions are **frozen** at switchover — any P3–P4 role change requires operator approval and a logged exemption, preserving AGT-6.
 
 ## 2. Risk Register (drives ordering, PLN-2)
 
@@ -99,9 +99,10 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 | T3.1.4 Convention enforcement: KB conventions in implementer context; deviation flagging in review rubric | planted deviation flagged (test) | §4.3, IMP-4, CTX-1 |
 | T3.1.5 Secret broker proxy: tool-boundary credential injection + output redaction *(R7)* | `printenv`-style leak test shows no secret in transcript | ADR-6, SAF-2 |
 | T3.1.6 Destructive-op guard: destructive tools require dry-run support; kernel confirmation events before execution | destructive call without prior dry-run + confirmation event blocked (test) | §7, SAF-4 |
-| **T3.1.7 Switchover:** remaining PLAN tasks loaded as mpgm's own task graph (validated by T2.2.7); role definitions frozen per §1 | mpgm dispatches and merges its first self-task | §1 |
+| T3.1.7 PM projector + `pm.github` contract: Plan-artifact bootstrap (board, labels, milestones), event-driven task↔issue / milestone / PR-link sync, idempotent reconcile pass | board bootstrapped from gated Plan; task state change reflected on board (test); re-bootstrap converges without duplicates | §4.8, PMG-1/2/4 |
+| **T3.1.8 Switchover:** remaining PLAN tasks loaded as mpgm's own task graph (validated by T2.2.7); role definitions frozen per §1 | mpgm dispatches and merges its first self-task | §1 |
 
-**Verification (first Implement milestone):** mpgm implements, reviews, and merges a real task of its own backlog end-to-end with green CI. **Dashboard work starts now** — DESIGN §9's "ships at the first Implement milestone" is interpreted as started here, shipped in M3.2.
+**Verification (first Implement milestone):** mpgm implements, reviews, and merges a real task of its own backlog end-to-end with green CI, with the task's journey (issue → in-progress → PR → done) visible live on the scrum board. **Dashboard work starts now** — DESIGN §9's "ships at the first Implement milestone" is interpreted as started here, shipped in M3.2.
 
 **M3.2 — Test phase & dashboard**
 | Task | Completion criteria | Traces |
@@ -143,10 +144,10 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 **M5.1 — Maintain integration**
 | Task | Completion criteria | Traces |
 |---|---|---|
-| T5.1.1 Signal ingestors (`telemetry.signals`, `deps.advisories`) + triage role → work items | synthetic alert becomes prioritized task | §4.8, MNT-1 |
-| T5.1.2 Incident state machine + postmortem playbook | simulated incident: detect → approve → remediate → postmortem artifact | §4.8, MNT-2 |
-| T5.1.3 Dependency upgrade tasks with severity priority | injected CVE advisory yields prioritized upgrade task | §4.8, MNT-3 |
-| T5.1.4 Drift audit tasks (code↔design, tests↔requirements, infra↔IaC) | planted drift detected and reconciliation task raised | §4.8, MNT-4 |
+| T5.1.1 Signal ingestors (`telemetry.signals`, `deps.advisories`, `pm.inbound` GitHub activity) + triage role → work items | synthetic alert and an operator-filed GitHub issue each become prioritized tasks | §4.9, MNT-1, PMG-3 |
+| T5.1.2 Incident state machine + postmortem playbook | simulated incident: detect → approve → remediate → postmortem artifact | §4.9, MNT-2 |
+| T5.1.3 Dependency upgrade tasks with severity priority | injected CVE advisory yields prioritized upgrade task | §4.9, MNT-3 |
+| T5.1.4 Drift audit tasks (code↔design, tests↔requirements, infra↔IaC) | planted drift detected and reconciliation task raised | §4.9, MNT-4 |
 
 **Verification:** a synthetic alert becomes a prioritized work item; a simulated incident runs detect → operator-approved mitigation → remediation via the normal loop → postmortem artifact; an injected CVE advisory yields a severity-prioritized upgrade task.
 

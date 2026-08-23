@@ -1,6 +1,6 @@
 # REQUIREMENTS — mpgm Agentic SDLC Harness
 
-**Status:** v0.3 — reviewed draft incorporating operator feedback, awaiting sign-off · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.4 — adds GitHub project-management integration (PMG) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
 
 ## 1. Purpose
 
@@ -76,6 +76,13 @@ Requirement keywords **MUST**, **SHOULD**, **MAY** follow RFC 2119. Requirements
 - **OBS-2** The harness MUST track and report cost (tokens, spend), latency, and success/retry rates per phase, per agent role, and per run.
 - **OBS-3** The operator MUST have a live view of current runs: what each agent is doing, what is blocked, and what awaits approval.
 - **OBS-4** The harness SHOULD compute quality metrics over time (gate rejection rate, rework rate, escaped-defect rate) to measure its own effectiveness.
+
+### Project Management Integration (PMG)
+
+- **PMG-1** The harness MUST project its orchestration state onto the project's GitHub repository as native project-management structures: a scrum board (GitHub Projects), issues, milestones, labels, and pull requests — mapped from the plan hierarchy (plan phases/milestones/tasks, PLN-1) and the implement loop (IMP-1/3).
+- **PMG-2** The board MUST be kept up to date at all times: every task, milestone, gate, and PR state change MUST be reflected event-driven (on occurrence), not by periodic batch sync.
+- **PMG-3** Kernel state is authoritative (single source of truth): the GitHub projection is derived and idempotently reconcilable. Inbound GitHub activity (operator- or collaborator-created issues, comments, card moves) MUST be ingested as signals and triaged into work items (per MNT-1), never applied as direct state mutations.
+- **PMG-4** For a greenfield project, the harness MUST bootstrap the PM structures (board, label taxonomy, milestones) idempotently from the gated Plan artifact — no manual GitHub setup.
 
 ### Safety & Policy (SAF)
 

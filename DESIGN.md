@@ -1,7 +1,7 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.3 — reviewed, open questions resolved · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.3. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
+**Status:** v0.4 — adds project-management sync (§4.8, PMG) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
 
@@ -114,7 +114,15 @@ Each integration is an **MCP capability contract** — a named interface (inputs
 - **Environments (`env.provision`):** provisions test/staging/prod from in-repo IaC (DEP-1/4).
 - **Release (`release.deliver`):** progressive delivery is delegated to existing CD tooling (e.g. Argo Rollouts or a cloud-native equivalent) behind this contract; mpgm supplies release artifacts (DEP-3), watches health signals, records outcomes (DEP-5), and issues promote/rollback decisions per policy (DEP-2) — it does not implement rollout mechanics.
 
-### 4.8 Maintain Integration (MNT-*)
+### 4.8 Project-Management Sync (PMG-*)
+An event-driven **PM projector** subscribes to the kernel event stream and maintains the GitHub projection through a `pm.github` capability contract (§4.7 pattern):
+
+- **Mapping:** plan phases → Project board views/iterations; milestones → GitHub Milestones; tasks → Issues (board columns follow task state: backlog / ready / in-progress / in-review / blocked / done); labels encode phase, role, priority, and type (task/defect/incident/upgrade); PRs are linked to their task's issue via branch naming (worktree manager, §4.7) and `Closes #N` trailers.
+- **Currency (PMG-2):** the projector consumes state-change events as they commit to the log — board updates ride the same event stream as the dashboard, so the board is exactly as current as the kernel.
+- **Authority (PMG-3):** the projection is derived state; a reconcile pass (idempotent, diff-based) repairs any external edits on projector restart. Inbound GitHub activity arrives via the Maintain signal path (§4.9, `telemetry.signals` sibling `pm.inbound`) and becomes triaged work items — never direct kernel mutations.
+- **Bootstrap (PMG-4):** on Plan gate approval, the projector creates the board, label taxonomy, and milestones from the gated Plan artifact, idempotently — re-running against an existing repo converges instead of duplicating.
+
+### 4.9 Maintain Integration (MNT-*)
 - **Signal ingestion (MNT-1):** ingestor tasks (standing playbook tasks on a schedule) poll declared sources via MCP — alerting/telemetry (`telemetry.signals`), dependency advisories (`deps.advisories`) — and a triage agent converts signals into prioritized work items entering the normal task graph.
 - **Incidents (MNT-2):** an incident state machine in the kernel (detected → mitigation-proposed → operator-approved → remediating → resolved → postmortem) with each transition an event; mitigation and fixes flow through Implement/Test/Deploy (MNT-5), and the postmortem is a gated artifact.
 - **Dependency freshness (MNT-3):** the advisories ingestor raises upgrade tasks with severity-based priority automatically.
