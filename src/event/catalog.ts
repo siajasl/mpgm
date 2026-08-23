@@ -15,8 +15,18 @@ import { defineEvent, EventRegistry } from './registry.js';
  * content — artifacts live in git only (ADR-3, DESIGN §5).
  */
 export const artifactRefSchema = z.object({
+  /** Artifact id, when the reference names one the playbook declared. */
+  id: z.string().min(1).optional(),
   path: z.string().min(1),
-  commit: z.string().min(1),
+  /**
+   * Commit the artifact was recorded at, or null before it has been
+   * committed. Nullable rather than an empty string so "not yet in git" is
+   * stated rather than encoded, and so the field cannot quietly hold a
+   * placeholder that reads like a hash.
+   */
+  commit: z.string().min(1).nullable(),
+  /** Artifact version (ART-1), when the reference names a specific one. */
+  version: z.number().int().positive().optional(),
 });
 
 export type ArtifactRef = z.infer<typeof artifactRefSchema>;
