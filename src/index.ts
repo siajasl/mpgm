@@ -90,6 +90,27 @@ export {
 } from './role/definition.js';
 export { loadRoleFile, parseRole, RoleLoadError, RoleRegistry } from './role/loader.js';
 export type {
+  ArtifactTemplate,
+  GateCriterion,
+  GateDefinition,
+  Playbook,
+  PlaybookDefinition,
+  TaskTemplate,
+} from './playbook/definition.js';
+export {
+  artifactTemplateSchema,
+  gateCriterionSchema,
+  gateSchema,
+  playbookSchema,
+  taskTemplateSchema,
+} from './playbook/definition.js';
+export {
+  loadPlaybookFile,
+  parsePlaybook,
+  PlaybookLoadError,
+  PlaybookRegistry,
+} from './playbook/loader.js';
+export type {
   AgentSessionProvider,
   SessionRequest,
   SessionResult,
