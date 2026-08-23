@@ -1,0 +1,154 @@
+phase: design
+description: >
+  Choose an architecture for the gated requirement set and record it: several
+  candidates generated independently, judged by a panel, and turned into the
+  design of record with the ADRs that explain it (DSG-1, DSG-2, DSG-4).
+
+inputs:
+  requirement-set:
+    schema: scope
+    path: artifacts/scope/requirements.md
+    description: >
+      The gated Scope artifact. Required: a design judged against nothing is a
+      preference, and every design element has to trace to a requirement id
+      (DSG-4).
+    optional: false
+
+artifacts:
+  design-candidates:
+    schema: design-candidates
+    path: artifacts/design/candidates.md
+    description: >
+      The candidate architectures side by side, as the panel received them.
+      The ADRs cite these as the alternatives considered, so the record of what
+      was rejected outlives the decision.
+  design:
+    schema: design
+    path: artifacts/design/design.md
+    description: >
+      The design of record: component decomposition, interface contracts, data
+      model, technology selections, cross-cutting concerns, and the ADRs.
+
+tasks:
+  # DSG-1 asks for at least two candidates. Generating them from assigned
+  # stances rather than by sampling one prompt three times is what makes them
+  # genuinely different: three independent runs of "design this" converge, and
+  # a panel choosing between three variations of one idea is theatre.
+  #
+  # The stance ids here are the same ids the panel votes on below, and the same
+  # ones `designStances` declares in src/schemas.ts. A test asserts all three
+  # agree — a ballot offering an option nobody generated is a vote for nothing.
+  - kind: fan-out
+    id: propose-candidates
+    description: >
+      Generate one candidate architecture per design stance.
+    consumes: [requirement-set]
+    workers:
+      role: design-proposer
+      prompt: >
+        Propose one candidate architecture for the requirement set, arguing the
+        stance you have been assigned. Set the `stance` field to exactly the
+        stance id given in your lens.
+      lenses:
+        - >
+          Stance id `simplest`: the least machinery that meets every `must`
+          requirement. Prefer fewer moving parts over generality; treat every
+          component you add as something that has to be understood, operated
+          and changed for the life of the project.
+        - >
+          Stance id `most-operable`: optimise for running it under the
+          constraints the requirement set actually states — the hardware, the
+          budget, and the people who will be on call. Prefer designs that fail
+          visibly and recover simply.
+        - >
+          Stance id `most-extensible`: optimise for the requirements most
+          likely to arrive next, given what the Definition and the `could` and
+          `should` requirements suggest. Be explicit about what you are paying
+          now for that flexibility.
+    collect:
+      role: design-comparer
+      prompt: >
+        Put the candidates side by side for the panel. Carry each through with
+        its stance, components, decisions and trade-offs intact — do not
+        improve any of them, merge them, or drop one.
+
+        Compare them along the dimensions that actually separate them for this
+        project.
+      produces: design-candidates
+
+  - kind: panel
+    id: select-candidate
+    description: >
+      Judge the candidates against the requirement set and choose one.
+    dependsOn: [propose-candidates]
+    consumes: [requirement-set, design-candidates]
+    judges:
+      role: design-judge
+      prompt: >
+        Choose the candidate that best meets the requirement set, judging
+        against the requirements and constraints rather than general
+        architectural preference.
+
+        Record your reasoning and your reservations — including about the
+        candidate you vote for.
+      count: 3
+    ballot:
+      type: choice
+      field: pick
+      options: [simplest, most-operable, most-extensible]
+    vote: plurality
+
+  - id: record-design
+    role: design-architect
+    description: >
+      Turn the chosen candidate into the design of record, with ADRs.
+    prompt: >
+      The panel's tally is below. Take the winning candidate as chosen and
+      produce the design of record.
+
+      Cover component decomposition, interface contracts, the data model,
+      technology selections, and cross-cutting concerns — authentication,
+      authorisation, observability and failure modes at minimum. Trace every
+      element to at least one requirement id.
+
+      Record the significant decisions as ADRs, each with the alternatives that
+      were considered — the other candidates are the obvious ones — and why
+      they lost, and the consequences being accepted. Carry the judges'
+      reservations into those consequences.
+    dependsOn: [select-candidate]
+    consumes: [requirement-set, design-candidates]
+    produces: design
+
+gate:
+  id: design-gate
+  description: >
+    An architecture has been chosen from genuine alternatives and recorded
+    well enough to implement against and to revisit later.
+
+    Traceability is not a criterion here because it is not optional: the design
+    schema rejects an element that traces to no requirement, so a design that
+    exists at all has already been checked for gold-plating (DSG-4). The
+    adversarial review across the DSG-3 lenses arrives at T2.1.3b.
+  autoApprove: false
+  criteria:
+    - id: candidates-considered
+      kind: artifact-exists
+      description: >
+        At least two candidate architectures were generated and compared
+        (DSG-1).
+      artifact: design-candidates
+
+    - id: selection-decided
+      kind: vote-carried
+      description: >
+        The panel reached a decision rather than tying or abstaining. A tie is
+        reported as a tie: it means the candidates need work, not that one of
+        them should be picked.
+      panel: select-candidate
+
+    - id: design-recorded
+      kind: artifact-exists
+      description: >
+        The design of record exists, with ADRs, and validates against its
+        schema.
+      artifact: design

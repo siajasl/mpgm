@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { designStances } from '../schemas.js';
 import type { Playbook } from './graph.js';
 import {
   loadPlaybookFile,
@@ -330,7 +331,12 @@ describe('PlaybookRegistry', () => {
   it('lists loaded phases when asked for one that does not exist', () => {
     const registry = PlaybookRegistry.fromDirectory(phasesDir);
 
-    expect(() => registry.get('deploy')).toThrow(/Loaded: definition, scope/);
+    // Asserted against what the registry actually loaded, so adding a phase
+    // is not a reason for this test to fail.
+    expect(() => registry.get('deploy')).toThrow(
+      new RegExp(`Loaded: ${registry.phases.join(', ')}`),
+    );
+    expect(registry.phases.length).toBeGreaterThan(1);
   });
 
   it('refuses duplicates', () => {
@@ -345,5 +351,78 @@ describe('PlaybookRegistry', () => {
     expect(() => PlaybookRegistry.fromDirectory(join(projectRoot, 'nowhere'))).toThrow(
       /playbook directory could not be read/,
     );
+  });
+});
+
+describe('the design playbook', () => {
+  const playbook = (): Playbook => loadPlaybookFile(join(phasesDir, 'design.yaml'));
+
+  it('generates candidates in parallel and judges them with a panel', () => {
+    const { graph } = playbook();
+
+    expect(graph.steps.map((step) => step.id)).toStrictEqual([
+      'propose-candidates-worker-1',
+      'propose-candidates-worker-2',
+      'propose-candidates-worker-3',
+      'propose-candidates-collect',
+      'select-candidate-judge-1',
+      'select-candidate-judge-2',
+      'select-candidate-judge-3',
+      'select-candidate-tally',
+      'record-design',
+    ]);
+    // DSG-1: at least two candidates, generated without seeing each other.
+    expect(graph.members['propose-candidates']).toHaveLength(4);
+  });
+
+  it('votes on exactly the stances it generates candidates for', () => {
+    const panel = playbook().tasks.find((node) => node.id === 'select-candidate');
+    const workers = playbook()
+      .graph.steps.filter((step) => step.id.startsWith('propose-candidates-worker'))
+      .map((step) => (step.kind === 'session' ? step.prompt : ''));
+
+    // Three places have to agree: the ballot, the lenses that generate the
+    // candidates, and `designStances`. A ballot offering an option nobody
+    // generated is a vote for nothing.
+    const options =
+      panel?.kind === 'panel' && panel.ballot.type === 'choice'
+        ? panel.ballot.options
+        : [];
+
+    expect(options).toStrictEqual([...designStances]);
+    for (const [index, id] of designStances.entries()) {
+      expect(workers[index]).toContain(`Stance id \`${id}\``);
+    }
+  });
+
+  it('judges vote alone: no judge depends on another', () => {
+    const judges = playbook().graph.steps.filter((step) =>
+      step.id.startsWith('select-candidate-judge'),
+    );
+
+    for (const judge of judges) {
+      expect(judge.dependsOn).toStrictEqual(['propose-candidates-collect']);
+    }
+  });
+
+  it('reads the panel result as a kernel count, not as an agent assertion', () => {
+    const criterion = playbook().gate.criteria.find(
+      (entry) => entry.id === 'selection-decided',
+    );
+
+    expect(criterion).toMatchObject({ kind: 'vote-carried', panel: 'select-candidate' });
+    expect(playbook().gate.autoApprove).toBe(false);
+  });
+
+  it('shows the architect the candidates as well as the tally', () => {
+    // The architect depends on the tally, which produces no artifact, so the
+    // candidates reach it only by being named in `consumes`.
+    const architect = playbook().graph.steps.find((step) => step.id === 'record-design');
+
+    expect(architect?.kind === 'session' && architect.consumes).toStrictEqual([
+      'requirement-set',
+      'design-candidates',
+    ]);
+    expect(architect?.dependsOn).toStrictEqual(['select-candidate-tally']);
   });
 });

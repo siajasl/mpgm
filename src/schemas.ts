@@ -110,6 +110,167 @@ export const scopeSchema = z
     'requirement ids must be unique — downstream artifacts trace to them (ART-2)',
   );
 
+/**
+ * The design stances the Design phase generates candidates for (DSG-1).
+ *
+ * These ids are shared between three places that must agree: the fan-out
+ * lenses that generate one candidate each, the panel ballot the judges vote
+ * on, and this enum. A test asserts the playbook and this list match, because
+ * a ballot offering an option nobody generated is a vote for nothing.
+ */
+export const designStances = ['simplest', 'most-operable', 'most-extensible'] as const;
+
+const stance = z.enum(designStances);
+
+/** One candidate architecture (DSG-1). */
+export const designCandidateSchema = z.object({
+  stance,
+  name: z.string().min(1),
+  summary: z.string().min(1),
+  components: z
+    .array(z.object({ name: z.string().min(1), responsibility: z.string().min(1) }))
+    .min(1),
+  keyDecisions: z.array(z.string().min(1)).min(1),
+  /**
+   * What this candidate buys and what it costs. A candidate with no stated
+   * cost has not been thought about; it has been advocated for.
+   */
+  tradeOffs: z
+    .array(z.object({ gain: z.string().min(1), cost: z.string().min(1) }))
+    .min(1),
+  risks: z.array(z.string().min(1)),
+  /** Requirement ids this candidate is answering. */
+  tracesTo: z.array(z.string().min(1)).min(1),
+});
+
+/** The candidates side by side, as the judges receive them. */
+export const designCandidatesSchema = z
+  .object({
+    summary: z.string().min(1),
+    // DSG-1 requires at least two candidates for a significant decision. One
+    // candidate is not a choice, it is a proposal with a vote attached.
+    candidates: z.array(designCandidateSchema).min(2),
+    comparison: z
+      .array(
+        z.object({
+          dimension: z.string().min(1),
+          assessment: z.array(z.object({ stance, note: z.string().min(1) })).min(2),
+        }),
+      )
+      .min(1),
+  })
+  .refine(
+    (set) =>
+      new Set(set.candidates.map((candidate) => candidate.stance)).size ===
+      set.candidates.length,
+    'each candidate must take a different stance — two candidates with the same ' +
+      'stance are one candidate described twice',
+  );
+
+/** One judge's ballot (ORC-4 panel). */
+export const designVerdictSchema = z.object({
+  /** The panel ballot field. The kernel counts this; nothing else. */
+  pick: stance,
+  reasoning: z.string().min(1),
+  /** What would change this judge's mind, recorded whether or not it wins. */
+  reservations: z.array(z.string().min(1)),
+});
+
+/** One architecture decision record (DSG-1). */
+export const adrSchema = z.object({
+  id: z.string().regex(/^ADR-[0-9]+$/, 'e.g. ADR-1'),
+  title: z.string().min(1),
+  context: z.string().min(1),
+  decision: z.string().min(1),
+  /** What else was considered and why it lost. An ADR without this is a memo. */
+  alternatives: z
+    .array(z.object({ option: z.string().min(1), whyNot: z.string().min(1) }))
+    .min(1),
+  consequences: z.array(z.string().min(1)).min(1),
+  tracesTo: z.array(z.string().min(1)).min(1),
+});
+
+/** Cross-cutting concerns DSG-2 requires a design to address. */
+export const requiredConcerns = [
+  'authn',
+  'authz',
+  'observability',
+  'failure-modes',
+] as const;
+
+const concern = z.enum([...requiredConcerns, 'security', 'other']);
+
+/**
+ * The Design artifact (DSG-1, DSG-2, DSG-4).
+ *
+ * Every element carries `tracesTo`, so an element that traces to no
+ * requirement is unrepresentable rather than merely discouraged — DSG-4 calls
+ * that gold-plating, and the cheapest place to catch it is the schema.
+ */
+export const designSchema = z
+  .object({
+    chosen: stance,
+    summary: z.string().min(1),
+    components: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          responsibility: z.string().min(1),
+          tracesTo: z.array(z.string().min(1)).min(1),
+        }),
+      )
+      .min(1),
+    interfaces: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          kind: z.enum(['api', 'schema', 'event']),
+          contract: z.string().min(1),
+          tracesTo: z.array(z.string().min(1)).min(1),
+        }),
+      )
+      .min(1),
+    dataModel: z
+      .array(
+        z.object({
+          entity: z.string().min(1),
+          fields: z.array(z.string().min(1)).min(1),
+          notes: z.string(),
+        }),
+      )
+      .min(1),
+    technologies: z
+      .array(
+        z.object({
+          choice: z.string().min(1),
+          why: z.string().min(1),
+          tracesTo: z.array(z.string().min(1)).min(1),
+        }),
+      )
+      .min(1),
+    crossCutting: z
+      .array(
+        z.object({
+          concern,
+          approach: z.string().min(1),
+          tracesTo: z.array(z.string().min(1)).min(1),
+        }),
+      )
+      .min(1),
+    adrs: z.array(adrSchema).min(1),
+  })
+  .refine(
+    (design) =>
+      requiredConcerns.every((required) =>
+        design.crossCutting.some((entry) => entry.concern === required),
+      ),
+    `the design must address every cross-cutting concern DSG-2 names: ${requiredConcerns.join(', ')}`,
+  )
+  .refine(
+    (design) => new Set(design.adrs.map((adr) => adr.id)).size === design.adrs.length,
+    'ADR ids must be unique',
+  );
+
 /** The elicitation record: conclusions plus the dialogue that produced them. */
 export const elicitationSchema = z.object({
   conclusions: conclusionsSchema,
@@ -122,6 +283,10 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
     definition: definitionSchema,
     findings: findingsSchema,
     scope: scopeSchema,
+    'design-candidate': designCandidateSchema,
+    'design-candidates': designCandidatesSchema,
+    'design-verdict': designVerdictSchema,
+    design: designSchema,
     'elicitation.turn': elicitationOutputSchema,
   });
 }
@@ -132,6 +297,8 @@ export function projectArtifactSchemas(): ArtifactSchemaRegistry {
     defineArtifactSchema('definition', definitionSchema),
     defineArtifactSchema('findings', findingsSchema),
     defineArtifactSchema('scope', scopeSchema),
+    defineArtifactSchema('design-candidates', designCandidatesSchema),
+    defineArtifactSchema('design', designSchema),
     defineArtifactSchema('elicitation', elicitationSchema),
   ]);
 }
