@@ -6,13 +6,13 @@ description: >
 
 artifacts:
   definition-brief:
-    schema: definition.v1
+    schema: definition
     path: artifacts/definition/brief.md
     description: >
       The gated statement of intent for the project. Everything downstream
       traces to it.
   ambiguity-findings:
-    schema: findings.v1
+    schema: findings
     path: artifacts/definition/ambiguities.md
     description: >
       Ambiguities and contradictions found in the stated intent, each with its

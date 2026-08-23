@@ -110,6 +110,28 @@ export {
   PlaybookLoadError,
   PlaybookRegistry,
 } from './playbook/loader.js';
+export type { ArtifactMigration, ArtifactSchema } from './artifact/schema-registry.js';
+export {
+  ArtifactSchemaError,
+  ArtifactSchemaRegistry,
+  defineArtifactSchema,
+} from './artifact/schema-registry.js';
+export type {
+  Artifact,
+  ArtifactStoreOptions,
+  GateOracle,
+  Provenance,
+  WriteRequest,
+} from './artifact/store.js';
+export {
+  ArtifactStore,
+  ArtifactStoreError,
+  frontmatterSchema,
+  GatedArtifactError,
+  provenanceSchema,
+  renderBody,
+  StaticGateOracle,
+} from './artifact/store.js';
 export type {
   AgentSessionProvider,
   SessionRequest,
