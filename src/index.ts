@@ -74,4 +74,19 @@ export { EffectJournal } from './effect/journal.js';
 /** Package version. Kept in step with package.json by test. */
 export const VERSION = '0.1.0';
 
+export type {
+  Budget,
+  PathPolicy,
+  Role,
+  RoleFrontmatter,
+  ToolPolicy,
+} from './role/definition.js';
+export {
+  budgetSchema,
+  outputSchema,
+  pathPolicySchema,
+  roleFrontmatterSchema,
+  toolPolicySchema,
+} from './role/definition.js';
+export { loadRoleFile, parseRole, RoleLoadError, RoleRegistry } from './role/loader.js';
 export { demoTimestamp, syntheticRun } from './demo/workload.js';
