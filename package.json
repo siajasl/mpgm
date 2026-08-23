@@ -33,6 +33,7 @@
     "demo:agent": "node scripts/demo/agent-session.mjs",
     "demo:cli": "node scripts/demo/cli-e2e.mjs",
     "demo:definition": "node scripts/demo/definition-phase.mjs",
+    "demo:scope": "node scripts/demo/scope-phase.mjs",
     "probe:sdk": "node scripts/demo/probe-sdk.mjs"
   },
   "devDependencies": {

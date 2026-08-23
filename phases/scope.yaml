@@ -1,0 +1,131 @@
+phase: scope
+description: >
+  Turn the gated Definition into a requirement set that can be designed
+  against and tested against: functional and non-functional requirements,
+  each testable and uniquely identified, prioritised, with an explicit
+  out-of-scope list (SCP-1, SCP-2).
+
+inputs:
+  definition-brief:
+    schema: definition
+    path: artifacts/definition/brief.md
+    description: >
+      The gated Definition artifact. Required: requirements derived from
+      nothing are requirements traceable to nothing, and every downstream
+      artifact traces through this one (ART-2).
+    optional: false
+
+artifacts:
+  requirement-set:
+    schema: scope
+    path: artifacts/scope/requirements.md
+    description: >
+      The gated requirement set. Design elements trace to its ids (DSG-4) and
+      the Test phase builds its non-functional suites from its thresholds
+      (TST-3).
+  scope-findings:
+    schema: findings
+    path: artifacts/scope/findings.md
+    description: >
+      Conflicts, duplicates and acceptance-criteria gaps found in the
+      requirement set, each with its resolution or an explicit decision to
+      accept it (SCP-3).
+
+tasks:
+  - id: derive-requirements
+    role: requirements-analyst
+    description: >
+      Derive the requirement set from the Definition.
+    prompt: >
+      From the Definition artifact, derive the project's functional and
+      non-functional requirements.
+
+      Give every requirement a stable id, a statement, the rationale that ties
+      it to the Definition, acceptance criteria that decide whether it has been
+      met, and a MoSCoW priority. Quantify every non-functional requirement:
+      metric, value, unit, and how it is measured.
+
+      State what is explicitly out of scope and why, starting from the
+      Definition's non-goals.
+
+      Derive only what the Definition supports. Where it is silent on something
+      a requirement would need, say so in the rationale rather than supplying a
+      plausible number as though it came from the material.
+    consumes: [definition-brief]
+    produces: requirement-set
+
+  - kind: fan-out
+    id: flag-issues
+    description: >
+      Review the requirement set for the pathologies SCP-3 names, one lens per
+      critic.
+    dependsOn: [derive-requirements]
+    # The requirement set is named explicitly as well as depended on: the
+    # collector depends on the workers rather than on the derivation, so
+    # without this it would merge reviews of an artifact it never saw.
+    consumes: [definition-brief, requirement-set]
+    workers:
+      role: requirements-critic
+      prompt: >
+        Review the requirement set against the Definition it was derived from.
+        Report findings against your assigned lens only.
+
+        Name the requirements involved by id, say what is wrong, and say what
+        would resolve it.
+      lenses:
+        - >
+          Conflicts: requirements that cannot both be satisfied, or that trade
+          off against each other without the trade-off being stated.
+        - >
+          Duplicates: requirements that say the same thing in different words,
+          or that overlap enough to be implemented and changed independently
+          until they disagree.
+        - >
+          Acceptance-criteria gaps: criteria that do not decide the question,
+          criteria that merely restate the requirement, and non-functional
+          thresholds that are not measurable as written.
+    collect:
+      role: requirements-critic
+      prompt: >
+        Merge the three lens reviews into one set of findings.
+
+        Where two reviews found the same problem, report it once. Where they
+        disagree about whether something is a problem, report the disagreement
+        rather than resolving it silently — the gate is where that gets
+        decided.
+
+        Set `allResolved` to true only if no finding is left open across all
+        three lenses.
+      produces: scope-findings
+
+gate:
+  id: scope-gate
+  description: >
+    The requirement set is complete enough to design against: every
+    requirement is testable and uniquely identified, non-functional
+    requirements carry quantified thresholds, the scope boundary is explicit,
+    and the known conflicts, duplicates and criteria gaps have been resolved
+    or knowingly accepted.
+
+    Quantified thresholds and unique ids are not criteria here because they
+    are not optional: the artifact schema rejects a requirement set without
+    them, so one that exists at all already has them.
+  autoApprove: false
+  criteria:
+    - id: requirements-present
+      kind: artifact-exists
+      description: A requirement set exists and validates against its schema.
+      artifact: requirement-set
+
+    - id: findings-present
+      kind: artifact-exists
+      description: The SCP-3 review has been recorded.
+      artifact: scope-findings
+
+    - id: issues-resolved
+      kind: agent-assertion
+      description: >
+        Every conflict, duplicate and criteria gap is resolved or explicitly
+        accepted; none is left open without a decision.
+      fromTask: flag-issues
+      field: allResolved

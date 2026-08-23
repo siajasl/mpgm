@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import type { Playbook } from './graph.js';
 import {
   loadPlaybookFile,
   parsePlaybook,
@@ -71,6 +72,69 @@ describe('the definition playbook', () => {
 
     expect(registry.has('definition')).toBe(true);
     expect(registry.get('definition').gate.id).toBe('definition-gate');
+  });
+});
+
+describe('the scope playbook', () => {
+  const playbook = (): Playbook => loadPlaybookFile(join(phasesDir, 'scope.yaml'));
+
+  it('expands its SCP-3 review into one critic per lens plus a collector', () => {
+    const { graph } = playbook();
+
+    expect(graph.steps.map((step) => step.id)).toStrictEqual([
+      'derive-requirements',
+      'flag-issues-worker-1',
+      'flag-issues-worker-2',
+      'flag-issues-worker-3',
+      'flag-issues-collect',
+    ]);
+    // SCP-3 names three pathologies; one critic each, and none of them can see
+    // what the others found.
+    for (const index of [1, 2, 3]) {
+      expect(
+        graph.steps.find((step) => step.id === `flag-issues-worker-${String(index)}`)
+          ?.dependsOn,
+      ).toStrictEqual(['derive-requirements']);
+    }
+  });
+
+  it('gives each critic a different pathology to look for', () => {
+    const prompts = playbook()
+      .graph.steps.filter((step) => step.id.includes('worker'))
+      .map((step) => (step.kind === 'session' ? step.prompt : ''));
+
+    expect(prompts[0]).toContain('Conflicts');
+    expect(prompts[1]).toContain('Duplicates');
+    expect(prompts[2]).toContain('Acceptance-criteria gaps');
+  });
+
+  it('gates on the collector attestation, not on the review having run', () => {
+    const criterion = playbook().gate.criteria.find(
+      (entry) => entry.id === 'issues-resolved',
+    );
+
+    expect(criterion).toMatchObject({
+      kind: 'agent-assertion',
+      fromTask: 'flag-issues',
+      field: 'allResolved',
+    });
+    expect(playbook().gate.autoApprove).toBe(false);
+  });
+
+  it('cannot run without a gated Definition to derive from', () => {
+    expect(playbook().inputs['definition-brief']?.optional).toBe(false);
+  });
+
+  it('shows the collector the requirement set it is merging reviews of', () => {
+    // The collector depends on the workers, not on the derivation, so the
+    // requirement set reaches it only by being named in `consumes`.
+    const collector = playbook().graph.steps.find(
+      (step) => step.id === 'flag-issues-collect',
+    );
+
+    expect(collector?.kind === 'session' && collector.consumes).toContain(
+      'requirement-set',
+    );
   });
 });
 
@@ -266,7 +330,7 @@ describe('PlaybookRegistry', () => {
   it('lists loaded phases when asked for one that does not exist', () => {
     const registry = PlaybookRegistry.fromDirectory(phasesDir);
 
-    expect(() => registry.get('scope')).toThrow(/Loaded: definition/);
+    expect(() => registry.get('deploy')).toThrow(/Loaded: definition, scope/);
   });
 
   it('refuses duplicates', () => {
