@@ -186,6 +186,59 @@ try {
     ran.output.includes('Approve with: mpgm approve'),
   );
 
+  // reject — refusing a gate leaves it shut
+  const rejected = await call([
+    'approve',
+    'definition-gate',
+    '--run',
+    'r1',
+    '--by',
+    'macg',
+    '--reject',
+    '--reason',
+    'success metrics are unmeasurable',
+  ]);
+  check(
+    'reject records the decision',
+    rejected.output.includes('rejected by macg'),
+    rejected.output,
+  );
+  const afterReject = await call(['status', '--run', 'r1']);
+  check(
+    'a rejected gate is not approved',
+    afterReject.output.includes('gate definition-gate rejected'),
+    afterReject.output,
+  );
+
+  // A decision naming something that does not exist must be refused before it
+  // is appended: the log is append-only, so an unfoldable event is permanent.
+  const bogusRun = await call([
+    'approve',
+    'definition-gate',
+    '--run',
+    'nope',
+    '--by',
+    'macg',
+  ]);
+  check(
+    'a decision on an unknown run is refused',
+    !bogusRun.result.ok && bogusRun.output.includes('no such run'),
+    bogusRun.output,
+  );
+  const bogusGate = await call([
+    'approve',
+    'no-such-gate',
+    '--run',
+    'r1',
+    '--by',
+    'macg',
+  ]);
+  check(
+    'a decision on an unknown gate is refused, and lists the real ones',
+    !bogusGate.result.ok && bogusGate.output.includes('Presented gates: definition-gate'),
+    bogusGate.output,
+  );
+
   // approve — the decision is recorded
   const approved = await call([
     'approve',
@@ -217,6 +270,21 @@ try {
     'status shows completed tasks',
     after.output.includes('draft-brief completed'),
     after.output,
+  );
+
+  // An approved phase refuses to re-run, so the approval and the artifacts it
+  // froze survive a second `mpgm run`.
+  const rerun = await call(['run', 'definition', '--run', 'r1']);
+  check(
+    'an approved phase refuses to re-run without a reopen',
+    !rerun.result.ok && rerun.output.includes('already approved'),
+    rerun.output,
+  );
+  const stillApproved = await call(['status', '--run', 'r1']);
+  check(
+    'the approval survives the attempt',
+    stillApproved.output.includes('gate definition-gate approved by macg'),
+    stillApproved.output,
   );
 
   // kill — terminal, and resume does not undo it
