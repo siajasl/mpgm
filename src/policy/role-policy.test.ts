@@ -63,6 +63,30 @@ describe('tool allowlist', () => {
   });
 });
 
+describe('kernel infrastructure tools', () => {
+  it('allows the structured-output carrier whatever the role declares', () => {
+    // Denying this makes every task fail validation and burn its retries,
+    // which is how the M1.2 live demo failed.
+    expect(analyst.decide('StructuredOutput', { data: {} }).behavior).toBe('allow');
+
+    const toolless = new RolePolicy(role([], [], []), { root: ROOT });
+    expect(toolless.decide('StructuredOutput', {}).behavior).toBe('allow');
+  });
+
+  it('grants nothing else by the same route', () => {
+    expect(analyst.decide('Bash', { command: 'ls' }).behavior).toBe('deny');
+  });
+
+  it('lets the always-allow set be overridden', () => {
+    const strict = new RolePolicy(role(['Read'], ['**'], []), {
+      root: ROOT,
+      alwaysAllow: [],
+    });
+
+    expect(strict.decide('StructuredOutput', {}).behavior).toBe('deny');
+  });
+});
+
 describe('path allowlist', () => {
   it('allows a read inside a declared glob', () => {
     expect(analyst.decide('Read', { file_path: 'artifacts/a.md' }).behavior).toBe(

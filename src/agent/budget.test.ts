@@ -236,6 +236,36 @@ describe('budget enforcement in the runner', () => {
     }
   });
 
+  it('does not dispatch a session with nothing left to spend', async () => {
+    // Two turns of an 8-step budget per attempt would leave the third retry
+    // with maxTurns 0 -- a session that cannot succeed and reports max_turns
+    // as though the agent had misbehaved.
+    const role = roleWith({ steps: 4 });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(bad, { turns: 2 }),
+      scriptedSuccess(bad, { turns: 2 }),
+    ]);
+    const { db, log, runner } = harness(provider);
+    try {
+      const outcome = await runner.runTask({
+        runId: 'run-1',
+        taskId: 'T1',
+        role,
+        prompt: 'go',
+      });
+
+      expect(outcome.status).toBe('blocked');
+      expect(outcome.status === 'blocked' && outcome.reason).toMatch(
+        /exhausted before attempt 3/,
+      );
+      // The third session was never started.
+      expect(provider.requests).toHaveLength(2);
+      expect(log.read().some((event) => event.type === 'BudgetExceeded')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
   it('blocks on a wall-clock breach detected between attempts', async () => {
     const role = roleWith({}, 60);
     let clock = 0;

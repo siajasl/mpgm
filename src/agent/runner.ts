@@ -103,6 +103,34 @@ export class SessionRunner {
         : new BudgetLedger(role.budgets, this.#now);
 
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
+      // Never dispatch a session that has nothing left to spend. A retry with
+      // maxTurns 0 cannot succeed and would report max_turns as though the
+      // agent had misbehaved.
+      const exhausted = ledger.breach();
+      if (
+        exhausted !== null ||
+        ledger.remainingSteps < 1 ||
+        ledger.remainingCostUsd <= 0
+      ) {
+        const kind = exhausted?.kind ?? (ledger.remainingSteps < 1 ? 'steps' : 'cost');
+        this.#log.append({
+          runId,
+          type: 'BudgetExceeded',
+          payload: {
+            taskId,
+            kind,
+            limit: exhausted?.limit ?? role.budgets.steps,
+            observed: exhausted?.observed ?? role.budgets.steps,
+          },
+        });
+        return {
+          status: 'blocked',
+          reason: `budget exhausted before attempt ${String(attempt)}: ${kind}`,
+          attempts: attempt - 1,
+          lastIssues,
+        };
+      }
+
       const sessionRequest: SessionRequest = {
         model,
         systemPrompt: role.systemPrompt,
@@ -114,6 +142,9 @@ export class SessionRunner {
         maxTurns: ledger.remainingSteps,
         maxBudgetUsd: ledger.remainingCostUsd,
         outputJsonSchema,
+        // The session resolves relative paths against the same root the policy
+        // does, so the agent and the gate agree on what a path means.
+        cwd: this.#policyRoot,
         canUseTool: policy.gate((tool, decision) => {
           gatedTools.add(tool);
           // Every tool call is an event, allowed or not (OBS-1, DESIGN §7).

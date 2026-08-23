@@ -117,6 +117,8 @@ describe('SessionRunner', () => {
       expect(request?.maxBudgetUsd).toBe(role.budgets.costUsd);
       expect(request?.systemPrompt).toContain('You are the analyst');
       expect(request?.outputJsonSchema.type).toBe('object');
+      // The session's cwd matches the root the path policy resolves against.
+      expect(request?.cwd).toBe(process.cwd());
     } finally {
       db.close();
     }
