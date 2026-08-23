@@ -7,10 +7,12 @@ import type {
 import { scriptedSuccess } from '../agent/scripted-provider.js';
 import { parseRole } from '../role/loader.js';
 import { ScriptedIo } from './io.js';
+import { OutputSchemaRegistry } from '../agent/output-registry.js';
 import {
   conclusionsSchema,
   elicit,
   ElicitationError,
+  elicitationOutputSchema,
   elicitationTurnSchema,
 } from './session.js';
 
@@ -54,7 +56,9 @@ class TurnProvider implements AgentSessionProvider {
     if (next === undefined) {
       throw new Error('TurnProvider ran out of turns');
     }
-    return Promise.resolve(scriptedSuccess(next));
+    // Sessions return the turn under a key: a tool input schema must be an
+    // object at its top level, so a bare union cannot be the output schema.
+    return Promise.resolve(scriptedSuccess({ turn: next }));
   }
 }
 
@@ -192,6 +196,18 @@ describe('elicitation dialogue', () => {
 });
 
 describe('schemas', () => {
+  it('is an object at its top level, so it can be a tool schema', () => {
+    // A bare discriminated union yields `oneOf` with no top-level `type`, and
+    // the API rejects that with `input_schema.type: Field required` — after
+    // the session has already been dispatched.
+    const registry = new OutputSchemaRegistry({ turn: elicitationOutputSchema });
+
+    expect(registry.jsonSchema('turn').type).toBe('object');
+    expect(() =>
+      new OutputSchemaRegistry({ bare: elicitationTurnSchema }).jsonSchema('bare'),
+    ).toThrow(/not an object at its top level/);
+  });
+
   it('covers every DEF-1 field', () => {
     expect(Object.keys(conclusionsSchema.shape).sort()).toStrictEqual([
       'assumptions',

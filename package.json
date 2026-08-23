@@ -32,7 +32,8 @@
     "demo:crash": "node scripts/demo/crash-restart.mjs",
     "demo:agent": "node scripts/demo/agent-session.mjs",
     "demo:cli": "node scripts/demo/cli-e2e.mjs",
-    "demo:definition": "node scripts/demo/definition-phase.mjs"
+    "demo:definition": "node scripts/demo/definition-phase.mjs",
+    "probe:sdk": "node scripts/demo/probe-sdk.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

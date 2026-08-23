@@ -54,6 +54,16 @@ export const elicitationTurnSchema = z.discriminatedUnion('kind', [
 
 export type ElicitationTurn = z.infer<typeof elicitationTurnSchema>;
 
+/**
+ * What a session actually returns.
+ *
+ * The union lives under a key because a structured-output tool schema must be
+ * an object at its top level; a bare union has no `type` and the API refuses
+ * it. Wrapping keeps the discrimination — a result that is neither a question
+ * nor conclusions still cannot validate.
+ */
+export const elicitationOutputSchema = z.object({ turn: elicitationTurnSchema });
+
 /** How the harness talks to the operator. */
 export interface OperatorIo {
   ask(question: string, rationale: string): Promise<string>;
@@ -144,7 +154,7 @@ export async function elicit(options: ElicitationOptions): Promise<ElicitationRe
       );
     }
 
-    const parsed = elicitationTurnSchema.safeParse(result.structuredOutput);
+    const parsed = elicitationOutputSchema.safeParse(result.structuredOutput);
     if (!parsed.success) {
       throw new ElicitationError(
         `elicitation turn ${String(turn)} returned an unusable result: ` +
@@ -154,12 +164,13 @@ export async function elicit(options: ElicitationOptions): Promise<ElicitationRe
       );
     }
 
-    if (parsed.data.kind === 'conclusions') {
-      return { conclusions: parsed.data.conclusions, transcript, turns: turn };
+    const next = parsed.data.turn;
+    if (next.kind === 'conclusions') {
+      return { conclusions: next.conclusions, transcript, turns: turn };
     }
 
-    const answer = await options.io.ask(parsed.data.question, parsed.data.rationale);
-    transcript.push({ question: parsed.data.question, answer });
+    const answer = await options.io.ask(next.question, next.rationale);
+    transcript.push({ question: next.question, answer });
   }
 
   // Reached only if the model kept asking after being told to conclude.
@@ -169,6 +180,6 @@ export async function elicit(options: ElicitationOptions): Promise<ElicitationRe
 }
 
 function toJsonSchema(): Record<string, unknown> {
-  const { $schema: _dialect, ...schema } = z.toJSONSchema(elicitationTurnSchema);
+  const { $schema: _dialect, ...schema } = z.toJSONSchema(elicitationOutputSchema);
   return schema;
 }

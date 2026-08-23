@@ -16,6 +16,8 @@ SDK wiring worth not relearning:
 - Strip `$schema` from `z.toJSONSchema` output; the CLI rejects the dialect URI.
 - A result with `subtype: 'success'` can still carry `is_error` (an auth failure looks exactly like this).
 
+`npm run probe:sdk` is the cheap live check for all of this — one minimal session per registered output schema, seconds and cents rather than a whole milestone demo. Run it first when a live demo fails in the SDK layer.
+
 None of the above is reachable by offline tests — `demo:agent` is the only thing that exercises the real wiring, which is why it is a milestone gate rather than a convenience.
 
 TypeScript is pinned to 6.0.3, not the 7.x line: typescript-eslint requires `<6.1.0`, and type-aware rules (`no-floating-promises` above all) matter more here than the native compiler. Revisit when typescript-eslint supports TS 7. Prettier deliberately ignores markdown — the foundation documents are hand-aligned and gated artifacts must not be mechanically reformatted.

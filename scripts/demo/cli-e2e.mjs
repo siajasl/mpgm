@@ -80,13 +80,12 @@ try {
   const context = {
     root: workspace,
     provider: scriptedProvider([
-      // chat: one question, then conclusions
+      // chat: one question, then conclusions. Turns are wrapped under `turn`
+      // because a tool input schema must be an object at its top level.
       scriptedSuccess({
-        kind: 'question',
-        question: 'Who uses it?',
-        rationale: 'Stakeholders.',
+        turn: { kind: 'question', question: 'Who uses it?', rationale: 'Stakeholders.' },
       }),
-      scriptedSuccess({ kind: 'conclusions', conclusions }),
+      scriptedSuccess({ turn: { kind: 'conclusions', conclusions } }),
       // run definition: draft-brief, then challenge-brief
       scriptedSuccess(conclusions),
       scriptedSuccess(findings),
