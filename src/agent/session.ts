@@ -31,6 +31,12 @@ export interface SessionRequest {
   readonly maxBudgetUsd: number;
   /** JSON Schema the session's final output must satisfy (AGT-3). */
   readonly outputJsonSchema: Record<string, unknown>;
+  /**
+   * Working directory for the session. Must be the same root the path policy
+   * resolves against, or a relative path means one thing to the agent and
+   * another to the gate.
+   */
+  readonly cwd?: string;
   /** Enforced outside the model (ADR-6, SAF-1). */
   readonly canUseTool?: ToolGate;
   readonly signal?: AbortSignal;

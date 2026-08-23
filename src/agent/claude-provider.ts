@@ -47,6 +47,7 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
         // a role's toolset is the whole of its permission (AGT-2).
         settingSources: [],
         abortController: controller,
+        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
         // Enforcement lives in PreToolUse, not canUseTool. canUseTool is only
         // consulted when the CLI decides a permission *prompt* is warranted,
         // and read-only tools never prompt -- so a Read would execute, and be

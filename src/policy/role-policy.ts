@@ -26,18 +26,34 @@ const WRITE_PATH_TOOLS: Readonly<Record<string, string>> = {
   NotebookEdit: 'notebook_path',
 };
 
+/**
+ * Tools the kernel itself requires, allowed regardless of the role's toolset.
+ *
+ * `StructuredOutput` is the carrier the SDK uses to return a session's final
+ * result when `outputFormat` is a JSON schema — it is the mechanism by which a
+ * task produces its output at all, not a capability the role exercises. Denying
+ * it makes every task fail validation and then exhaust its retries, which is
+ * exactly what the M1.2 live demo did. It touches nothing outside the session,
+ * so allowing it grants no reach.
+ */
+export const KERNEL_TOOLS: readonly string[] = ['StructuredOutput'];
+
 export interface RolePolicyOptions {
   /** Project root. Paths outside it are denied whatever the globs say. */
   readonly root: string;
+  /** Defaults to {@link KERNEL_TOOLS}. */
+  readonly alwaysAllow?: readonly string[];
 }
 
 export class RolePolicy {
   readonly #role: Role;
   readonly #root: string;
+  readonly #alwaysAllow: readonly string[];
 
   constructor(role: Role, options: RolePolicyOptions) {
     this.#role = role;
     this.#root = resolve(options.root);
+    this.#alwaysAllow = options.alwaysAllow ?? KERNEL_TOOLS;
   }
 
   get roleName(): string {
@@ -45,6 +61,13 @@ export class RolePolicy {
   }
 
   decide(toolName: string, input: Record<string, unknown>): ToolDecision {
+    // 0. Kernel infrastructure. The role's toolset governs what the agent may
+    //    reach out and touch; it does not govern how the session hands its
+    //    answer back.
+    if (this.#alwaysAllow.includes(toolName)) {
+      return { behavior: 'allow' };
+    }
+
     // 1. Tool allowlist. Absence is denial: a role gets only what it declared
     //    (AGT-2), so forgetting to add a tool fails closed rather than open.
     if (!this.#role.tools.allow.includes(toolName)) {
