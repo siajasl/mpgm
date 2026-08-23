@@ -2,7 +2,8 @@ import type { Artifact } from '../artifact/store.js';
 import type { GateOracle } from '../artifact/store.js';
 import type { ArtifactRef } from '../event/catalog.js';
 import type { EventLog } from '../event/store.js';
-import type { GateCriterion, Playbook } from '../playbook/definition.js';
+import type { GateCriterion } from '../playbook/definition.js';
+import type { Playbook } from '../playbook/graph.js';
 import type { KernelState } from '../state/kernel-state.js';
 
 /**
@@ -65,6 +66,22 @@ export interface PacketNarrative {
   readonly recommendation?: string;
 }
 
+function readBoolean(output: unknown, field: string): boolean | undefined {
+  const value =
+    typeof output === 'object' && output !== null
+      ? (output as Record<string, unknown>)[field]
+      : undefined;
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function readString(output: unknown, field: string): string | undefined {
+  const value =
+    typeof output === 'object' && output !== null
+      ? (output as Record<string, unknown>)[field]
+      : undefined;
+  return typeof value === 'string' ? value : undefined;
+}
+
 function evaluate(criterion: GateCriterion, evidence: GateEvidence): CriterionResult {
   if (criterion.kind === 'artifact-exists') {
     const artifact = evidence.artifacts[criterion.artifact];
@@ -77,6 +94,22 @@ function evaluate(criterion: GateCriterion, evidence: GateEvidence): CriterionRe
         artifact === undefined
           ? `artifact '${criterion.artifact}' has not been produced`
           : `${artifact.id} v${String(artifact.version)} at ${artifact.path}`,
+    };
+  }
+
+  if (criterion.kind === 'vote-carried') {
+    const tallied = evidence.outputs[criterion.panel];
+    const carried = readBoolean(tallied, 'carried');
+    const summary = readString(tallied, 'summary');
+    return {
+      id: criterion.id,
+      kind: criterion.kind,
+      description: criterion.description,
+      met: carried === true,
+      detail:
+        carried === undefined
+          ? `panel '${criterion.panel}' has not been counted`
+          : `${criterion.panel}: ${summary ?? (carried ? 'carried' : 'did not carry')}`,
     };
   }
 

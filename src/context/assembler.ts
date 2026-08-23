@@ -1,5 +1,4 @@
 import type { Artifact } from '../artifact/store.js';
-import type { TaskTemplate } from '../playbook/definition.js';
 import { classOf, permitted, type EgressClass, type EgressPolicy } from './egress.js';
 import type { KbDocument } from './knowledge-base.js';
 
@@ -21,9 +20,35 @@ export interface WithheldItem {
   readonly egress: EgressClass;
 }
 
+/** What the task being assembled for was told to do. */
+export interface TaskSpec {
+  readonly description: string;
+  readonly prompt: string;
+}
+
+/**
+ * A result from an earlier step of the same phase that produced no artifact —
+ * a fan-out worker, a panel judge, a panel tally (ORC-4).
+ *
+ * This is not a transcript (CTX-2): it is the step's validated structured
+ * output, the same thing an artifact would have been built from had the step
+ * declared one. Members of a pattern node deliberately produce no artifacts,
+ * so without this a collector would be asked to collect nothing.
+ *
+ * Results carry no egress label of their own, because nothing labelled one.
+ * They are derived from material the filter already passed on the way in.
+ */
+export interface UpstreamResult {
+  readonly taskId: string;
+  readonly description: string;
+  readonly data: unknown;
+}
+
 export interface AssembleRequest {
-  readonly task: TaskTemplate;
+  readonly task: TaskSpec;
   readonly upstream: readonly Artifact[];
+  /** Upstream step results not carried by an artifact. */
+  readonly results?: readonly UpstreamResult[];
   readonly kb: readonly KbDocument[];
   readonly policy: EgressPolicy;
 }
@@ -32,6 +57,7 @@ export interface AssembledContext {
   /** The text handed to the session. */
   readonly prompt: string;
   readonly includedArtifacts: readonly string[];
+  readonly includedResults: readonly string[];
   readonly includedKb: readonly string[];
   /**
    * What the policy withheld. Reported here in full for the operator and the
@@ -47,6 +73,18 @@ function renderArtifact(artifact: Artifact): string {
     '',
     '```json',
     JSON.stringify(artifact.data, null, 2),
+    '```',
+  ].join('\n');
+}
+
+function renderResult(result: UpstreamResult): string {
+  return [
+    `### ${result.taskId}`,
+    '',
+    result.description.trim(),
+    '',
+    '```json',
+    JSON.stringify(result.data, null, 2),
     '```',
   ].join('\n');
 }
@@ -84,6 +122,12 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
     sections.push(artifacts.map(renderArtifact).join('\n\n'));
   }
 
+  const results = request.results ?? [];
+  if (results.length > 0) {
+    sections.push('', '## Upstream results', '');
+    sections.push(results.map(renderResult).join('\n\n'));
+  }
+
   if (kb.length > 0) {
     sections.push('', '## Knowledge base', '');
     sections.push(
@@ -105,6 +149,7 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
   return {
     prompt: `${sections.join('\n').trimEnd()}\n`,
     includedArtifacts: artifacts.map((artifact) => artifact.id),
+    includedResults: results.map((result) => result.taskId),
     includedKb: kb.map((document) => document.path),
     withheld,
   };

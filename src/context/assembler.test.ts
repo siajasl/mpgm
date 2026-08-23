@@ -28,6 +28,7 @@ afterEach(() => {
 });
 
 const task: TaskTemplate = {
+  kind: 'task',
   id: 'draft-brief',
   role: 'analyst',
   description: 'Turn elicitation material into a Definition artifact.',

@@ -1,64 +1,13 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parse as parseYaml, YAMLParseError } from 'yaml';
-import { playbookSchema, type Playbook, type TaskTemplate } from './definition.js';
+import { playbookSchema, type PlaybookDefinition } from './definition.js';
+import { PlaybookLoadError } from './errors.js';
+import { expandPlaybook, type Playbook, type TaskGraph } from './graph.js';
 
-/**
- * A playbook could not be loaded. As with role files, the message names the
- * file and the offending element: a playbook that fails to load stops a phase
- * before it starts, so the error has to be enough to fix it.
- */
-export class PlaybookLoadError extends Error {
-  constructor(
-    readonly sourcePath: string,
-    detail: string,
-    options?: ErrorOptions,
-  ) {
-    super(`${sourcePath}: ${detail}`, options);
-    this.name = 'PlaybookLoadError';
-  }
-}
+export { PlaybookLoadError } from './errors.js';
 
-/**
- * Order tasks so every dependency precedes its dependants, and reject cycles.
- *
- * The kernel dispatches tasks whose dependencies are complete (DESIGN §4.1).
- * A cycle means no task ever becomes ready, which would present as a phase
- * that silently does nothing — far harder to diagnose than a load failure.
- */
-function topologicalOrder(sourcePath: string, tasks: readonly TaskTemplate[]): string[] {
-  const remaining = new Map(tasks.map((task) => [task.id, new Set(task.dependsOn)]));
-  const order: string[] = [];
-
-  while (remaining.size > 0) {
-    const ready = [...remaining.entries()]
-      .filter(([, deps]) => deps.size === 0)
-      .map(([id]) => id)
-      .sort();
-
-    if (ready.length === 0) {
-      throw new PlaybookLoadError(
-        sourcePath,
-        `task dependencies form a cycle among: ${[...remaining.keys()].sort().join(', ')}`,
-      );
-    }
-
-    for (const id of ready) {
-      order.push(id);
-      remaining.delete(id);
-    }
-    for (const deps of remaining.values()) {
-      for (const id of ready) {
-        deps.delete(id);
-      }
-    }
-  }
-
-  return order;
-}
-
-/** Parse a playbook from YAML text. Exposed so callers can validate before writing. */
-export function parsePlaybook(sourcePath: string, contents: string): Playbook {
+function parseYamlMapping(sourcePath: string, contents: string): object {
   let raw: unknown;
   try {
     raw = parseYaml(contents);
@@ -77,6 +26,138 @@ export function parsePlaybook(sourcePath: string, contents: string): Playbook {
   if (raw === null || typeof raw !== 'object') {
     throw new PlaybookLoadError(sourcePath, 'a playbook must be a YAML mapping');
   }
+  return raw;
+}
+
+/**
+ * Cross-references that the schema cannot express, checked before dispatch.
+ *
+ * Deferring them to run time means a phase dies halfway through because a task
+ * names an artifact nobody declared — having already burned the budget of
+ * every task before it.
+ */
+function checkReferences(
+  sourcePath: string,
+  definition: PlaybookDefinition,
+  graph: TaskGraph,
+): void {
+  const producers = new Map<string, string[]>();
+
+  for (const step of graph.steps) {
+    if (step.kind === 'session') {
+      for (const consumed of step.consumes) {
+        if (!(consumed in definition.inputs) && !(consumed in definition.artifacts)) {
+          throw new PlaybookLoadError(
+            sourcePath,
+            `task '${step.node}' consumes '${consumed}', which is neither a declared ` +
+              `input nor an artifact this phase produces`,
+          );
+        }
+      }
+    }
+    if (step.produces !== undefined) {
+      if (!(step.produces in definition.artifacts)) {
+        throw new PlaybookLoadError(
+          sourcePath,
+          `task '${step.id}' produces '${step.produces}', which is not a declared ` +
+            `artifact (declared: ${Object.keys(definition.artifacts).join(', ') || 'none'})`,
+        );
+      }
+      const writers = producers.get(step.produces) ?? [];
+      writers.push(step.id);
+      producers.set(step.produces, writers);
+    }
+  }
+
+  for (const artifactId of Object.keys(definition.artifacts)) {
+    const writers = producers.get(artifactId) ?? [];
+    if (writers.length === 0) {
+      // A gate waiting on an artifact nothing was ever going to write waits
+      // forever.
+      throw new PlaybookLoadError(
+        sourcePath,
+        `artifact '${artifactId}' is declared but no task produces it`,
+      );
+    }
+    if (writers.length > 1) {
+      // The artifact store keeps one version chain per artifact. Two writers
+      // race to be v1, and the loser's work becomes a superseded version that
+      // nothing asked for — silently, since both tasks succeeded.
+      throw new PlaybookLoadError(
+        sourcePath,
+        `artifact '${artifactId}' is produced by more than one task ` +
+          `(${writers.join(', ')}). Exactly one task writes each artifact; to combine ` +
+          `several tasks' work, collect it in one task and produce it there.`,
+      );
+    }
+  }
+}
+
+function checkGate(
+  sourcePath: string,
+  definition: PlaybookDefinition,
+  graph: TaskGraph,
+): void {
+  const criterionIds = new Set<string>();
+  const nodeKinds = new Map(definition.tasks.map((node) => [node.id, node.kind]));
+  const stepIds = new Set(graph.steps.map((step) => step.id));
+
+  for (const criterion of definition.gate.criteria) {
+    if (criterionIds.has(criterion.id)) {
+      throw new PlaybookLoadError(
+        sourcePath,
+        `duplicate gate criterion id '${criterion.id}'`,
+      );
+    }
+    criterionIds.add(criterion.id);
+
+    switch (criterion.kind) {
+      case 'artifact-exists':
+        if (!(criterion.artifact in definition.artifacts)) {
+          throw new PlaybookLoadError(
+            sourcePath,
+            `gate criterion '${criterion.id}' names artifact '${criterion.artifact}', ` +
+              `which is not declared`,
+          );
+        }
+        break;
+
+      case 'agent-assertion':
+        if (!nodeKinds.has(criterion.fromTask) && !stepIds.has(criterion.fromTask)) {
+          throw new PlaybookLoadError(
+            sourcePath,
+            `gate criterion '${criterion.id}' names task '${criterion.fromTask}', ` +
+              `which is not a task in this playbook`,
+          );
+        }
+        if (nodeKinds.get(criterion.fromTask) === 'panel') {
+          // A tally is arithmetic, not an assertion. Reading it as one would
+          // dress a kernel computation up as something an agent attested to.
+          throw new PlaybookLoadError(
+            sourcePath,
+            `gate criterion '${criterion.id}' reads '${criterion.fromTask}' as an ` +
+              `agent assertion, but it is a panel: its result is counted by the ` +
+              `kernel, not asserted by an agent. Use kind 'vote-carried'.`,
+          );
+        }
+        break;
+
+      case 'vote-carried':
+        if (nodeKinds.get(criterion.panel) !== 'panel') {
+          throw new PlaybookLoadError(
+            sourcePath,
+            `gate criterion '${criterion.id}' names '${criterion.panel}' as a panel, ` +
+              `but ${nodeKinds.has(criterion.panel) ? 'it is a ' + String(nodeKinds.get(criterion.panel)) + ' node' : 'no such task is declared'}`,
+          );
+        }
+        break;
+    }
+  }
+}
+
+/** Parse a playbook from YAML text. Exposed so callers can validate before writing. */
+export function parsePlaybook(sourcePath: string, contents: string): Playbook {
+  const raw = parseYamlMapping(sourcePath, contents);
 
   const parsed = playbookSchema.safeParse(raw);
   if (!parsed.success) {
@@ -87,93 +168,19 @@ export function parsePlaybook(sourcePath: string, contents: string): Playbook {
   }
 
   const definition = parsed.data;
-  const taskIds = new Set<string>();
-
-  for (const task of definition.tasks) {
-    if (taskIds.has(task.id)) {
-      throw new PlaybookLoadError(sourcePath, `duplicate task id '${task.id}'`);
+  const nodeIds = new Set<string>();
+  for (const node of definition.tasks) {
+    if (nodeIds.has(node.id)) {
+      throw new PlaybookLoadError(sourcePath, `duplicate task id '${node.id}'`);
     }
-    taskIds.add(task.id);
+    nodeIds.add(node.id);
   }
 
-  // Cross-references are checked here rather than left to fail at dispatch:
-  // a phase that dies halfway through because a task names an artifact that
-  // was never declared has already burned budget getting there.
-  for (const task of definition.tasks) {
-    for (const dependency of task.dependsOn) {
-      if (!taskIds.has(dependency)) {
-        throw new PlaybookLoadError(
-          sourcePath,
-          `task '${task.id}' depends on '${dependency}', which is not a task in this playbook`,
-        );
-      }
-    }
-    for (const consumed of task.consumes) {
-      if (!(consumed in definition.inputs) && !(consumed in definition.artifacts)) {
-        throw new PlaybookLoadError(
-          sourcePath,
-          `task '${task.id}' consumes '${consumed}', which is neither a declared input ` +
-            `nor an artifact this phase produces`,
-        );
-      }
-    }
-    if (task.produces !== undefined && !(task.produces in definition.artifacts)) {
-      throw new PlaybookLoadError(
-        sourcePath,
-        `task '${task.id}' produces '${task.produces}', which is not a declared artifact ` +
-          `(declared: ${Object.keys(definition.artifacts).join(', ') || 'none'})`,
-      );
-    }
-  }
+  const graph = expandPlaybook(sourcePath, definition);
+  checkReferences(sourcePath, definition, graph);
+  checkGate(sourcePath, definition, graph);
 
-  const criterionIds = new Set<string>();
-  for (const criterion of definition.gate.criteria) {
-    if (criterionIds.has(criterion.id)) {
-      throw new PlaybookLoadError(
-        sourcePath,
-        `duplicate gate criterion id '${criterion.id}'`,
-      );
-    }
-    criterionIds.add(criterion.id);
-
-    if (
-      criterion.kind === 'artifact-exists' &&
-      !(criterion.artifact in definition.artifacts)
-    ) {
-      throw new PlaybookLoadError(
-        sourcePath,
-        `gate criterion '${criterion.id}' names artifact '${criterion.artifact}', ` +
-          `which is not declared`,
-      );
-    }
-    if (criterion.kind === 'agent-assertion' && !taskIds.has(criterion.fromTask)) {
-      throw new PlaybookLoadError(
-        sourcePath,
-        `gate criterion '${criterion.id}' names task '${criterion.fromTask}', ` +
-          `which is not a task in this playbook`,
-      );
-    }
-  }
-
-  // Every declared artifact must have a producer, or the gate can wait forever
-  // on something nothing was ever going to write.
-  const produced = new Set(
-    definition.tasks.map((task) => task.produces).filter((id) => id !== undefined),
-  );
-  for (const artifactId of Object.keys(definition.artifacts)) {
-    if (!produced.has(artifactId)) {
-      throw new PlaybookLoadError(
-        sourcePath,
-        `artifact '${artifactId}' is declared but no task produces it`,
-      );
-    }
-  }
-
-  return {
-    ...definition,
-    sourcePath,
-    order: topologicalOrder(sourcePath, definition.tasks),
-  };
+  return { ...definition, sourcePath, graph, order: graph.order };
 }
 
 export function loadPlaybookFile(sourcePath: string): Playbook {

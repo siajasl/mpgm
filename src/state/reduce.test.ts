@@ -71,6 +71,22 @@ describe('reduce', () => {
       { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
       {
         runId: RUN,
+        type: 'VoteTallied',
+        payload: {
+          taskId: 'p1-tally',
+          node: 'p1',
+          rule: 'majority',
+          carried: true,
+          summary: '2/3 in favour',
+          ballots: [
+            { judge: 'p1-judge-1', value: true },
+            { judge: 'p1-judge-2', value: true },
+            { judge: 'p1-judge-3', value: null },
+          ],
+        },
+      },
+      {
+        runId: RUN,
         type: 'GatePresented',
         payload: { gateId: 'g1', phase: 'implement', artifactRefs: [] },
       },

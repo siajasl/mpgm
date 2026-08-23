@@ -181,6 +181,34 @@ export const effectEscalated = defineEvent(
   z.object({ intentId: nonEmpty, reason: nonEmpty }),
 );
 
+/**
+ * A panel's ballots, counted by the kernel (ORC-4).
+ *
+ * Logged rather than left to be recomputed because `TaskCompleted` does not
+ * carry a task's output: without this the individual judges' votes exist only
+ * in the sessions that cast them, and the panel's decision could not be
+ * reconstructed from the log (ORC-3).
+ */
+export const voteTallied = defineEvent(
+  'VoteTallied',
+  z.object({
+    /** The tally step. */
+    taskId: nonEmpty,
+    /** The panel node it counts for. */
+    node: nonEmpty,
+    rule: z.enum(['majority', 'unanimous', 'plurality']),
+    carried: z.boolean(),
+    summary: nonEmpty,
+    ballots: z.array(
+      z.object({
+        judge: nonEmpty,
+        /** Null when the judge abstained or spoiled its ballot. */
+        value: z.union([z.boolean(), z.string()]).nullable(),
+      }),
+    ),
+  }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -206,6 +234,7 @@ export const kernelEvents = [
   taskDispatched,
   toolCallLogged,
   validationFailed,
+  voteTallied,
 ];
 
 /** Registry over the full kernel catalog. */
