@@ -89,4 +89,23 @@ export {
   toolPolicySchema,
 } from './role/definition.js';
 export { loadRoleFile, parseRole, RoleLoadError, RoleRegistry } from './role/loader.js';
+export type {
+  AgentSessionProvider,
+  SessionRequest,
+  SessionResult,
+  SessionTermination,
+  SessionUsageReport,
+  ToolDecision,
+  ToolDenial,
+  ToolGate,
+} from './agent/session.js';
+export { OutputSchemaRegistry } from './agent/output-registry.js';
+export { ScriptedProvider, scriptedSuccess } from './agent/scripted-provider.js';
+export { ClaudeAgentProvider } from './agent/claude-provider.js';
+export type {
+  RunTaskRequest,
+  SessionRunnerOptions,
+  TaskOutcome,
+} from './agent/runner.js';
+export { DEFAULT_MAX_VALIDATION_ATTEMPTS, SessionRunner } from './agent/runner.js';
 export { demoTimestamp, syntheticRun } from './demo/workload.js';
