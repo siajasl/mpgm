@@ -124,8 +124,16 @@ describe('path allowlist', () => {
     );
   });
 
-  it('denies an absolute path outside the root', () => {
-    expect(analyst.decide('Read', { file_path: '/etc/passwd' }).behavior).toBe('deny');
+  it('denies an absolute path outside the root, and names the root', () => {
+    const decision = analyst.decide('Read', { file_path: '/etc/passwd' });
+
+    expect(decision.behavior).toBe('deny');
+    // Several tools require an absolute path, so the agent needs to be told
+    // which prefix is acceptable rather than left to guess.
+    expect(decision.behavior === 'deny' && decision.reason).toContain(ROOT);
+    expect(decision.behavior === 'deny' && decision.reason).toMatch(
+      /relative paths resolve from it/,
+    );
   });
 
   it('accepts an absolute path inside the root', () => {

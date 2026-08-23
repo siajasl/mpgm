@@ -138,9 +138,15 @@ export class RolePolicy {
     // relative path is the root itself -- inside, not outside -- so only '..'
     // and absolute results escape.
     if (rel.startsWith('..') || isAbsolute(rel)) {
+      // Name the root. Several tools require an absolute path, so an agent
+      // that is told only "outside the project root" has to guess at one --
+      // in the M1.2 demo that cost two turns of an eight-step budget before
+      // it found the right prefix.
       return {
         behavior: 'deny',
-        reason: `path '${raw}' resolves outside the project root`,
+        reason:
+          `path '${raw}' resolves outside the project root '${this.#root}'. ` +
+          `Paths must be inside it; relative paths resolve from it.`,
       };
     }
 
