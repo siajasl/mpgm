@@ -2,7 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-mpgm is an agentic harness driving the full SDLC via Claude Agent SDK sessions under a single operator. **Pre-code**: no toolchain exists until PLAN task T1.1.1 (TypeScript scaffold); current work is document editing.
+mpgm is an agentic harness driving the full SDLC via Claude Agent SDK sessions under a single operator. The TypeScript scaffold landed at PLAN T1.1.1; the kernel itself begins at T1.1.2.
+
+## Commands
+
+`npm run check` runs the whole CI pipeline locally — format, lint, typecheck, test, build — and is what `main` must pass. Individually: `npm run lint`, `npm run typecheck`, `npm test` (`npm run test:watch` while iterating, `npm run test:coverage` for coverage), `npm run build`. A single test file: `npx vitest run src/path/to/file.test.ts`.
+
+TypeScript is pinned to 6.0.3, not the 7.x line: typescript-eslint requires `<6.1.0`, and type-aware rules (`no-floating-promises` above all) matter more here than the native compiler. Revisit when typescript-eslint supports TS 7. Prettier deliberately ignores markdown — the foundation documents are hand-aligned and gated artifacts must not be mechanically reformatted.
 
 ## Documents
 

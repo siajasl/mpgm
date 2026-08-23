@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# mpgm runtime state (DESIGN ADR-2): the SQLite event log, content-addressed
+# blobs and checkpoint backups are machine-local and never committed.
+.mpgm/
+
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log

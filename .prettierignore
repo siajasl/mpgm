@@ -1,0 +1,13 @@
+dist/
+coverage/
+node_modules/
+package-lock.json
+
+# Tool state, not source.
+.serena/
+
+# Markdown is excluded deliberately. The foundation documents carry hand-aligned
+# traceability tables and grep-able section refs (CLAUDE.md), and versioned
+# artifacts are gated against mechanical edits (DESIGN ART-1/3, PLAN T1.3.2);
+# reflowing either would churn content that is authored, not generated.
+*.md
