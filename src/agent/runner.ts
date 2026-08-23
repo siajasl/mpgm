@@ -1,5 +1,6 @@
 import type { EventLog } from '../event/store.js';
 import type { Role } from '../role/definition.js';
+import { RolePolicy } from '../policy/role-policy.js';
 import { BudgetLedger, runWithWallClock, type Now } from './budget.js';
 import type { OutputSchemaRegistry } from './output-registry.js';
 import type { AgentSessionProvider, SessionRequest, SessionResult } from './session.js';
@@ -46,6 +47,11 @@ export interface SessionRunnerOptions {
   readonly maxValidationAttempts?: number;
   /** Injectable clock, so elapsed-time behaviour is testable. */
   readonly now?: Now;
+  /**
+   * Project root for path policy (SAF-1). Defaults to the process working
+   * directory.
+   */
+  readonly policyRoot?: string;
 }
 
 export const DEFAULT_MAX_VALIDATION_ATTEMPTS = 3;
@@ -56,6 +62,7 @@ export class SessionRunner {
   readonly #schemas: OutputSchemaRegistry;
   readonly #maxAttempts: number;
   readonly #now: Now | undefined;
+  readonly #policyRoot: string;
 
   constructor(options: SessionRunnerOptions) {
     this.#log = options.log;
@@ -63,6 +70,7 @@ export class SessionRunner {
     this.#schemas = options.schemas;
     this.#maxAttempts = options.maxValidationAttempts ?? DEFAULT_MAX_VALIDATION_ATTEMPTS;
     this.#now = options.now;
+    this.#policyRoot = options.policyRoot ?? process.cwd();
 
     if (this.#maxAttempts < 1) {
       throw new Error('maxValidationAttempts must be at least 1');
@@ -80,6 +88,11 @@ export class SessionRunner {
       type: 'TaskDispatched',
       payload: { taskId, role: role.name, model },
     });
+
+    const policy = new RolePolicy(role, { root: this.#policyRoot });
+    // Tools the gate ruled on during this session, so a denial the SDK also
+    // reports is not written to the audit trail twice.
+    let gatedTools = new Set<string>();
 
     let lastIssues: readonly string[] = [];
     // One ledger per task: retries share the budget, because three sessions
@@ -101,15 +114,31 @@ export class SessionRunner {
         maxTurns: ledger.remainingSteps,
         maxBudgetUsd: ledger.remainingCostUsd,
         outputJsonSchema,
+        canUseTool: policy.gate((tool, decision) => {
+          gatedTools.add(tool);
+          // Every tool call is an event, allowed or not (OBS-1, DESIGN §7).
+          this.#log.append({
+            runId,
+            type: 'ToolCallLogged',
+            payload: {
+              taskId,
+              tool,
+              decision: decision.behavior === 'allow' ? 'allowed' : 'denied',
+              detail: decision.behavior === 'allow' ? '' : decision.reason,
+              outputBlob: null,
+            },
+          });
+        }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       };
+      gatedTools = new Set<string>();
 
       const result = await runWithWallClock(
         (signal) => this.#provider.run({ ...sessionRequest, signal }),
         ledger.remainingSeconds,
       );
       ledger.record(result.usage, result.turns);
-      this.#recordSession(runId, taskId, role, result);
+      this.#recordSession(runId, taskId, role, result, gatedTools);
 
       if (result.termination !== 'completed') {
         return {
@@ -184,7 +213,13 @@ export class SessionRunner {
     ].join('\n');
   }
 
-  #recordSession(runId: string, taskId: string, role: Role, result: SessionResult): void {
+  #recordSession(
+    runId: string,
+    taskId: string,
+    role: Role,
+    result: SessionResult,
+    gatedTools: ReadonlySet<string>,
+  ): void {
     this.#log.append({
       runId,
       type: 'SessionUsage',
@@ -197,6 +232,12 @@ export class SessionRunner {
     });
 
     for (const denial of result.denials) {
+      // Denials the gate already recorded are not repeated. What is left comes
+      // from a layer below canUseTool -- a deny rule or a PreToolUse hook --
+      // and still belongs in the audit trail.
+      if (gatedTools.has(denial.tool)) {
+        continue;
+      }
       this.#log.append({
         runId,
         type: 'ToolCallLogged',
