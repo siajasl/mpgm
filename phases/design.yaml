@@ -22,6 +22,12 @@ artifacts:
       The candidate architectures side by side, as the panel received them.
       The ADRs cite these as the alternatives considered, so the record of what
       was rejected outlives the decision.
+  design-findings:
+    schema: findings
+    path: artifacts/design/findings.md
+    description: >
+      The adversarial review across the DSG-3 lenses, each finding resolved,
+      knowingly accepted, or left open for the gate to decide.
   design:
     schema: design
     path: artifacts/design/design.md
@@ -119,6 +125,59 @@ tasks:
     consumes: [requirement-set, design-candidates]
     produces: design
 
+  # DSG-3 names four lenses, so this is four reviews rather than one reviewer
+  # with a longer checklist: a single critic told to cover all four spends its
+  # attention unevenly, and the lens it shortchanges is invisible in the
+  # report. `critic-of` rather than a plain fan-out because the reviewers must
+  # not share a role with the architect whose work they are attacking.
+  - kind: critic-of
+    id: review-design
+    description: >
+      Adversarially review the design of record along the four DSG-3 lenses.
+    target: record-design
+    role: design-critic
+    prompt: >
+      Attack the design of record along your assigned lens, judging it against
+      the requirement set it claims to satisfy.
+
+      Name the design element, say what fails and under what conditions, and
+      say what would resolve it. A finding that does not say when it bites is
+      an opinion.
+    consumes: [requirement-set, design-candidates]
+    lenses:
+      - >
+        Scalability: where the design stops working as load, data or users
+        grow past what the requirement set states, and whether the quantified
+        non-functional thresholds actually hold under the design as drawn.
+      - >
+        Security: authentication and authorisation gaps, trust boundaries that
+        are assumed rather than enforced, data exposed further than the
+        requirements permit, and any place the design trusts input it does not
+        control.
+      - >
+        Operability: how this is deployed, observed, backed up and recovered by
+        the people the requirement set says will run it; what happens on each
+        failure mode, and whether a failure is visible before a user reports
+        it.
+      - >
+        Simplicity: machinery that earns less than it costs — components,
+        indirection or configurability that the requirement set does not
+        justify. Name what could be deleted and what would break if it were.
+    collect:
+      role: design-critic
+      prompt: >
+        Merge the four lens reviews into one finding set for the gate.
+
+        Report a problem two lenses found once, keeping the sharper statement
+        of it. Where two lenses disagree about whether something is a problem —
+        the simplicity and scalability lenses routinely will — report the
+        disagreement rather than settling it yourself; that trade-off is the
+        gate's to make, not yours.
+
+        Set `allResolved` to true only if no finding is left open across all
+        four lenses.
+      produces: design-findings
+
 gate:
   id: design-gate
   description: >
@@ -127,8 +186,10 @@ gate:
 
     Traceability is not a criterion here because it is not optional: the design
     schema rejects an element that traces to no requirement, so a design that
-    exists at all has already been checked for gold-plating (DSG-4). The
-    adversarial review across the DSG-3 lenses arrives at T2.1.3b.
+    exists at all has already been checked for gold-plating (DSG-4).
+
+    A finding left open is not a veto: the operator may accept one here, and
+    the record shows that they did (HIL-5).
   autoApprove: false
   criteria:
     - id: candidates-considered
@@ -152,3 +213,16 @@ gate:
         The design of record exists, with ADRs, and validates against its
         schema.
       artifact: design
+
+    - id: review-recorded
+      kind: artifact-exists
+      description: The adversarial review across the DSG-3 lenses is recorded.
+      artifact: design-findings
+
+    - id: findings-resolved
+      kind: agent-assertion
+      description: >
+        Every finding is resolved or knowingly accepted; none is left open
+        without a decision.
+      fromTask: review-design
+      field: allResolved

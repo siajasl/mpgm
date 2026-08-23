@@ -1,6 +1,7 @@
 import { PlaybookLoadError } from './errors.js';
 import type {
   Ballot,
+  CriticNode,
   MemberSpec,
   PlaybookDefinition,
   PlaybookNode,
@@ -78,21 +79,37 @@ export function memberCount(spec: MemberSpec): number {
   return spec.lenses?.length ?? spec.count ?? 0;
 }
 
-function memberPrompt(spec: MemberSpec, index: number, total: number): string {
-  const lens = spec.lenses?.[index];
+function lensPrompt(
+  prompt: string,
+  lens: string | undefined,
+  index: number,
+  total: number,
+): string {
   if (lens !== undefined) {
     return (
-      `${spec.prompt.trim()}\n\n` +
+      `${prompt.trim()}\n\n` +
       `Your assigned lens is: ${lens}. Cover it thoroughly and only it — the ` +
       `other ${String(total - 1)} member(s) of this group cover the rest, and ` +
       `work you duplicate is work nobody does.`
     );
   }
   return (
-    `${spec.prompt.trim()}\n\n` +
+    `${prompt.trim()}\n\n` +
     `You are member ${String(index + 1)} of ${String(total)} working this ` +
     `independently. You cannot see the others and must not assume what they ` +
     `will conclude; reaching the same answer separately is the point.`
+  );
+}
+
+function memberPrompt(spec: MemberSpec, index: number, total: number): string {
+  return lensPrompt(spec.prompt, spec.lenses?.[index], index, total);
+}
+
+/** What a critic is told about the thing it is reviewing. */
+function criticFraming(target: string): string {
+  return (
+    `You are reviewing the result of '${target}', which you did not produce. ` +
+    `Do not rewrite it; report what is wrong with it.`
   );
 }
 
@@ -144,8 +161,10 @@ function terminalIds(
   for (const node of nodes) {
     switch (node.kind) {
       case 'task':
-      case 'critic-of':
         terminal[node.id] = node.id;
+        break;
+      case 'critic-of':
+        terminal[node.id] = node.lenses === undefined ? node.id : `${node.id}-collect`;
         break;
       case 'fan-out':
         terminal[node.id] = `${node.id}-collect`;
@@ -278,20 +297,65 @@ export function expandPlaybook(
       case 'critic-of': {
         const target = nodes.find((candidate) => candidate.id === node.target);
         assertIndependent(sourcePath, node.id, node.role, target);
+        checkCriticShape(sourcePath, node);
+        // The target is the dependency, whether or not it was also listed.
+        const after = [...new Set([terminal[node.target] ?? node.target, ...inherited])];
+
+        if (node.lenses === undefined) {
+          emit({
+            kind: 'session',
+            id: node.id,
+            node: node.id,
+            role: node.role,
+            description: node.description,
+            prompt: `${node.prompt.trim()}\n\n${criticFraming(node.target)}`,
+            dependsOn: after,
+            consumes: node.consumes,
+            ...(node.produces === undefined ? {} : { produces: node.produces }),
+          });
+          break;
+        }
+
+        const collect = node.collect;
+        if (collect === undefined) {
+          throw new PlaybookLoadError(
+            sourcePath,
+            `critic '${node.id}' declares lenses but no 'collect'`,
+          );
+        }
+        assertIndependent(sourcePath, `${node.id}-collect`, collect.role, target);
+
+        const total = node.lenses.length;
+        const criticIds: string[] = [];
+        for (let index = 0; index < total; index += 1) {
+          const id = memberId(node.id, 'lens', index);
+          criticIds.push(id);
+          emit({
+            kind: 'session',
+            id,
+            node: node.id,
+            role: node.role,
+            description: `${node.description} (lens ${String(index + 1)} of ${String(total)})`,
+            prompt: `${lensPrompt(node.prompt, node.lenses[index], index, total)}\n\n${criticFraming(node.target)}`,
+            dependsOn: after,
+            consumes: node.consumes,
+          });
+        }
         emit({
           kind: 'session',
-          id: node.id,
+          id: `${node.id}-collect`,
           node: node.id,
-          role: node.role,
-          description: node.description,
+          role: collect.role,
+          description: `${node.description} (collect)`,
           prompt:
-            `${node.prompt.trim()}\n\n` +
-            `You are reviewing the result of '${node.target}', which you did not ` +
-            `produce. Do not rewrite it; report what is wrong with it.`,
-          // The target is the dependency, whether or not it was also listed.
-          dependsOn: [...new Set([terminal[node.target] ?? node.target, ...inherited])],
+            `${collect.prompt.trim()}\n\n` +
+            `The ${String(total)} reviews below were produced independently, one ` +
+            `lens each. Report a problem two of them found once; where they ` +
+            `disagree about whether something is a problem, report the ` +
+            `disagreement rather than settling it yourself.`,
+          dependsOn: criticIds,
           consumes: node.consumes,
-          ...(node.produces === undefined ? {} : { produces: node.produces }),
+          ...(collect.produces === undefined ? {} : { produces: collect.produces }),
         });
         break;
       }
@@ -416,6 +480,24 @@ export function expandPlaybook(
     terminal,
     members,
   };
+}
+
+function checkCriticShape(sourcePath: string, node: CriticNode): void {
+  if (node.lenses === undefined && node.collect !== undefined) {
+    throw new PlaybookLoadError(
+      sourcePath,
+      `critic '${node.id}' declares 'collect' but no lenses. A single critic has ` +
+        `nothing to collect from.`,
+    );
+  }
+  if (node.lenses !== undefined && node.produces !== undefined) {
+    throw new PlaybookLoadError(
+      sourcePath,
+      `critic '${node.id}' fans out across lenses, so the artifact is written by ` +
+        `its collector: move 'produces' onto 'collect'. Each lens sees only its own ` +
+        `part of the review, so none of them can write the whole finding set.`,
+    );
+  }
 }
 
 function assertIndependent(

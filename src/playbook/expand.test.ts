@@ -294,6 +294,157 @@ gate:
     expect(() => load(body('analyst'))).toThrow(/shares its blind spots/);
   });
 
+  it('fans out across lenses and collects, staying independent throughout', () => {
+    const { graph } = load(`
+artifacts:
+  findings:
+    schema: findings
+    path: artifacts/findings.md
+    description: the findings
+tasks:
+  - id: draft
+    role: analyst
+    description: draft it
+    prompt: write it
+  - kind: critic-of
+    id: challenge
+    description: review the draft
+    target: draft
+    role: reviewer
+    prompt: find what is wrong with it
+    lenses: [scalability, security, operability, simplicity]
+    collect:
+      role: reviewer
+      prompt: merge the reviews
+      produces: findings
+gate:
+  id: g
+  description: done
+  criteria:
+    - id: c
+      kind: artifact-exists
+      description: findings exist
+      artifact: findings
+`);
+
+    expect(graph.steps.map((step) => step.id)).toStrictEqual([
+      'draft',
+      'challenge-lens-1',
+      'challenge-lens-2',
+      'challenge-lens-3',
+      'challenge-lens-4',
+      'challenge-collect',
+    ]);
+    // Every lens reviews the target directly; none waits on another, and none
+    // can see what another found.
+    for (const index of [1, 2, 3, 4]) {
+      expect(
+        graph.steps.find((step) => step.id === `challenge-lens-${String(index)}`)
+          ?.dependsOn,
+      ).toStrictEqual(['draft']);
+    }
+    expect(graph.terminal.challenge).toBe('challenge-collect');
+
+    const first = graph.steps[1];
+    expect(first?.kind === 'session' && first.prompt).toContain(
+      'Your assigned lens is: scalability',
+    );
+    expect(first?.kind === 'session' && first.prompt).toContain("result of 'draft'");
+  });
+
+  it('refuses a lensed critic that writes the artifact itself', () => {
+    // Each lens sees only its own part of the review, so none of them can
+    // write the whole finding set.
+    expect(() =>
+      load(`
+artifacts:
+  findings:
+    schema: findings
+    path: artifacts/findings.md
+    description: the findings
+tasks:
+  - id: draft
+    role: analyst
+    description: draft it
+    prompt: write it
+  - kind: critic-of
+    id: challenge
+    description: review
+    target: draft
+    role: reviewer
+    prompt: review it
+    produces: findings
+    lenses: [a, b]
+    collect: { role: reviewer, prompt: merge }
+gate:
+  id: g
+  description: done
+  criteria:
+    - id: c
+      kind: artifact-exists
+      description: findings exist
+      artifact: findings
+`),
+    ).toThrow(/move 'produces' onto 'collect'/);
+  });
+
+  it('refuses a collector on a critic with nothing to collect from', () => {
+    expect(() =>
+      load(`
+tasks:
+  - id: draft
+    role: analyst
+    description: draft it
+    prompt: write it
+  - kind: critic-of
+    id: challenge
+    description: review
+    target: draft
+    role: reviewer
+    prompt: review it
+    collect: { role: reviewer, prompt: merge }
+gate:
+  id: g
+  description: done
+  criteria:
+    - id: c
+      kind: agent-assertion
+      description: ok
+      fromTask: challenge
+      field: ok
+`),
+    ).toThrow(/nothing to collect from/);
+  });
+
+  it('holds the collector to the same independence as the lenses', () => {
+    expect(() =>
+      load(`
+tasks:
+  - id: draft
+    role: analyst
+    description: draft it
+    prompt: write it
+  - kind: critic-of
+    id: challenge
+    description: review
+    target: draft
+    role: reviewer
+    prompt: review it
+    lenses: [a, b]
+    collect: { role: analyst, prompt: merge }
+gate:
+  id: g
+  description: done
+  criteria:
+    - id: c
+      kind: agent-assertion
+      description: ok
+      fromTask: challenge
+      field: ok
+`),
+    ).toThrow(/shares its blind spots/);
+  });
+
   it('refuses a target that does not exist', () => {
     expect(() =>
       load(body('reviewer').replace('target: draft', 'target: ghost')),

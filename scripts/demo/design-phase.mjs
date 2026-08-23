@@ -1,19 +1,27 @@
 /**
- * T2.1.3a verification — the Design phase on a sample project.
+ * T2.1.3a/b verification — the Design phase on a sample project.
  *
  *   seeded requirement set → three proposers argue three stances in parallel →
  *   a comparer puts them side by side → a three-judge panel votes and the
  *   *kernel* counts → an architect turns the winner into the design of record
- *   with ADRs → gate packet
+ *   with ADRs → four critics attack it, one DSG-3 lens each → gate packet
  *
- * Makes real model calls (eight sessions). Not part of `npm run check` or CI:
- * CI has no credentials, and a verification that silently skipped itself would
- * be worse than none. Run with `npm run demo:design`.
+ * Makes real model calls (thirteen sessions). Not part of `npm run check` or
+ * CI: CI has no credentials, and a verification that silently skipped itself
+ * would be worse than none. Run with `npm run demo:design`.
  *
  * The requirement set is seeded so this spends on the Design phase alone, and
  * so its requirement ids are known here — which lets the demo check something
  * the schema cannot: that the design traces to requirements that actually
  * exist, rather than to plausible-looking ids (DSG-4).
+ *
+ * **The planted flaw.** LOAN-6 below asks for the member view to be reachable
+ * without signing in. It is a plausible-sounding convenience requirement and a
+ * real security hole: any faithful design carries it, because the architect's
+ * job is to implement the requirement set rather than to second-guess Scope.
+ * The security lens is expected to find it; the other three are not. Planting
+ * it upstream rather than editing a generated design is the only way to plant
+ * a flaw in output that does not exist until the phase runs.
  */
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -100,6 +108,21 @@ const SCOPE = {
       priority: 'must',
       acceptanceCriteria: ['No member record is created by this system.'],
       tracesTo: ['constraint: member records already exist'],
+    },
+    {
+      kind: 'functional',
+      id: 'LOAN-6',
+      statement:
+        'The member view is reachable without signing in, so a pupil can check ' +
+        'their loans from a shared classroom machine without a password.',
+      rationale:
+        'Pupils share machines and forget passwords; the librarian asked for ' +
+        'something they can use in ten seconds at the door.',
+      priority: 'should',
+      acceptanceCriteria: [
+        'Opening the member view on a shared machine shows loans without a login step.',
+      ],
+      tracesTo: ['stakeholder: members'],
     },
     {
       kind: 'non-functional',
@@ -344,7 +367,48 @@ try {
     design.crossCutting.map((entry) => entry.concern).join(', '),
   );
 
-  process.stdout.write('\n5. Status\n');
+  process.stdout.write('\n5. Adversarial review (DSG-3)\n');
+  const findings = store.read('artifacts/design/findings.md').data;
+  for (const finding of findings.findings ?? []) {
+    process.stdout.write(`  [${finding.status}] ${finding.about}: ${finding.issue}\n`);
+  }
+
+  check(
+    'four critics reviewed it, one lens each, plus a collector',
+    [
+      'review-design-lens-1',
+      'review-design-lens-2',
+      'review-design-lens-3',
+      'review-design-lens-4',
+      'review-design-collect',
+    ].every((id) => dispatched.includes(id)),
+    dispatched.filter((id) => id.startsWith('review-design')).join(', '),
+  );
+  check(
+    'the review found something',
+    (findings.findings ?? []).length > 0,
+    'finding nothing is a possible result, but on a first design it is the rarest one',
+  );
+
+  const reviewText = JSON.stringify(findings).toLowerCase();
+  check(
+    'the planted security flaw was found (DSG-3)',
+    /loan-6|unauthenticat|anonymous|no login|without (signing|logging|a login|authentication)/.test(
+      reviewText,
+    ),
+    'the review must name the unauthenticated member view, however it classifies it',
+  );
+
+  const openFindings = (findings.findings ?? []).filter(
+    (finding) => finding.status === 'open',
+  );
+  check(
+    'the attestation matches the findings it is attesting to',
+    findings.allResolved === (openFindings.length === 0),
+    `allResolved=${String(findings.allResolved)} with ${String(openFindings.length)} open`,
+  );
+
+  process.stdout.write('\n6. Status\n');
   await call(['status', '--run', 'r1']);
 } finally {
   rmSync(workspace, { recursive: true, force: true });
@@ -352,7 +416,7 @@ try {
 
 process.stdout.write(
   failures.length === 0
-    ? '\nT2.1.3a verification passed\n\n'
-    : `\nT2.1.3a verification FAILED: ${String(failures.length)} check(s)\n\n`,
+    ? '\nT2.1.3a/b verification passed\n\n'
+    : `\nT2.1.3a/b verification FAILED: ${String(failures.length)} check(s)\n\n`,
 );
 process.exit(failures.length === 0 ? 0 : 1);

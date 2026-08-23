@@ -370,6 +370,11 @@ describe('the design playbook', () => {
       'select-candidate-judge-3',
       'select-candidate-tally',
       'record-design',
+      'review-design-lens-1',
+      'review-design-lens-2',
+      'review-design-lens-3',
+      'review-design-lens-4',
+      'review-design-collect',
     ]);
     // DSG-1: at least two candidates, generated without seeing each other.
     expect(graph.members['propose-candidates']).toHaveLength(4);
@@ -412,6 +417,52 @@ describe('the design playbook', () => {
 
     expect(criterion).toMatchObject({ kind: 'vote-carried', panel: 'select-candidate' });
     expect(playbook().gate.autoApprove).toBe(false);
+  });
+
+  it('reviews the design along the four DSG-3 lenses, independently', () => {
+    const { graph } = playbook();
+    const lenses = graph.steps.filter((step) => step.id.startsWith('review-design-lens'));
+
+    // Four reviews rather than one reviewer with a longer checklist, and each
+    // waits only on the design — none can see what another found.
+    expect(lenses).toHaveLength(4);
+    for (const lens of lenses) {
+      expect(lens.dependsOn).toStrictEqual(['record-design']);
+      expect(lens.kind === 'session' && lens.role).toBe('design-critic');
+    }
+    const prompts = lenses.map((lens) => (lens.kind === 'session' ? lens.prompt : ''));
+    for (const [index, named] of [
+      'Scalability',
+      'Security',
+      'Operability',
+      'Simplicity',
+    ].entries()) {
+      expect(prompts[index]).toContain(named);
+    }
+  });
+
+  it('keeps the reviewers out of the architect role they are attacking', () => {
+    // Enforced by the loader, not by convention: `critic-of` refuses a critic
+    // whose role also produced the target.
+    const review = playbook().tasks.find((node) => node.id === 'review-design');
+    const architect = playbook().tasks.find((node) => node.id === 'record-design');
+
+    expect(review?.kind === 'critic-of' && review.role).not.toBe(
+      architect?.kind === 'task' && architect.role,
+    );
+    expect(review?.kind === 'critic-of' && review.collect?.role).toBe('design-critic');
+  });
+
+  it('gates on the review attestation, not on the review having run', () => {
+    const criterion = playbook().gate.criteria.find(
+      (entry) => entry.id === 'findings-resolved',
+    );
+
+    expect(criterion).toMatchObject({
+      kind: 'agent-assertion',
+      fromTask: 'review-design',
+      field: 'allResolved',
+    });
   });
 
   it('shows the architect the candidates as well as the tally', () => {

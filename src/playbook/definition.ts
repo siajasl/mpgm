@@ -151,6 +151,13 @@ export const pipelineNodeSchema = z
  * The critic's role must differ from the role that produced the target. A
  * reviewer running the same role as the author shares its blind spots, so an
  * approval from it is evidence of consistency, not of correctness.
+ *
+ * With `lenses`, the review fans out: one critic per lens, none of them able
+ * to see the others, and a collector that merges their findings. That is what
+ * DSG-3 asks for — a review covering scalability, security, operability and
+ * simplicity is four reviews, not one reviewer with a longer checklist, and a
+ * single critic told to cover all four will spend its attention unevenly.
+ * `collect` accompanies `lenses`, and the node's own `produces` moves onto it.
  */
 export const criticNodeSchema = z
   .object({
@@ -161,6 +168,15 @@ export const criticNodeSchema = z
     role: identifier,
     prompt: nonEmpty,
     produces: identifier.optional(),
+    lenses: z.array(nonEmpty).min(2).max(16).optional(),
+    collect: z
+      .object({
+        role: identifier,
+        prompt: nonEmpty,
+        produces: identifier.optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
