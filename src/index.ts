@@ -139,6 +139,23 @@ export type {
   WithheldItem,
 } from './context/assembler.js';
 export { assembleContext } from './context/assembler.js';
+export type {
+  Conclusions,
+  ElicitationOptions,
+  ElicitationResult,
+  ElicitationTurn,
+  Exchange,
+  OperatorIo,
+} from './elicit/session.js';
+export {
+  conclusionsSchema,
+  DEFAULT_MAX_QUESTIONS,
+  elicit,
+  ElicitationError,
+  elicitationTurnSchema,
+  exchangeSchema,
+} from './elicit/session.js';
+export { ScriptedIo, TerminalIo } from './elicit/io.js';
 export {
   ArtifactStore,
   ArtifactStoreError,
