@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.4 — adds project-management sync (§4.8, PMG) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.5 — model as dispatch-time session parameter (§4.2) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -88,7 +88,7 @@ A deterministic state machine, no LLM calls. Owns:
 ### 4.2 Agent Runtime (AGT-*)
 - **Role definitions:** `roles/<name>.md` — YAML frontmatter (model, tools, permissions, budgets, output schema ref) + system-prompt body; versioned in git (AGT-1), least-privilege by declaration (AGT-2).
 - **Execution:** wraps the SDK's query loop; final output is captured via a schema-enforced structured-output tool (zod). Validation failure → bounded retry with the validation error fed back (AGT-3).
-- **Model routing:** role default + per-task override table mapping task classes to model tiers (AGT-5).
+- **Model routing (AGT-5):** the model is a **dispatch-time session parameter** resolved by the kernel per task: role-frontmatter default, overridden by the task-class → model-tier routing table (initially seeded from the PLAN §3 model column). Overrides never mutate role definitions, so routing changes are not role changes and do not trigger AGT-6 evals or violate a role freeze. The resolved model ID is recorded in the `TaskDispatched` event (§5) for replay and eval attribution.
 - **Interactive mode (DEF-1, HIL-4):** `mpgm chat <phase|gate>` attaches the operator to a live SDK session — used for Definition elicitation dialogues and gate discussions; the transcript is captured as an artifact and its conclusions flow through normal structured outputs, so interactivity does not bypass validation or audit.
 - **Untrusted-content sessions (SAF-3):** tasks that ingest external content (web pages, third-party issues, dependency docs) run structurally constrained — read-only toolset, no shell or write access — and their outputs are schema-validated summaries consumed as data by downstream tasks; content marking is applied too, but the toolset restriction is the control.
 - **Improvement loop (AGT-7):** a maintenance-phase agent mines the event log for feedback signals and proposes role/knowledge-base diffs as ordinary reviewed changes; adoption requires a green eval run (AGT-6) executed by the eval harness (§4.6).
