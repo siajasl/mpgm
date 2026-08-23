@@ -15,7 +15,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "bin"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -27,9 +28,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run demo:crash",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run demo:crash && npm run demo:cli",
     "demo:crash": "node scripts/demo/crash-restart.mjs",
-    "demo:agent": "node scripts/demo/agent-session.mjs"
+    "demo:agent": "node scripts/demo/agent-session.mjs",
+    "demo:cli": "node scripts/demo/cli-e2e.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -47,5 +49,8 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.241",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
+  },
+  "bin": {
+    "mpgm": "bin/mpgm.mjs"
   }
 }

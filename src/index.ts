@@ -204,3 +204,18 @@ export type {
 export { DEFAULT_MAX_VALIDATION_ATTEMPTS, SessionRunner } from './agent/runner.js';
 export { demoTimestamp, syntheticRun } from './demo/workload.js';
 export { demoSchemaRegistry, toySummarySchema } from './demo/schemas.js';
+export {
+  definitionSchema,
+  elicitationSchema,
+  findingsSchema,
+  projectArtifactSchemas,
+  projectOutputSchemas,
+} from './schemas.js';
+export type { PhaseOutcome, PhaseResult, PhaseRunOptions } from './phase/runner.js';
+export { runPhase } from './phase/runner.js';
+export type { CliContext, CommandResult } from './cli/commands.js';
+export { approve, chat, intervene, replay, run, status } from './cli/commands.js';
+export type { Verb } from './cli/main.js';
+export { parseArgs, runCli, USAGE, VERBS } from './cli/main.js';
+export type { RunControl } from './state/kernel-state.js';
+export { runControl } from './state/reduce.js';

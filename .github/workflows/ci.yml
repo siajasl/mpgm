@@ -54,3 +54,7 @@ jobs:
       # resume identically, and replay must reproduce it byte-for-byte.
       - name: Milestone M1.1 crash/restart demo
         run: npm run demo:crash
+
+      # T1.3.6: every operator-console verb, against a scripted provider.
+      - name: CLI end-to-end
+        run: npm run demo:cli
