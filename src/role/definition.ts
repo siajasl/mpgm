@@ -34,7 +34,7 @@ export const budgetSchema = z.object({
   tokens: z.number().int().positive(),
   costUsd: z.number().positive(),
   steps: z.number().int().positive(),
-  wallClockSeconds: z.number().int().positive(),
+  wallClockSeconds: z.number().positive(),
 });
 
 export const outputSchema = z.object({
