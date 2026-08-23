@@ -61,7 +61,7 @@ function harness() {
     snapshots: SnapshotStore.attach(db),
     interval: 50,
   });
-  const gates = new GateManager({ log });
+  const gates = new GateManager({ log, projector });
 
   log.append({
     runId: 'run-1',
@@ -328,6 +328,86 @@ describe('auto-approval (HIL-1)', () => {
 
       expect(packet.autoApproved).toBe(false);
       expect(canProceed(projector.project(), 'run-1', 'definition-gate')).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('a decision survives the gate being presented again', () => {
+  it('refuses to present a gate that is already approved', () => {
+    const { db, gates } = harness();
+    try {
+      const { evidence } = evidenceFor(newRoot());
+      gates.present('run-1', playbook, evidence);
+      gates.approve('run-1', 'definition-gate', 'macg');
+
+      expect(() => gates.present('run-1', playbook, evidence)).toThrow(GateError);
+      expect(() => gates.present('run-1', playbook, evidence)).toThrow(
+        /Reopen the phase first/,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the approval when a presentation is folded anyway', () => {
+    const { db, log, projector, gates } = harness();
+    try {
+      const { evidence } = evidenceFor(newRoot());
+      gates.present('run-1', playbook, evidence);
+      gates.approve('run-1', 'definition-gate', 'macg');
+
+      // A log written before the guard existed can still contain this.
+      log.append({
+        runId: 'run-1',
+        type: 'GatePresented',
+        payload: { gateId: 'definition-gate', phase: 'definition', artifactRefs: [] },
+      });
+
+      const gate = projector.project().runs['run-1']?.gates['definition-gate'];
+      expect(gate?.status).toBe('approved');
+      expect(gate?.decidedBy).toBe('macg');
+      expect(canProceed(projector.project(), 'run-1', 'definition-gate')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('still freezes the artifact after a re-presentation', () => {
+    const { db, log, projector, gates } = harness();
+    try {
+      const root = newRoot();
+      gates.present('run-1', playbook, evidenceFor(root).evidence);
+      gates.approve('run-1', 'definition-gate', 'macg');
+      log.append({
+        runId: 'run-1',
+        type: 'GatePresented',
+        payload: { gateId: 'definition-gate', phase: 'definition', artifactRefs: [] },
+      });
+
+      // Losing the approval here would quietly release an approved artifact
+      // for editing, which is the failure this whole guard exists to prevent.
+      expect(
+        gateOracleFromState(projector.project(), 'run-1').isGated('definition-brief', 1),
+      ).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a rejected gate can be presented again, since nothing is frozen', () => {
+    const { db, projector, gates } = harness();
+    try {
+      const { evidence } = evidenceFor(newRoot());
+      gates.present('run-1', playbook, evidence);
+      gates.reject('run-1', 'definition-gate', 'macg', 'metrics unmeasurable');
+
+      expect(() => gates.present('run-1', playbook, evidence)).not.toThrow();
+      // The rejection is not erased by the new presentation either.
+      expect(projector.project().runs['run-1']?.gates['definition-gate']?.status).toBe(
+        'rejected',
+      );
     } finally {
       db.close();
     }

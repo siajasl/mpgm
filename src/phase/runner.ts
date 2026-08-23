@@ -5,6 +5,7 @@ import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
 import type { EventLog } from '../event/store.js';
 import type { ApprovalPacket, GateEvidence, GateManager } from '../gate/manager.js';
+import { isApproved } from '../gate/manager.js';
 import type { Playbook, TaskTemplate } from '../playbook/definition.js';
 import type { RoleRegistry } from '../role/loader.js';
 import type { Projector } from '../state/projector.js';
@@ -75,6 +76,22 @@ function upstreamOf(
 
 export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
   const { runId, playbook, log } = options;
+
+  // Refused before anything is dispatched, not when the gate is reached: by
+  // then the phase has already spent its whole budget re-deriving artifacts
+  // that supersede approved ones nobody asked to replace.
+  if (isApproved(options.projector.project(), runId, playbook.gate.id)) {
+    return {
+      outcome: {
+        status: 'blocked',
+        taskId: '(gate)',
+        reason:
+          `gate '${playbook.gate.id}' is already approved. Reopen the phase first ` +
+          `before running it again.`,
+      },
+      produced: {},
+    };
+  }
 
   // Checked before the phase is recorded as entered. A refused attempt that
   // still logged PhaseEntered would leave the log claiming a phase was entered

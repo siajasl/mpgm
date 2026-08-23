@@ -39,7 +39,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 3;
+export const REDUCER_VERSION = 4;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -266,13 +266,30 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
     case 'GatePresented': {
       const payload = event.payload as PayloadOf<typeof gatePresented>;
       const run = requireRun(state, event.runId, type);
+      const existing = run.gates[payload.gateId];
+
+      // A decision already taken is a recorded fact; presenting the gate again
+      // does not retract it. Overwriting the status here would silently
+      // un-approve the gate on a re-run, and with it release the artifacts
+      // that approval froze. Only a rejection or an ORC-6 invalidation moves
+      // an approved gate.
+      const decided =
+        existing !== undefined &&
+        (existing.status === 'approved' ||
+          existing.status === 'rejected' ||
+          existing.status === 'invalidated');
+
+      // The refs are part of the decision, not decoration: an approval attaches
+      // to specific artifact versions, and the freeze is derived from them.
+      // Replacing them would release the approved artifacts even though the
+      // status still said "approved".
       const gate: GateState = {
         gateId: payload.gateId,
         phase: payload.phase,
-        status: 'presented',
-        decidedBy: null,
-        reason: '',
-        artifactRefs: payload.artifactRefs,
+        status: decided ? existing.status : 'presented',
+        decidedBy: decided ? existing.decidedBy : null,
+        reason: decided ? existing.reason : '',
+        artifactRefs: decided ? existing.artifactRefs : payload.artifactRefs,
       };
       return withRun(state, withGate(run, gate), seq);
     }

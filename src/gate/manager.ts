@@ -152,13 +152,22 @@ function deriveNarrative(
 
 export interface GateManagerOptions {
   readonly log: EventLog;
+  /**
+   * Folded state, so the manager can see decisions already taken.
+   *
+   * Required rather than optional: a guard that silently does not apply when
+   * a caller forgets to wire it is worse than no guard, because it is trusted.
+   */
+  readonly projector: { project(): KernelState };
 }
 
 export class GateManager {
   readonly #log: EventLog;
+  readonly #projector: { project(): KernelState };
 
   constructor(options: GateManagerOptions) {
     this.#log = options.log;
+    this.#projector = options.projector;
   }
 
   /**
@@ -174,6 +183,18 @@ export class GateManager {
     evidence: GateEvidence,
     narrative: PacketNarrative = {},
   ): ApprovalPacket {
+    const already = this.#projector.project().runs[runId]?.gates[playbook.gate.id];
+    if (already?.status === 'approved') {
+      // Re-presenting would leave two presentations around one decision, and
+      // the audit trail could no longer say which artifacts the operator
+      // actually approved. Reopening is a deliberate act (ORC-6), not a side
+      // effect of running the phase again.
+      throw new GateError(
+        `gate '${playbook.gate.id}' is already approved. Reopen the phase first ` +
+          `(PhaseReopened, which invalidates the gate) before presenting it again.`,
+      );
+    }
+
     const criteria = playbook.gate.criteria.map((criterion) =>
       evaluate(criterion, evidence),
     );

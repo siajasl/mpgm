@@ -17,8 +17,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  ArtifactStore,
   ClaudeAgentProvider,
+  EventLog,
+  gateOracleFromState,
+  kernelRegistry,
   listGateTags,
+  openDatabase,
+  Projector,
+  SnapshotStore,
   projectArtifactSchemas,
   projectOutputSchemas,
   runCli,
@@ -155,12 +162,55 @@ try {
   );
 
   process.stdout.write('\n5. Immutability\n');
+
+  // Re-running is refused before any task is dispatched, so this costs nothing.
   const second = await call(['run', 'definition', '--run', 'r1'], { echo: false });
   check(
-    'a re-run creates a successor rather than editing the approved version',
-    second.result.ok,
+    'an approved phase refuses to re-run without a reopen',
+    !second.result.ok && second.output.includes('already approved'),
     second.output.split('\n')[0] ?? '',
   );
+
+  // The freeze itself, rather than the fact that write() makes successors —
+  // the previous version of this check passed for a reason unrelated to its
+  // name, because write() always creates a successor whether gated or not.
+  const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
+  try {
+    const log = EventLog.attach(db, { registry: kernelRegistry() });
+    const projector = new Projector({
+      log,
+      snapshots: SnapshotStore.attach(db),
+      interval: 50,
+    });
+    const store = new ArtifactStore({
+      root: workspace,
+      schemas: projectArtifactSchemas(),
+      gates: gateOracleFromState(projector.project(), 'r1'),
+    });
+    const request = {
+      id: 'definition-brief',
+      basePath: 'artifacts/definition/brief.md',
+      schema: 'definition',
+      data: store.read('artifacts/definition/brief.md', 1).data,
+      producedBy: {
+        task: 'draft-brief',
+        role: 'analyst',
+        model: 'claude-sonnet-5',
+        runId: 'r1',
+      },
+    };
+
+    let refused = false;
+    try {
+      store.overwrite(request, 1);
+    } catch {
+      refused = true;
+    }
+    check('the approved version cannot be overwritten (ART-1)', refused);
+    check('a successor version can still be created', store.write(request).version === 2);
+  } finally {
+    db.close();
+  }
 
   process.stdout.write('\n6. Replay\n');
   const replayed = await call(['replay', '--run', 'r1']);

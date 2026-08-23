@@ -104,7 +104,7 @@ export async function run(
         schemas: context.outputSchemas,
         policyRoot: context.root,
       }),
-      gates: new GateManager({ log }),
+      gates: new GateManager({ log, projector }),
       log,
       projector,
       kb: knowledgeBase(context),
@@ -228,15 +228,32 @@ export function approve(
 ): CommandResult {
   const { db, log, projector } = open(context);
   try {
-    const gates = new GateManager({ log });
+    // Validated before anything is appended. The log is append-only, so an
+    // event that cannot be folded -- a decision naming a run or gate that does
+    // not exist -- would break every subsequent projection permanently. A
+    // typo must not be able to do that.
+    const state = projector.project();
+    const run = state.runs[runId];
+    if (run === undefined) {
+      context.write(`no such run: ${runId}`);
+      return { ok: false, detail: 'unknown run' };
+    }
+    if (run.gates[gateId] === undefined) {
+      const known = Object.keys(run.gates);
+      context.write(
+        `run ${runId} has no gate '${gateId}'. Presented gates: ${known.join(', ') || '(none)'}`,
+      );
+      return { ok: false, detail: 'unknown gate' };
+    }
+
+    const gates = new GateManager({ log, projector });
     if (reject) {
       gates.reject(runId, gateId, by, reason);
     } else {
       gates.approve(runId, gateId, by);
     }
 
-    const state = projector.project();
-    const gate = state.runs[runId]?.gates[gateId];
+    const gate = projector.project().runs[runId]?.gates[gateId];
     const status = gate?.status ?? 'unknown';
     context.write(`gate ${gateId} ${status} by ${by}`);
 
