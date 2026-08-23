@@ -59,6 +59,17 @@ export type { Snapshot } from './state/snapshot-store.js';
 export { SnapshotStore } from './state/snapshot-store.js';
 export type { ProjectorOptions } from './state/projector.js';
 export { DEFAULT_SNAPSHOT_INTERVAL, Projector } from './state/projector.js';
+export type { EffectState, EffectStatus } from './state/kernel-state.js';
+export { pendingEffects } from './state/reduce.js';
+export type { EffectContract, EffectIntent, EffectSemantics } from './effect/contract.js';
+export { EffectContractRegistry, intentOf } from './effect/contract.js';
+export type {
+  EffectJournalOptions,
+  EffectRequest,
+  Resolution,
+  ResolutionReport,
+} from './effect/journal.js';
+export { EffectJournal } from './effect/journal.js';
 
 /** Package version. Kept in step with package.json by test. */
 export const VERSION = '0.1.0';
