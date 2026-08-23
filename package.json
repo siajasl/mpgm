@@ -28,7 +28,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run demo:crash",
-    "demo:crash": "node scripts/demo/crash-restart.mjs"
+    "demo:crash": "node scripts/demo/crash-restart.mjs",
+    "demo:agent": "node scripts/demo/agent-session.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

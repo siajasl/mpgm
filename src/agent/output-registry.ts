@@ -35,6 +35,10 @@ export class OutputSchemaRegistry {
 
   /** JSON Schema for the SDK's structured-output format. */
   jsonSchema(id: string): Record<string, unknown> {
-    return z.toJSONSchema(this.get(id));
+    // The $schema dialect reference zod emits is stripped: the CLI validates
+    // the schema with its own resolver, which does not know the 2020-12
+    // dialect URI and rejects the entire schema over it.
+    const { $schema: _dialect, ...schema } = z.toJSONSchema(this.get(id));
+    return schema;
   }
 }

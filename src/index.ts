@@ -113,3 +113,4 @@ export type {
 } from './agent/runner.js';
 export { DEFAULT_MAX_VALIDATION_ATTEMPTS, SessionRunner } from './agent/runner.js';
 export { demoTimestamp, syntheticRun } from './demo/workload.js';
+export { demoSchemaRegistry, toySummarySchema } from './demo/schemas.js';

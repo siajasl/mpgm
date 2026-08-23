@@ -25,6 +25,23 @@ export default tseslint.config(
     },
   },
 
+  // A leading underscore marks a binding that exists only to be discarded --
+  // destructuring a key out of an object is the common case.
+  {
+    files: ['src/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
+    },
+  },
+
   // This config file itself is not part of the TS project.
   {
     files: ['eslint.config.js'],
