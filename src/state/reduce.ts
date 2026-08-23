@@ -25,6 +25,7 @@ import {
   emptyState,
   zeroUsage,
   type EffectState,
+  type RunControl,
   type GateState,
   type KernelState,
   type RunState,
@@ -38,7 +39,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 2;
+export const REDUCER_VERSION = 3;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -136,6 +137,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         operator: payload.operator,
         startedAt: event.ts,
         currentPhase: null,
+        control: 'running',
         phaseHistory: [],
         tasks: {},
         gates: {},
@@ -315,9 +317,25 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
 
     case 'OperatorIntervened': {
       const payload = event.payload as PayloadOf<typeof operatorIntervened>;
-      void payload;
       const run = requireRun(state, event.runId, type);
-      return withRun(state, { ...run, interventions: run.interventions + 1 }, seq);
+      // A killed run stays killed: resuming it would silently restart work the
+      // operator stopped on purpose (HIL-3).
+      const control =
+        run.control === 'killed'
+          ? 'killed'
+          : payload.action === 'pause'
+            ? 'paused'
+            : payload.action === 'resume'
+              ? 'running'
+              : payload.action === 'kill'
+                ? 'killed'
+                : run.control;
+
+      return withRun(
+        state,
+        { ...run, control, interventions: run.interventions + 1 },
+        seq,
+      );
     }
 
     case 'EffectIntended': {
@@ -390,4 +408,9 @@ export function pendingEffects(state: KernelState): EffectState[] {
   return Object.values(state.runs).flatMap((run) =>
     Object.values(run.effects).filter((effect) => effect.status === 'pending'),
   );
+}
+
+/** Operator control state for a run, defaulting to running. */
+export function runControl(state: KernelState, runId: string): RunControl {
+  return state.runs[runId]?.control ?? 'running';
 }

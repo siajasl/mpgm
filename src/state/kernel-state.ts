@@ -60,12 +60,21 @@ export interface EffectState {
   readonly detail: string;
 }
 
+/**
+ * Operator control over a run (HIL-3).
+ *
+ * Derived from the log like everything else, so a restart resumes a paused
+ * run still paused rather than charging ahead.
+ */
+export type RunControl = 'running' | 'paused' | 'killed';
+
 export interface RunState {
   readonly runId: string;
   readonly project: string;
   readonly operator: string;
   readonly startedAt: string;
   readonly currentPhase: string | null;
+  readonly control: RunControl;
   /** Phases in the order they were entered; a reopen appends again. */
   readonly phaseHistory: readonly string[];
   readonly tasks: Readonly<Record<string, TaskState>>;
