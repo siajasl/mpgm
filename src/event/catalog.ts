@@ -135,6 +135,42 @@ export const budgetExceeded = defineEvent(
   }),
 );
 
+/**
+ * Intent-before-effect (DESIGN §6).
+ *
+ * A side-effectful step records its intention *before* acting, so a crash
+ * between the two leaves evidence. On resume each pending intent is resolved
+ * through its contract rather than blindly retried — the failure mode this
+ * exists to prevent is deploying, pushing or paying twice.
+ */
+export const effectIntended = defineEvent(
+  'EffectIntended',
+  z.object({
+    intentId: nonEmpty,
+    taskId: nonEmpty,
+    /** Capability contract, e.g. `pm.github` (ADR-7). */
+    contract: nonEmpty,
+    operation: nonEmpty,
+    params: z.record(z.string(), z.unknown()),
+  }),
+);
+
+export const effectCompleted = defineEvent(
+  'EffectCompleted',
+  z.object({ intentId: nonEmpty, outcome: nonEmpty }),
+);
+
+export const effectFailed = defineEvent(
+  'EffectFailed',
+  z.object({ intentId: nonEmpty, reason: z.string().default('') }),
+);
+
+/** Resume could not determine whether the effect landed; an operator must say. */
+export const effectEscalated = defineEvent(
+  'EffectEscalated',
+  z.object({ intentId: nonEmpty, reason: nonEmpty }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -155,6 +191,10 @@ export const kernelEvents = [
   phaseReopened,
   gateInvalidated,
   budgetExceeded,
+  effectIntended,
+  effectCompleted,
+  effectFailed,
+  effectEscalated,
   operatorIntervened,
 ];
 

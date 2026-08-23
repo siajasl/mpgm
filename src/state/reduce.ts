@@ -3,6 +3,10 @@ import { EventLogError } from '../event/errors.js';
 import type { EventDefinition } from '../event/registry.js';
 import type {
   budgetExceeded,
+  effectCompleted,
+  effectEscalated,
+  effectFailed,
+  effectIntended,
   gateApproved,
   gateInvalidated,
   gatePresented,
@@ -20,6 +24,7 @@ import type {
 import {
   emptyState,
   zeroUsage,
+  type EffectState,
   type GateState,
   type KernelState,
   type RunState,
@@ -33,7 +38,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 1;
+export const REDUCER_VERSION = 2;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -99,6 +104,18 @@ function withGate(run: RunState, gate: GateState): RunState {
   return { ...run, gates: { ...run.gates, [gate.gateId]: gate } };
 }
 
+function requireEffect(run: RunState, intentId: string, type: string): EffectState {
+  const effect = run.effects[intentId];
+  if (effect === undefined) {
+    throw new EventLogError(`event '${type}' references unknown intent '${intentId}'`);
+  }
+  return effect;
+}
+
+function withEffect(run: RunState, effect: EffectState): RunState {
+  return { ...run, effects: { ...run.effects, [effect.intentId]: effect } };
+}
+
 /**
  * Fold one event into state.
  *
@@ -122,6 +139,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         phaseHistory: [],
         tasks: {},
         gates: {},
+        effects: {},
         usage: zeroUsage,
         interventions: 0,
       };
@@ -302,6 +320,54 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       return withRun(state, { ...run, interventions: run.interventions + 1 }, seq);
     }
 
+    case 'EffectIntended': {
+      const payload = event.payload as PayloadOf<typeof effectIntended>;
+      const run = requireRun(state, event.runId, type);
+      const effect: EffectState = {
+        intentId: payload.intentId,
+        taskId: payload.taskId,
+        contract: payload.contract,
+        operation: payload.operation,
+        params: payload.params,
+        status: 'pending',
+        detail: '',
+      };
+      return withRun(state, withEffect(run, effect), seq);
+    }
+
+    case 'EffectCompleted': {
+      const payload = event.payload as PayloadOf<typeof effectCompleted>;
+      const run = requireRun(state, event.runId, type);
+      const effect = requireEffect(run, payload.intentId, type);
+      return withRun(
+        state,
+        withEffect(run, { ...effect, status: 'completed', detail: payload.outcome }),
+        seq,
+      );
+    }
+
+    case 'EffectFailed': {
+      const payload = event.payload as PayloadOf<typeof effectFailed>;
+      const run = requireRun(state, event.runId, type);
+      const effect = requireEffect(run, payload.intentId, type);
+      return withRun(
+        state,
+        withEffect(run, { ...effect, status: 'failed', detail: payload.reason }),
+        seq,
+      );
+    }
+
+    case 'EffectEscalated': {
+      const payload = event.payload as PayloadOf<typeof effectEscalated>;
+      const run = requireRun(state, event.runId, type);
+      const effect = requireEffect(run, payload.intentId, type);
+      return withRun(
+        state,
+        withEffect(run, { ...effect, status: 'escalated', detail: payload.reason }),
+        seq,
+      );
+    }
+
     default:
       throw new UnhandledEventError(type);
   }
@@ -317,4 +383,11 @@ export function fold(
     state = reduce(state, event);
   }
   return state;
+}
+
+/** Effects whose intention was recorded but whose outcome is unknown. */
+export function pendingEffects(state: KernelState): EffectState[] {
+  return Object.values(state.runs).flatMap((run) =>
+    Object.values(run.effects).filter((effect) => effect.status === 'pending'),
+  );
 }

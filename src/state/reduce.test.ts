@@ -88,6 +88,24 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'EffectIntended',
+        payload: {
+          intentId: 'i1',
+          taskId: 'T1',
+          contract: 'pm.github',
+          operation: 'createPullRequest',
+          params: { branch: 'dev-T1' },
+        },
+      },
+      { runId: RUN, type: 'EffectCompleted', payload: { intentId: 'i1', outcome: 'ok' } },
+      { runId: RUN, type: 'EffectFailed', payload: { intentId: 'i1', reason: 'retry' } },
+      {
+        runId: RUN,
+        type: 'EffectEscalated',
+        payload: { intentId: 'i1', reason: 'unknown outcome' },
+      },
+      {
+        runId: RUN,
         type: 'OperatorIntervened',
         payload: { action: 'redirect', detail: '' },
       },

@@ -42,6 +42,24 @@ export interface GateState {
   readonly artifactRefs: readonly ArtifactRef[];
 }
 
+export type EffectStatus = 'pending' | 'completed' | 'failed' | 'escalated';
+
+/**
+ * A side effect whose intention was recorded before it was attempted
+ * (DESIGN §6). A `pending` effect after a restart is exactly the dangerous
+ * case: the kernel knows it meant to act, but not whether it did.
+ */
+export interface EffectState {
+  readonly intentId: string;
+  readonly taskId: string;
+  readonly contract: string;
+  readonly operation: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly status: EffectStatus;
+  /** Outcome, failure reason, or escalation reason once resolved. */
+  readonly detail: string;
+}
+
 export interface RunState {
   readonly runId: string;
   readonly project: string;
@@ -52,6 +70,7 @@ export interface RunState {
   readonly phaseHistory: readonly string[];
   readonly tasks: Readonly<Record<string, TaskState>>;
   readonly gates: Readonly<Record<string, GateState>>;
+  readonly effects: Readonly<Record<string, EffectState>>;
   readonly usage: Usage;
   readonly interventions: number;
 }
