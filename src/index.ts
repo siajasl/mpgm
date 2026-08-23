@@ -123,6 +123,22 @@ export type {
   Provenance,
   WriteRequest,
 } from './artifact/store.js';
+export type { EgressClass, EgressPolicy } from './context/egress.js';
+export {
+  classOf,
+  DEFAULT_EGRESS_POLICY,
+  EGRESS_CLASSES,
+  egressClassSchema,
+  permitted,
+} from './context/egress.js';
+export type { KbDocument } from './context/knowledge-base.js';
+export { loadKnowledgeBase, parseKbDocument } from './context/knowledge-base.js';
+export type {
+  AssembledContext,
+  AssembleRequest,
+  WithheldItem,
+} from './context/assembler.js';
+export { assembleContext } from './context/assembler.js';
 export {
   ArtifactStore,
   ArtifactStoreError,

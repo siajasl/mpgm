@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { z } from 'zod';
+import { egressClassSchema, type EgressClass } from '../context/egress.js';
 import type { ArtifactSchemaRegistry } from './schema-registry.js';
 
 /**
@@ -55,6 +56,11 @@ export const frontmatterSchema = z
     producedBy: provenanceSchema,
     /** Version this one supersedes, if any. */
     supersedes: z.number().int().positive().nullable().default(null),
+    /**
+     * Data-egress class (SAF-6). Absent means the project's default applies;
+     * an artifact carrying operator-restricted material must say so.
+     */
+    egress: egressClassSchema.optional(),
     data: z.unknown(),
   })
   .strict();
@@ -67,6 +73,7 @@ export interface Artifact {
   readonly tracesTo: readonly string[];
   readonly producedBy: Provenance;
   readonly supersedes: number | null;
+  readonly egress: EgressClass | undefined;
   /** Schema-validated, migrated to the current schema version. */
   readonly data: unknown;
   readonly path: string;
@@ -80,6 +87,7 @@ export interface WriteRequest {
   readonly data: unknown;
   readonly producedBy: Provenance;
   readonly tracesTo?: readonly string[];
+  readonly egress?: EgressClass;
 }
 
 /** Whether a given artifact version has been approved at a gate. */
@@ -223,6 +231,7 @@ export class ArtifactStore {
       tracesTo: frontmatter.tracesTo,
       producedBy: frontmatter.producedBy,
       supersedes: frontmatter.supersedes,
+      egress: frontmatter.egress,
       data,
       path,
     };
@@ -246,6 +255,7 @@ export class ArtifactStore {
       tracesTo: [...(request.tracesTo ?? [])],
       producedBy: request.producedBy,
       supersedes,
+      ...(request.egress === undefined ? {} : { egress: request.egress }),
       data,
     };
 
@@ -264,6 +274,7 @@ export class ArtifactStore {
       tracesTo: frontmatter.tracesTo,
       producedBy: request.producedBy,
       supersedes,
+      egress: request.egress,
       data,
       path,
     };
