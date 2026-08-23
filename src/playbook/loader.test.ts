@@ -144,7 +144,8 @@ describe('cross-reference checks', () => {
         `    - id: asserted
       kind: agent-assertion
       description: Something was asserted.
-      fromTask: ghost`,
+      fromTask: ghost
+      field: ok`,
       ),
       /names task 'ghost', which is not a task/,
     ],
@@ -156,6 +157,35 @@ describe('cross-reference checks', () => {
       expect(() => parsePlaybook('x.yaml', source)).toThrow(expected);
     });
   }
+
+  it('rejects a task consuming something neither declared nor produced', () => {
+    const source = MINIMAL.replace(
+      '    produces: brief',
+      '    produces: brief\n    consumes: [nowhere]',
+    );
+
+    expect(() => parsePlaybook('x.yaml', source)).toThrow(
+      /consumes 'nowhere', which is neither a declared input/,
+    );
+  });
+
+  it('accepts a task consuming a declared input', () => {
+    const source = MINIMAL.replace(
+      'artifacts:',
+      `inputs:
+  elicitation:
+    schema: elicitation.v1
+    path: artifacts/elicitation.md
+    description: Prior dialogue.
+artifacts:`,
+    ).replace('    produces: brief', '    produces: brief\n    consumes: [elicitation]');
+
+    const playbook = parsePlaybook('x.yaml', source);
+
+    expect(Object.keys(playbook.inputs)).toStrictEqual(['elicitation']);
+    // Inputs need no producer: the phase reads them, it does not write them.
+    expect(playbook.tasks[0]?.consumes).toStrictEqual(['elicitation']);
+  });
 
   it('rejects an artifact nothing produces, which the gate would wait on forever', () => {
     const orphaned = MINIMAL.replace(

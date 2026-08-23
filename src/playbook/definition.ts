@@ -26,6 +26,20 @@ export const artifactTemplateSchema = z
   })
   .strict();
 
+/**
+ * An artifact the phase reads but does not produce — typically written by an
+ * earlier phase, or by an operator dialogue outside any playbook.
+ */
+export const inputTemplateSchema = z
+  .object({
+    schema: nonEmpty,
+    path: nonEmpty,
+    description: nonEmpty,
+    /** When false, a task consuming it cannot run until it exists. */
+    optional: z.boolean().default(false),
+  })
+  .strict();
+
 /** One task the phase dispatches. */
 export const taskTemplateSchema = z
   .object({
@@ -39,6 +53,8 @@ export const taskTemplateSchema = z
     dependsOn: z.array(identifier).default([]),
     /** Artifact id this task produces, if any. */
     produces: identifier.optional(),
+    /** Input artifact ids this task reads, in addition to its dependencies. */
+    consumes: z.array(identifier).default([]),
   })
   .strict();
 
@@ -66,6 +82,14 @@ export const gateCriterionSchema = z.discriminatedUnion('kind', [
       description: nonEmpty,
       /** Task whose output carries the assertion. */
       fromTask: identifier,
+      /**
+       * Boolean field of that task's output holding the assertion.
+       *
+       * Required, because a criterion satisfied merely by the task having run
+       * is not a criterion — it passes even when the work concluded that the
+       * gate should not open.
+       */
+      field: z.string().min(1),
     })
     .strict(),
 ]);
@@ -88,6 +112,7 @@ export const playbookSchema = z
   .object({
     phase: identifier,
     description: nonEmpty,
+    inputs: z.record(identifier, inputTemplateSchema).default({}),
     artifacts: z.record(identifier, artifactTemplateSchema).default({}),
     tasks: z.array(taskTemplateSchema).min(1),
     gate: gateSchema,
@@ -95,6 +120,7 @@ export const playbookSchema = z
   .strict();
 
 export type ArtifactTemplate = z.infer<typeof artifactTemplateSchema>;
+export type InputTemplate = z.infer<typeof inputTemplateSchema>;
 export type TaskTemplate = z.infer<typeof taskTemplateSchema>;
 export type GateCriterion = z.infer<typeof gateCriterionSchema>;
 export type GateDefinition = z.infer<typeof gateSchema>;

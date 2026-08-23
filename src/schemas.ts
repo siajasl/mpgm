@@ -32,6 +32,12 @@ export const findingsSchema = z.object({
     }),
   ),
   summary: z.string().min(1),
+  /**
+   * The reviewer's attestation that nothing is left open. The gate reads this
+   * field directly, so it is a claim the reviewer makes rather than something
+   * inferred from the fact that the task finished.
+   */
+  allResolved: z.boolean(),
 });
 
 /** The elicitation record: conclusions plus the dialogue that produced them. */

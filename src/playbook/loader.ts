@@ -108,6 +108,15 @@ export function parsePlaybook(sourcePath: string, contents: string): Playbook {
         );
       }
     }
+    for (const consumed of task.consumes) {
+      if (!(consumed in definition.inputs) && !(consumed in definition.artifacts)) {
+        throw new PlaybookLoadError(
+          sourcePath,
+          `task '${task.id}' consumes '${consumed}', which is neither a declared input ` +
+            `nor an artifact this phase produces`,
+        );
+      }
+    }
     if (task.produces !== undefined && !(task.produces in definition.artifacts)) {
       throw new PlaybookLoadError(
         sourcePath,

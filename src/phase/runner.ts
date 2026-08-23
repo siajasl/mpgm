@@ -45,20 +45,31 @@ export interface PhaseResult {
 function upstreamOf(
   task: TaskTemplate,
   playbook: Playbook,
-  produced: Readonly<Record<string, Artifact>>,
+  available: Readonly<Record<string, Artifact>>,
 ): Artifact[] {
   const artifacts: Artifact[] = [];
-  for (const dependency of task.dependsOn) {
-    const producer = playbook.tasks.find((candidate) => candidate.id === dependency);
-    const artifactId = producer?.produces;
-    if (artifactId === undefined) {
-      continue;
+  const seen = new Set<string>();
+
+  const add = (artifactId: string | undefined): void => {
+    if (artifactId === undefined || seen.has(artifactId)) {
+      return;
     }
-    const artifact = produced[artifactId];
+    seen.add(artifactId);
+    const artifact = available[artifactId];
     if (artifact !== undefined) {
       artifacts.push(artifact);
     }
+  };
+
+  for (const dependency of task.dependsOn) {
+    add(playbook.tasks.find((candidate) => candidate.id === dependency)?.produces);
   }
+  // Inputs the phase did not produce — an earlier phase's artifact, or an
+  // operator dialogue held outside any playbook.
+  for (const consumed of task.consumes) {
+    add(consumed);
+  }
+
   return artifacts;
 }
 
@@ -76,7 +87,30 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
   log.append({ runId, type: 'PhaseEntered', payload: { phase: playbook.phase } });
 
   const produced: Record<string, Artifact> = {};
-  const assertions: Record<string, { met: boolean; detail: string }> = {};
+  const outputs: Record<string, unknown> = {};
+
+  // Load the artifacts this phase reads but does not write. A required input
+  // that is absent blocks the phase: running anyway is how a phase produces a
+  // confident artifact about material it never saw.
+  const available: Record<string, Artifact> = {};
+  for (const [inputId, template] of Object.entries(playbook.inputs)) {
+    try {
+      available[inputId] = options.artifacts.read(template.path);
+    } catch (cause) {
+      if (!template.optional) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: '(inputs)',
+            reason:
+              `required input '${inputId}' is missing at '${template.path}': ` +
+              (cause instanceof Error ? cause.message : String(cause)),
+          },
+          produced,
+        };
+      }
+    }
+  }
 
   for (const taskId of playbook.order) {
     // Checked before every dispatch, not once at the start: an operator who
@@ -94,7 +128,7 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     const role = options.roles.get(task.role);
     const context = assembleContext({
       task,
-      upstream: upstreamOf(task, playbook, produced),
+      upstream: upstreamOf(task, playbook, { ...available, ...produced }),
       kb: options.kb,
       policy: options.policy,
     });
@@ -113,9 +147,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       };
     }
 
-    // A task's own claim about its work is evidence for the gate, never a
-    // decision about it.
-    assertions[task.id] = { met: true, detail: `task '${task.id}' completed` };
+    // The task's own output is evidence for the gate — what it concluded,
+    // not merely that it ran.
+    outputs[task.id] = outcome.output;
 
     if (task.produces !== undefined) {
       const template = playbook.artifacts[task.produces];
@@ -140,7 +174,7 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     }
   }
 
-  const evidence: GateEvidence = { artifacts: produced, assertions };
+  const evidence: GateEvidence = { artifacts: produced, outputs };
   return {
     outcome: {
       status: 'gate-presented',

@@ -113,6 +113,7 @@ export async function runCli(
         require('--by', flags.by),
         flags.reject === 'true',
         flags.reason ?? '',
+        flags.tag === 'true',
       );
 
     case 'chat':

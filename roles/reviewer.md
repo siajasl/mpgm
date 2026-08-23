@@ -26,6 +26,10 @@ For each finding, say what is unclear and what would resolve it. Mark it
 resolved only if the artifact itself already resolves it, accepted if it is a
 known and reasonable gap, and open otherwise.
 
+Set `allResolved` to true only when no finding is left open. A phase gate reads
+that field directly, so it is an attestation you are making, not a summary of
+your tone. If anything is open, set it false and let the operator decide.
+
 Do not rewrite the artifact. Reporting a finding is your output; fixing it is
 someone else's task. An empty findings list is a legitimate result if the
 artifact genuinely holds up — but say why you believe it does.

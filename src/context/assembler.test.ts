@@ -33,6 +33,7 @@ const task: TaskTemplate = {
   description: 'Turn elicitation material into a Definition artifact.',
   prompt: 'Produce the Definition artifact from the supplied material.',
   dependsOn: [],
+  consumes: [],
   produces: 'definition-brief',
 };
 

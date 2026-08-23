@@ -4,6 +4,17 @@ description: >
   Produces a Definition artifact covering problem, goals, non-goals,
   stakeholders, constraints, assumptions and success metrics (DEF-1).
 
+inputs:
+  definition-elicitation:
+    schema: elicitation
+    path: artifacts/definition/elicitation.md
+    description: >
+      The operator elicitation dialogue and its conclusions, produced by
+      `mpgm chat definition` before the phase runs. Required: drafting a
+      Definition artifact without it means writing confidently about material
+      nobody supplied.
+    optional: false
+
 artifacts:
   definition-brief:
     schema: definition
@@ -29,6 +40,7 @@ tasks:
       non-goals, stakeholders, constraints, assumptions and success metrics.
       Record only what the material supports; where it is silent, say so
       rather than inventing a plausible answer.
+    consumes: [definition-elicitation]
     produces: definition-brief
 
   - id: challenge-brief
@@ -40,7 +52,11 @@ tasks:
       ambiguities, contradictions, and goals stated without a way to tell
       whether they have been met. For each, say what is unclear and what
       would resolve it. Do not rewrite the artifact; report findings.
+
+      Set `allResolved` to true only if no finding is left open. The gate reads
+      that field directly, so it is an attestation, not a summary.
     dependsOn: [draft-brief]
+    consumes: [definition-elicitation]
     produces: ambiguity-findings
 
 gate:
@@ -66,3 +82,4 @@ gate:
         Every finding is resolved or explicitly accepted; none is left open
         without a decision.
       fromTask: challenge-brief
+      field: allResolved

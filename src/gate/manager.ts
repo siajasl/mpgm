@@ -48,8 +48,14 @@ export interface ApprovalPacket {
 export interface GateEvidence {
   /** Artifact id → the artifact, for artifacts that exist. */
   readonly artifacts: Readonly<Record<string, Artifact>>;
-  /** Task id → whether its assertion holds. */
-  readonly assertions: Readonly<Record<string, { met: boolean; detail: string }>>;
+  /**
+   * Task id → its validated output.
+   *
+   * Agent-assertion criteria read a named field of this, rather than treating
+   * completion as assent: a task can finish successfully and still be telling
+   * you the gate should stay shut.
+   */
+  readonly outputs: Readonly<Record<string, unknown>>;
 }
 
 /** Caller-supplied narrative for the packet (HIL-4). */
@@ -74,16 +80,40 @@ function evaluate(criterion: GateCriterion, evidence: GateEvidence): CriterionRe
     };
   }
 
-  const assertion = evidence.assertions[criterion.fromTask];
+  const output = evidence.outputs[criterion.fromTask];
+  if (output === undefined) {
+    return {
+      id: criterion.id,
+      kind: criterion.kind,
+      description: criterion.description,
+      met: false,
+      detail: `task '${criterion.fromTask}' has not reported`,
+    };
+  }
+
+  const value =
+    typeof output === 'object' && output !== null
+      ? (output as Record<string, unknown>)[criterion.field]
+      : undefined;
+
+  if (typeof value !== 'boolean') {
+    // An absent or non-boolean field is unmet, not assumed true. A criterion
+    // that passes when its evidence is missing is worse than no criterion.
+    return {
+      id: criterion.id,
+      kind: criterion.kind,
+      description: criterion.description,
+      met: false,
+      detail: `task '${criterion.fromTask}' reported no boolean '${criterion.field}'`,
+    };
+  }
+
   return {
     id: criterion.id,
     kind: criterion.kind,
     description: criterion.description,
-    met: assertion?.met ?? false,
-    detail:
-      assertion === undefined
-        ? `task '${criterion.fromTask}' has not reported`
-        : assertion.detail,
+    met: value,
+    detail: `${criterion.fromTask}.${criterion.field} = ${String(value)}`,
   };
 }
 
