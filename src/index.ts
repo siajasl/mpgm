@@ -23,6 +23,29 @@ export type { RedactionRule, RedactorOptions } from './redaction.js';
 export { defaultKeyRules, defaultValueRules, marker, Redactor } from './redaction.js';
 export type { Clock, EventLogOptions, ReadOptions } from './event/store.js';
 export { EventLog } from './event/store.js';
+export { MEMORY, openDatabase } from './database.js';
+export type {
+  GateState,
+  GateStatus,
+  KernelState,
+  RunState,
+  TaskState,
+  TaskStatus,
+  Usage,
+} from './state/kernel-state.js';
+export { emptyState, zeroUsage } from './state/kernel-state.js';
+export type { PayloadOf } from './state/reduce.js';
+export {
+  fold,
+  reduce,
+  REDUCER_VERSION,
+  UnhandledEventError,
+  UnknownRunError,
+} from './state/reduce.js';
+export type { Snapshot } from './state/snapshot-store.js';
+export { SnapshotStore } from './state/snapshot-store.js';
+export type { ProjectorOptions } from './state/projector.js';
+export { DEFAULT_SNAPSHOT_INTERVAL, Projector } from './state/projector.js';
 
 /** Package version. Kept in step with package.json by test. */
 export const VERSION = '0.1.0';

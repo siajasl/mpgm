@@ -31,5 +31,14 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
 
+  // Test fixtures executed by a subprocess: plain JS, run against the build.
+  {
+    files: ['**/__fixtures__/**/*.mjs'],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      globals: { process: 'readonly', console: 'readonly' },
+    },
+  },
+
   prettier,
 );
