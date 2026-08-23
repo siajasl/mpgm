@@ -42,8 +42,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm run test
-
+      # Build precedes test: the crash-resume fixture runs as a subprocess
+      # against the built package, because Node cannot import the TS sources.
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm run test

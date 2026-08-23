@@ -1,6 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
+import { openDatabase } from '../database.js';
 import type { EventInput, JsonValue, StoredEvent } from './envelope.js';
 import { EventLogError } from './errors.js';
 import type { EventRegistry } from './registry.js';
@@ -55,11 +54,14 @@ export class EventLog {
   readonly #redactor: Redactor;
   readonly #clock: Clock;
 
-  private constructor(db: DatabaseSync, options: EventLogOptions) {
+  readonly #ownsDatabase: boolean;
+
+  private constructor(db: DatabaseSync, options: EventLogOptions, ownsDatabase: boolean) {
     this.#db = db;
     this.#registry = options.registry;
     this.#redactor = options.redactor ?? new Redactor();
     this.#clock = options.clock ?? defaultClock;
+    this.#ownsDatabase = ownsDatabase;
   }
 
   /**
@@ -67,23 +69,19 @@ export class EventLog {
    * transient one. Parent directories are created as needed.
    */
   static open(location: string, options: EventLogOptions): EventLog {
-    if (location !== ':memory:') {
-      mkdirSync(dirname(location), { recursive: true });
-    }
-
-    const db = new DatabaseSync(location);
-
-    // WAL keeps readers from blocking the appending writer; FULL synchronous
-    // means a committed append survives a power loss, which is the guarantee
-    // crash-safe resume rests on (ORC-5, NFR-1).
-    if (location !== ':memory:') {
-      db.exec('PRAGMA journal_mode = WAL');
-      db.exec('PRAGMA synchronous = FULL');
-    }
-    db.exec('PRAGMA foreign_keys = ON');
+    const db = openDatabase(location);
     db.exec(EVENTS_DDL);
+    return new EventLog(db, options, true);
+  }
 
-    return new EventLog(db, options);
+  /**
+   * Use an already-open database, so that the log and other kernel tables
+   * (snapshots, and later the trace index) share one connection and one file.
+   * The caller keeps ownership: {@link close} will not close it.
+   */
+  static attach(db: DatabaseSync, options: EventLogOptions): EventLog {
+    db.exec(EVENTS_DDL);
+    return new EventLog(db, options, false);
   }
 
   /** Append one event, returning it as stored. */
@@ -200,6 +198,8 @@ export class EventLog {
   }
 
   close(): void {
-    this.#db.close();
+    if (this.#ownsDatabase) {
+      this.#db.close();
+    }
   }
 }
