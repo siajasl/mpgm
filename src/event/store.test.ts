@@ -161,6 +161,7 @@ describe('EventLog redaction (SAF-6)', () => {
               tool: 'Bash',
               decision: 'allowed',
               detail: `export ANTHROPIC_API_KEY=${secret}`,
+              outputBlob: null,
             },
           });
 

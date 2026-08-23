@@ -50,7 +50,13 @@ describe('reduce', () => {
       {
         runId: RUN,
         type: 'ToolCallLogged',
-        payload: { taskId: 'T1', tool: 'Bash', decision: 'allowed', detail: '' },
+        payload: {
+          taskId: 'T1',
+          tool: 'Bash',
+          decision: 'allowed',
+          detail: '',
+          outputBlob: null,
+        },
       },
       {
         runId: RUN,
@@ -194,6 +200,7 @@ describe('reduce', () => {
             tool: 'Bash',
             decision: 'denied',
             detail: 'rm -rf',
+            outputBlob: null,
           },
         },
         {
