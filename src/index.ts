@@ -152,6 +152,7 @@ export {
   DEFAULT_MAX_QUESTIONS,
   elicit,
   ElicitationError,
+  elicitationOutputSchema,
   elicitationTurnSchema,
   exchangeSchema,
 } from './elicit/session.js';

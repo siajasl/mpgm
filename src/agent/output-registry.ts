@@ -39,6 +39,18 @@ export class OutputSchemaRegistry {
     // the schema with its own resolver, which does not know the 2020-12
     // dialect URI and rejects the entire schema over it.
     const { $schema: _dialect, ...schema } = z.toJSONSchema(this.get(id));
+
+    // A tool input schema must be an object at the top level. A bare union or
+    // array yields `oneOf`/`type: array` with no top-level `type`, and the API
+    // refuses it with `input_schema.type: Field required` — after the session
+    // has been dispatched. Failing here names the schema and the fix instead.
+    if (schema.type !== 'object') {
+      throw new Error(
+        `output schema '${id}' is not an object at its top level, so it cannot be used ` +
+          `as a structured-output tool schema. Wrap it, e.g. z.object({ result: <schema> }).`,
+      );
+    }
+
     return schema;
   }
 }

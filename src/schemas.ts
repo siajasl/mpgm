@@ -6,7 +6,7 @@ import {
 } from './artifact/schema-registry.js';
 import {
   conclusionsSchema,
-  elicitationTurnSchema,
+  elicitationOutputSchema,
   exchangeSchema,
 } from './elicit/session.js';
 
@@ -45,7 +45,7 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
   return new OutputSchemaRegistry({
     definition: definitionSchema,
     findings: findingsSchema,
-    'elicitation.turn': elicitationTurnSchema,
+    'elicitation.turn': elicitationOutputSchema,
   });
 }
 
