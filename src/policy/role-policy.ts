@@ -27,6 +27,28 @@ const WRITE_PATH_TOOLS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Tools whose input names a network destination the session wants to fetch.
+ *
+ * SAF-1 lists network destinations alongside tools and paths, and for a role
+ * that reads untrusted content (SAF-3) this is the control that matters most:
+ * a page can ask an agent to fetch a URL, and the agent has no way to know it
+ * should not. It does not get to decide.
+ */
+const FETCH_TOOLS: Readonly<Record<string, string>> = {
+  WebFetch: 'url',
+};
+
+/**
+ * Tools that reach the network without naming a destination.
+ *
+ * A search returns content from hosts the allowlist never saw, so the
+ * allowlist does not bound what comes back — it bounds what the agent can
+ * then go and *retrieve*, which is the step that turns a planted link into a
+ * request. A role with no network allowance at all cannot search either.
+ */
+const SEARCH_TOOLS: readonly string[] = ['WebSearch'];
+
+/**
  * Tools the kernel itself requires, allowed regardless of the role's toolset.
  *
  * `StructuredOutput` is the carrier the SDK uses to return a session's final
@@ -90,6 +112,21 @@ export class RolePolicy {
       return this.#checkPath(toolName, input, readField, 'read');
     }
 
+    // 3. Network destinations (SAF-1).
+    const fetchField = FETCH_TOOLS[toolName];
+    if (fetchField !== undefined) {
+      return this.#checkDestination(toolName, input, fetchField);
+    }
+
+    if (SEARCH_TOOLS.includes(toolName) && this.#role.network.allow.length === 0) {
+      return {
+        behavior: 'deny',
+        reason:
+          `tool '${toolName}' reaches the network, and role '${this.#role.name}' ` +
+          `declares no network allowance`,
+      };
+    }
+
     // Allowlisted, and not a filesystem tool this policy models. The OS
     // sandbox is the second layer for those (ADR-6).
     return { behavior: 'allow' };
@@ -102,6 +139,55 @@ export class RolePolicy {
       onDecision?.(toolName, decision);
       return Promise.resolve(decision);
     };
+  }
+
+  #checkDestination(
+    toolName: string,
+    input: Record<string, unknown>,
+    field: string,
+  ): ToolDecision {
+    const raw = input[field];
+    if (typeof raw !== 'string') {
+      return {
+        behavior: 'deny',
+        reason: `tool '${toolName}' supplied no string '${field}', so its destination cannot be checked`,
+      };
+    }
+
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      return {
+        behavior: 'deny',
+        reason: `tool '${toolName}' supplied '${raw}', which is not a URL`,
+      };
+    }
+
+    // Plaintext is refused before the host is even considered: it is readable
+    // and rewritable in transit, and an allowlisted host reached over http is
+    // an allowlisted host in name only.
+    if (url.protocol !== 'https:') {
+      return {
+        behavior: 'deny',
+        reason:
+          `tool '${toolName}' requested '${url.protocol}//${url.host}'; only https ` +
+          `destinations are permitted`,
+      };
+    }
+
+    const allowed = this.#role.network.allow;
+    const host = url.hostname.toLowerCase();
+    if (!allowed.some((pattern) => matchesGlob(host, pattern.toLowerCase()))) {
+      return {
+        behavior: 'deny',
+        reason:
+          `host '${host}' is not in role '${this.#role.name}' network allowlist ` +
+          `(${allowed.join(', ') || 'none'})`,
+      };
+    }
+
+    return { behavior: 'allow' };
   }
 
   #checkPath(

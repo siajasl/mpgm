@@ -77,6 +77,7 @@ export const VERSION = '0.1.0';
 
 export type {
   Budget,
+  NetworkPolicy,
   PathPolicy,
   Role,
   RoleFrontmatter,
@@ -84,6 +85,7 @@ export type {
 } from './role/definition.js';
 export {
   budgetSchema,
+  networkPolicySchema,
   outputSchema,
   pathPolicySchema,
   roleFrontmatterSchema,
@@ -251,9 +253,21 @@ export { DEFAULT_MAX_VALIDATION_ATTEMPTS, SessionRunner } from './agent/runner.j
 export { demoTimestamp, syntheticRun } from './demo/workload.js';
 export { demoSchemaRegistry, toySummarySchema } from './demo/schemas.js';
 export {
+  adrSchema,
   definitionSchema,
+  designCandidateSchema,
+  designCandidatesSchema,
+  designSchema,
+  designStances,
+  designVerdictSchema,
   elicitationSchema,
   findingsSchema,
+  priorArtSchema,
+  priorities,
+  requiredConcerns,
+  requirementSchema,
+  scopeSchema,
+  thresholdSchema,
   projectArtifactSchemas,
   projectOutputSchemas,
 } from './schemas.js';

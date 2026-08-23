@@ -271,6 +271,36 @@ export const designSchema = z
     'ADR ids must be unique',
   );
 
+/**
+ * Prior-art survey (DEF-3).
+ *
+ * Every entry carries its source, because the reason to research prior art is
+ * to give the project material it can go and check. `gaps` is not optional
+ * either: a survey that reports only what it found reads as though the space
+ * were covered, and what nobody has built is often the more useful half.
+ */
+export const priorArtSchema = z.object({
+  summary: z.string().min(1),
+  systems: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        whatItDoes: z.string().min(1),
+        /** Why it is relevant to *this* project, not why it is interesting. */
+        relevance: z.string().min(1),
+        source: z.object({
+          title: z.string().min(1),
+          url: z.url(),
+          /** Whether this is the project's own material or commentary on it. */
+          kind: z.enum(['primary', 'secondary']),
+        }),
+      }),
+    )
+    .min(1),
+  /** What was looked for and not found. */
+  gaps: z.array(z.string().min(1)).min(1),
+});
+
 /** The elicitation record: conclusions plus the dialogue that produced them. */
 export const elicitationSchema = z.object({
   conclusions: conclusionsSchema,
@@ -283,6 +313,7 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
     definition: definitionSchema,
     findings: findingsSchema,
     scope: scopeSchema,
+    'prior-art': priorArtSchema,
     'design-candidate': designCandidateSchema,
     'design-candidates': designCandidatesSchema,
     'design-verdict': designVerdictSchema,
@@ -297,6 +328,7 @@ export function projectArtifactSchemas(): ArtifactSchemaRegistry {
     defineArtifactSchema('definition', definitionSchema),
     defineArtifactSchema('findings', findingsSchema),
     defineArtifactSchema('scope', scopeSchema),
+    defineArtifactSchema('prior-art', priorArtSchema),
     defineArtifactSchema('design-candidates', designCandidatesSchema),
     defineArtifactSchema('design', designSchema),
     defineArtifactSchema('elicitation', elicitationSchema),

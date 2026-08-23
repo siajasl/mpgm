@@ -57,6 +57,23 @@ const findings = {
   allResolved: true,
 };
 
+const priorArt = {
+  summary: 'Two comparable school library systems, both intranet-hosted.',
+  systems: [
+    {
+      name: 'Koha',
+      whatItDoes: 'Open-source integrated library system with circulation.',
+      relevance: 'Covers loans and returns, and self-hosts on one machine.',
+      source: {
+        title: 'Koha documentation',
+        url: 'https://koha-community.org/documentation/',
+        kind: 'primary',
+      },
+    },
+  ],
+  gaps: ['Nothing found on paper-ledger migration for schools specifically.'],
+};
+
 /** Scripted sessions, in the order the phase and chat will consume them. */
 function scriptedProvider(results) {
   const queue = [...results];
@@ -98,7 +115,8 @@ try {
         turn: { kind: 'question', question: 'Who uses it?', rationale: 'Stakeholders.' },
       }),
       scriptedSuccess({ turn: { kind: 'conclusions', conclusions } }),
-      // run definition: draft-brief, then challenge-brief
+      // run definition: survey-prior-art, draft-brief, then challenge-brief
+      scriptedSuccess(priorArt),
       scriptedSuccess(conclusions),
       scriptedSuccess(findings),
     ]),

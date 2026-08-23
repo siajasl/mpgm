@@ -29,6 +29,22 @@ export const pathPolicySchema = z.object({
   write: z.array(nonEmpty).default([]),
 });
 
+/**
+ * Network destinations the role may reach (SAF-1, SAF-3).
+ *
+ * Hostname glob patterns, matched against the host of every URL a network
+ * tool is asked to fetch. Empty by default, so a role that says nothing has
+ * no network reach at all — the failure mode of the opposite default is a
+ * research agent that follows a link planted in the page it was reading.
+ *
+ * `example.com` and `*.example.com` are different patterns: a wildcard that
+ * silently covered the bare domain would be a control nobody could read off
+ * the file.
+ */
+export const networkPolicySchema = z.object({
+  allow: z.array(nonEmpty).default([]),
+});
+
 /** Bounds the kernel enforces on every session (AGT-4). */
 export const budgetSchema = z.object({
   tokens: z.number().int().positive(),
@@ -59,6 +75,7 @@ export const roleFrontmatterSchema = z
     model: nonEmpty,
     tools: toolPolicySchema.default({ allow: [] }),
     paths: pathPolicySchema.default({ read: [], write: [] }),
+    network: networkPolicySchema.default({ allow: [] }),
     budgets: budgetSchema,
     output: outputSchema,
   })
@@ -66,6 +83,7 @@ export const roleFrontmatterSchema = z
 
 export type RoleFrontmatter = z.infer<typeof roleFrontmatterSchema>;
 export type ToolPolicy = z.infer<typeof toolPolicySchema>;
+export type NetworkPolicy = z.infer<typeof networkPolicySchema>;
 export type PathPolicy = z.infer<typeof pathPolicySchema>;
 export type Budget = z.infer<typeof budgetSchema>;
 

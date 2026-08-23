@@ -30,6 +30,7 @@ const playbook = loadPlaybookFile(join(phasesDir, 'definition.yaml'));
 const schemas = new ArtifactSchemaRegistry([
   defineArtifactSchema('definition', z.object({ problem: z.string().min(1) })),
   defineArtifactSchema('findings', z.object({ open: z.number() })),
+  defineArtifactSchema('prior-art', z.object({ surveyed: z.number() })),
 ]);
 
 const provenance = {
@@ -85,7 +86,16 @@ function evidenceFor(
     producedBy: provenance,
   });
 
-  const artifacts: Record<string, Artifact> = { 'definition-brief': brief };
+  const artifacts: Record<string, Artifact> = {
+    'definition-brief': brief,
+    'prior-art': store.write({
+      id: 'prior-art',
+      basePath: 'artifacts/definition/prior-art.md',
+      schema: 'prior-art',
+      data: { surveyed: 1 },
+      producedBy: { ...provenance, task: 'survey-prior-art', role: 'researcher' },
+    }),
+  };
   if (opts.findings !== false) {
     artifacts['ambiguity-findings'] = store.write({
       id: 'ambiguity-findings',

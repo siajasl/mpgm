@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.6 — pattern-primitive expansion semantics (§4.1) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.7 — network policy and the untrusted-content role profile (§4.2) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -86,7 +86,8 @@ A deterministic state machine, no LLM calls. Owns:
 - **Replan policy:** classifies plan deltas — intra-milestone task reorder/split = autonomous + logged; milestone/plan-phase/design-touching changes = Plan gate re-entry (PLN-4).
 
 ### 4.2 Agent Runtime (AGT-*)
-- **Role definitions:** `roles/<name>.md` — YAML frontmatter (model, tools, permissions, budgets, output schema ref) + system-prompt body; versioned in git (AGT-1), least-privilege by declaration (AGT-2).
+- **Role definitions:** `roles/<name>.md` — YAML frontmatter (model, tools, path permissions, network allowlist, budgets, output schema ref) + system-prompt body; versioned in git (AGT-1), least-privilege by declaration (AGT-2). Every dimension defaults to empty, so a role reaches only what it names.
+- **Untrusted-content profile (SAF-3):** roles that ingest external material (prior-art research, third-party issues, dependency docs) declare no shell, no writable path, and a hostname allowlist enforced on every fetch — plaintext destinations refused outright. The role's prompt states that fetched text is data rather than instruction, but the control is that an instruction planted in a page has nothing to act through: the tools it would need were never offered. A search returns content from hosts the allowlist never saw; the allowlist bounds what the agent may then go and *retrieve*, which is the step that turns a planted link into a request.
 - **Execution:** wraps the SDK's query loop; final output is captured via a schema-enforced structured-output tool (zod). Validation failure → bounded retry with the validation error fed back (AGT-3).
 - **Model routing (AGT-5):** the model is a **dispatch-time session parameter** resolved by the kernel per task: role-frontmatter default, overridden by the task-class → model-tier routing table (initially seeded from the PLAN §3 model column). Overrides never mutate role definitions, so routing changes are not role changes and do not trigger AGT-6 evals or violate a role freeze. The resolved model ID is recorded in the `TaskDispatched` event (§5) for replay and eval attribution.
 - **Interactive mode (DEF-1, HIL-4):** `mpgm chat <phase|gate>` attaches the operator to a live SDK session — used for Definition elicitation dialogues and gate discussions; the transcript is captured as an artifact and its conclusions flow through normal structured outputs, so interactivity does not bypass validation or audit.
