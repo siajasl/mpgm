@@ -29,7 +29,11 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
       options: {
         model: request.model,
         systemPrompt: request.systemPrompt,
-        allowedTools: [...request.allowedTools],
+        // `tools` restricts which tools exist; `allowedTools` would AUTO-APPROVE
+        // them, short-circuiting canUseTool before the path policy is consulted
+        // (the SDK warns about exactly this). Least privilege at the tool level
+        // here, per-call path enforcement at the gate.
+        tools: [...request.allowedTools],
         maxTurns: request.maxTurns,
         maxBudgetUsd: request.maxBudgetUsd,
         outputFormat: { type: 'json_schema', schema: request.outputJsonSchema },
@@ -50,6 +54,21 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
         tool: denial.tool_name,
         reason: 'denied by policy',
       }));
+
+      // A 'success' subtype can still carry is_error — an auth failure returns
+      // exactly that, with zero usage and no output. Trusting the subtype alone
+      // makes an infrastructure failure look like a model that ignored its
+      // schema, and the retry loop then burns its whole budget on it.
+      if (message.subtype === 'success' && message.is_error) {
+        return {
+          termination: 'error',
+          structuredOutput: undefined,
+          usage: usageOf(message.total_cost_usd, message.usage),
+          turns: message.num_turns,
+          denials,
+          errorMessage: message.result,
+        };
+      }
 
       if (message.subtype !== 'success') {
         return {
