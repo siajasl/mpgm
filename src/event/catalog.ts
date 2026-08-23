@@ -178,24 +178,24 @@ export const operatorIntervened = defineEvent(
 
 /** Every kernel event type currently defined. */
 export const kernelEvents = [
-  runStarted,
-  phaseEntered,
-  taskDispatched,
-  sessionUsage,
-  toolCallLogged,
-  taskCompleted,
-  validationFailed,
-  gatePresented,
-  gateApproved,
-  gateRejected,
-  phaseReopened,
-  gateInvalidated,
   budgetExceeded,
-  effectIntended,
   effectCompleted,
-  effectFailed,
   effectEscalated,
+  effectFailed,
+  effectIntended,
+  gateApproved,
+  gateInvalidated,
+  gatePresented,
+  gateRejected,
   operatorIntervened,
+  phaseEntered,
+  phaseReopened,
+  runStarted,
+  sessionUsage,
+  taskCompleted,
+  taskDispatched,
+  toolCallLogged,
+  validationFailed,
 ];
 
 /** Registry over the full kernel catalog. */
