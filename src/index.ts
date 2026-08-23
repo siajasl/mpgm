@@ -18,7 +18,20 @@ export {
 export type { EventDefinition, Upcaster } from './event/registry.js';
 export { defineEvent, EventRegistry } from './event/registry.js';
 export type { ArtifactRef } from './event/catalog.js';
-export { artifactRefSchema, kernelEvents, kernelRegistry } from './event/catalog.js';
+export {
+  artifactRefSchema,
+  blobRefSchema,
+  kernelEvents,
+  kernelRegistry,
+} from './event/catalog.js';
+export type { BlobRef, GetOptions } from './blob/store.js';
+export {
+  BlobIntegrityError,
+  BlobNotFoundError,
+  BlobStore,
+  HASH_ALGORITHM,
+  hashContent,
+} from './blob/store.js';
 export type { RedactionRule, RedactorOptions } from './redaction.js';
 export { defaultKeyRules, defaultValueRules, marker, Redactor } from './redaction.js';
 export type { Clock, EventLogOptions, ReadOptions } from './event/store.js';

@@ -21,6 +21,16 @@ export const artifactRefSchema = z.object({
 
 export type ArtifactRef = z.infer<typeof artifactRefSchema>;
 
+/**
+ * A reference to content in the blob store (ADR-2). Large tool outputs and
+ * session transcripts are offloaded there so the log stays small while replay
+ * still has the full bytes available.
+ */
+export const blobRefSchema = z.object({
+  hash: z.string().regex(/^[0-9a-f]{64}$/, 'expected a sha256 hex digest'),
+  size: z.number().int().nonnegative(),
+});
+
 const nonEmpty = z.string().min(1);
 
 export const runStarted = defineEvent(
@@ -62,7 +72,14 @@ export const toolCallLogged = defineEvent(
     /** Denials are logged, not just blocked (SAF-1, PLAN T1.2.4). */
     decision: z.enum(['allowed', 'denied']),
     detail: z.string().default(''),
+    /**
+     * Full tool output, offloaded to the blob store. Null when the output was
+     * small enough to keep in `detail`.
+     */
+    outputBlob: blobRefSchema.nullable(),
   }),
+  // v1 predates the blob store; those events carry no offloaded output.
+  [(payload) => ({ ...(payload as object), outputBlob: null })],
 );
 
 export const taskCompleted = defineEvent(
