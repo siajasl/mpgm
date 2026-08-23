@@ -39,7 +39,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm resume --run <id>               resume a paused run
   mpgm kill --run <id>                 stop a run permanently
   mpgm redirect --run <id> --note <s>  record an operator redirection
-  mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>]
+  mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>] [--tag]
   mpgm chat <phase> [--run <id>] [--brief <s>]
   mpgm replay [--run <id>]             re-derive state from the log alone
 `;

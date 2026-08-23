@@ -217,5 +217,13 @@ export type { CliContext, CommandResult } from './cli/commands.js';
 export { approve, chat, intervene, replay, run, status } from './cli/commands.js';
 export type { Verb } from './cli/main.js';
 export { parseArgs, runCli, USAGE, VERBS } from './cli/main.js';
+export type { GateTagRequest } from './git/tag.js';
+export {
+  gateTagName,
+  GitTagError,
+  isGitRepository,
+  listGateTags,
+  tagGate,
+} from './git/tag.js';
 export type { RunControl } from './state/kernel-state.js';
 export { runControl } from './state/reduce.js';

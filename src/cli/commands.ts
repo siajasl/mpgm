@@ -11,6 +11,7 @@ import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
 import { elicit, type OperatorIo } from '../elicit/session.js';
 import { GateManager, gateOracleFromState } from '../gate/manager.js';
+import { isGitRepository, tagGate } from '../git/tag.js';
 import { runPhase } from '../phase/runner.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
 import { RoleRegistry } from '../role/loader.js';
@@ -223,6 +224,7 @@ export function approve(
   by: string,
   reject = false,
   reason = '',
+  tag = false,
 ): CommandResult {
   const { db, log, projector } = open(context);
   try {
@@ -232,8 +234,32 @@ export function approve(
     } else {
       gates.approve(runId, gateId, by);
     }
-    const status = projector.project().runs[runId]?.gates[gateId]?.status ?? 'unknown';
+
+    const state = projector.project();
+    const gate = state.runs[runId]?.gates[gateId];
+    const status = gate?.status ?? 'unknown';
     context.write(`gate ${gateId} ${status} by ${by}`);
+
+    // The tag is written after the decision is recorded, and only then. It is
+    // a derived marker (ADR-3): if tagging fails, the gate is still approved.
+    if (!reject && tag && isGitRepository(context.root)) {
+      const version = gate?.artifactRefs[0]?.version ?? 1;
+      try {
+        const written = tagGate({
+          repo: context.root,
+          phase: gate?.phase ?? 'unknown',
+          version,
+          gateId,
+          by,
+        });
+        context.write(`tagged ${written.tag} at ${written.commit.slice(0, 8)}`);
+      } catch (error) {
+        context.write(
+          `gate approved, but tagging failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
     return { ok: true, detail: status };
   } finally {
     db.close();
