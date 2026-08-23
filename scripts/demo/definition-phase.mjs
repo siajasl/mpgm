@@ -1,8 +1,9 @@
 /**
  * M1.3 verification — full Definition phase on a sample project.
  *
- *   elicitation chat → analyst drafts the Definition artifact → adversarial
- *   review → gate packet → operator approval → tagged artifact → replay
+ *   elicitation chat → researcher surveys prior art → analyst drafts the
+ *   Definition artifact → adversarial review → gate packet → operator
+ *   approval → tagged artifact → replay
  *
  * Makes real model calls. Not part of `npm run check` or CI: CI has no
  * credentials, and a verification that silently skipped itself would be worse
@@ -140,7 +141,17 @@ try {
     listGateTags(workspace).join(', '),
   );
 
-  process.stdout.write('\n4. The artifact\n');
+  process.stdout.write('\n4. Prior art (DEF-3)\n');
+  const priorArtPath = join(workspace, 'artifacts', 'definition', 'prior-art.v1.md');
+  const priorArt = readFileSync(priorArtPath, 'utf8');
+  process.stdout.write(`${priorArt.split('\n').slice(0, 30).join('\n')}\n`);
+  check(
+    'the survey attributes its claims to sources (DEF-3)',
+    priorArt.includes('https://') && priorArt.includes('kind:'),
+  );
+  check('the survey says what it could not find', priorArt.includes('gaps'));
+
+  process.stdout.write('\n5. The artifact\n');
   const briefPath = join(workspace, 'artifacts', 'definition', 'brief.v1.md');
   const brief = readFileSync(briefPath, 'utf8');
   process.stdout.write(`${brief.split('\n').slice(0, 40).join('\n')}\n`);
@@ -161,7 +172,7 @@ try {
     ].every((field) => brief.includes(field)),
   );
 
-  process.stdout.write('\n5. Immutability\n');
+  process.stdout.write('\n6. Immutability\n');
 
   // Re-running is refused before any task is dispatched, so this costs nothing.
   const second = await call(['run', 'definition', '--run', 'r1'], { echo: false });
@@ -212,11 +223,11 @@ try {
     db.close();
   }
 
-  process.stdout.write('\n6. Replay\n');
+  process.stdout.write('\n7. Replay\n');
   const replayed = await call(['replay', '--run', 'r1']);
   check('replay reproduces the run from the log alone (ORC-3)', replayed.result.ok);
 
-  process.stdout.write('\n7. Status\n');
+  process.stdout.write('\n8. Status\n');
   await call(['status', '--run', 'r1']);
 } finally {
   rmSync(workspace, { recursive: true, force: true });

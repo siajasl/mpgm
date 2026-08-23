@@ -49,15 +49,26 @@ describe('the definition playbook', () => {
 
     expect(playbook.phase).toBe('definition');
     expect(playbook.tasks.map((task) => task.id)).toStrictEqual([
+      'survey-prior-art',
       'draft-brief',
       'challenge-brief',
     ]);
-    expect(playbook.order).toStrictEqual(['draft-brief', 'challenge-brief']);
+    expect(playbook.order).toStrictEqual([
+      'survey-prior-art',
+      'draft-brief',
+      'challenge-brief',
+    ]);
     expect(Object.keys(playbook.artifacts)).toStrictEqual([
+      'prior-art',
       'definition-brief',
       'ambiguity-findings',
     ]);
-    expect(playbook.gate.criteria).toHaveLength(3);
+    expect(playbook.gate.criteria.map((criterion) => criterion.id)).toStrictEqual([
+      'prior-art-surveyed',
+      'brief-present',
+      'findings-present',
+      'ambiguities-resolved',
+    ]);
   });
 
   it('does not auto-approve its gate', () => {
