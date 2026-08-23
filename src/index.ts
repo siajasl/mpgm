@@ -73,3 +73,5 @@ export { EffectJournal } from './effect/journal.js';
 
 /** Package version. Kept in step with package.json by test. */
 export const VERSION = '0.1.0';
+
+export { demoTimestamp, syntheticRun } from './demo/workload.js';

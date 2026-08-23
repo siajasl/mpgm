@@ -31,6 +31,15 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
 
+  // Demo scripts: plain JS run by node against the build.
+  {
+    files: ['scripts/**/*.mjs'],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      globals: { process: 'readonly', console: 'readonly', Buffer: 'readonly' },
+    },
+  },
+
   // Test fixtures executed by a subprocess: plain JS, run against the build.
   {
     files: ['**/__fixtures__/**/*.mjs'],
