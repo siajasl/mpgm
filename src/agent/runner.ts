@@ -39,6 +39,15 @@ export interface RunTaskRequest {
    * them all.
    */
   readonly policyRoot?: string;
+  /**
+   * Extra checks on a validated output, returning one issue per problem.
+   *
+   * For rules the output schema cannot express because they depend on the
+   * project rather than on the shape — which convention ids are in force,
+   * which requirements exist. Issues are fed back and the session retried,
+   * exactly as a schema failure is.
+   */
+  readonly validate?: (output: unknown) => readonly string[];
   readonly signal?: AbortSignal;
 }
 
@@ -264,12 +273,28 @@ export class SessionRunner {
 
       const parsed = schema.safeParse(result.structuredOutput);
       if (parsed.success) {
+        // Constraints the kernel knows and the schema cannot: a schema is a
+        // fixed shape, while some rules depend on what this project happens
+        // to hold — which conventions are in force, which requirement ids
+        // exist. Fed back through the same retry as a schema failure, because
+        // to the agent they are the same kind of mistake (AGT-3).
+        const extra = request.validate?.(parsed.data) ?? [];
+        if (extra.length === 0) {
+          this.#log.append({
+            runId,
+            type: 'TaskCompleted',
+            payload: { taskId, artifactRefs: [] },
+          });
+          return { status: 'completed', output: parsed.data, attempts: attempt };
+        }
+
+        lastIssues = extra;
         this.#log.append({
           runId,
-          type: 'TaskCompleted',
-          payload: { taskId, artifactRefs: [] },
+          type: 'ValidationFailed',
+          payload: { taskId, attempt, issues: [...lastIssues] },
         });
-        return { status: 'completed', output: parsed.data, attempts: attempt };
+        continue;
       }
 
       lastIssues = parsed.error.issues.map(

@@ -147,6 +147,53 @@ describe('validation and bounded retry', () => {
     }
   });
 
+  it('retries a project rule the schema cannot express, and feeds it back', async () => {
+    // The Design-phase regression: a convention id in `tracesTo`. The schema
+    // is satisfied — it is a non-empty array of strings — so only a check that
+    // knows which conventions are in force can catch it (DSG-4, IMP-4).
+    const { db, log, provider, runner } = harness([
+      scriptedSuccess({ summary: 'a summary', requirements: ['CONV-4'] }),
+      scriptedSuccess(validOutput),
+    ]);
+    try {
+      const outcome = await runner.runTask({
+        ...task,
+        validate: (output) =>
+          (output as { requirements: string[] }).requirements
+            .filter((id) => id === 'CONV-4')
+            .map((id) => `'${id}' is a project convention, not a requirement`),
+      });
+
+      expect(outcome.status).toBe('completed');
+      expect(outcome.attempts).toBe(2);
+      expect(provider.requests[1]?.prompt).toContain('is a project convention');
+      expect(log.read().map((event) => event.type)).toContain('ValidationFailed');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not report a task complete while a project rule is unmet', async () => {
+    const { db, log, runner } = harness([
+      scriptedSuccess(validOutput),
+      scriptedSuccess(validOutput),
+      scriptedSuccess(validOutput),
+    ]);
+    try {
+      const outcome = await runner.runTask({
+        ...task,
+        validate: () => ['never satisfied'],
+      });
+
+      expect(outcome.status).toBe('blocked');
+      // TaskCompleted must not have been written for an output the kernel
+      // rejected: state would then say the task succeeded.
+      expect(log.read().map((event) => event.type)).not.toContain('TaskCompleted');
+    } finally {
+      db.close();
+    }
+  });
+
   it('blocks rather than retrying forever', async () => {
     const bad = scriptedSuccess({ summary: '' });
     const { db, log, projector, runner } = harness([bad, bad, bad]);

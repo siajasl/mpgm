@@ -2,6 +2,7 @@ import { relative } from 'node:path';
 import type { SessionRunner } from '../agent/runner.js';
 import type { Artifact, ArtifactStore, Provenance } from '../artifact/store.js';
 import { assembleContext, type UpstreamResult } from '../context/assembler.js';
+import { conventionTraceIssues } from '../context/conventions.js';
 import { collectDecisions, relevantDecisions } from '../context/decisions.js';
 import { kbUpdatesOf, writeKbDocument } from '../context/kb-writer.js';
 import type { EgressPolicy } from '../context/egress.js';
@@ -316,6 +317,11 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       taskId: step.id,
       role,
       prompt: context.prompt,
+      // The conventions this task was actually shown, which is the set it can
+      // be held to. Checked here rather than trusted to the prompt: `tracesTo`
+      // is the only id-shaped field most artifacts have, so it is where an id
+      // goes when an agent has one and nowhere to put it (IMP-4, DSG-4).
+      validate: (output) => conventionTraceIssues(output, context.conventions),
     });
 
     if (outcome.status !== 'completed') {

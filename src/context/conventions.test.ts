@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_EGRESS_POLICY } from './egress.js';
 import { assembleContext } from './assembler.js';
 import {
+  conventionTraceIssues,
   duplicateConventionIds,
   parseConventions,
   undeclaredDeviations,
@@ -78,8 +79,13 @@ describe('conventions in an implementation task’s context (CTX-1, IMP-4)', () 
     expect(context.conventions).toEqual(['CONV-1', 'CONV-2']);
     expect(context.prompt).toContain('## Conventions');
     expect(context.prompt).toContain('These are binding on this project');
-    expect(context.prompt).toContain('declare the');
     expect(context.prompt).toContain('**CONV-1**');
+    // Both halves of the deviation instruction, because a task whose output
+    // has no `deviations` field otherwise has nowhere to put the thought — and
+    // puts it in `tracesTo`, which is what broke the Design demo.
+    expect(context.prompt).toContain('`deviations` field');
+    expect(context.prompt).toContain('Where it has no such field');
+    expect(context.prompt).toContain('A convention id is never a trace target');
   });
 
   it('does not repeat the conventions in the knowledge-base digest', () => {
@@ -139,5 +145,59 @@ describe('mpgm’s own conventions', () => {
     // hold nobody to anything, and every review would find nothing to report.
     expect(conventions.length).toBeGreaterThanOrEqual(6);
     expect(duplicateConventionIds(conventions)).toEqual([]);
+  });
+});
+
+describe('convention ids are not trace targets (DSG-4, ART-2)', () => {
+  const conventions = ['CONV-1', 'CONV-4'];
+
+  it('reports a convention cited where a requirement belongs', () => {
+    const issues = conventionTraceIssues(
+      {
+        adrs: [
+          {
+            id: 'ADR-3',
+            title: 'The kiosk is unauthenticated',
+            tracesTo: ['LOAN-6', 'CONV-4'],
+          },
+        ],
+      },
+      conventions,
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('ADR-3');
+    expect(issues[0]).toContain("'CONV-4' is a project convention");
+    // The agent is told where the thought does belong, not merely refused.
+    expect(issues[0]).toContain('say so in its own text');
+  });
+
+  it('finds them wherever they are nested, and in `verifies` too', () => {
+    const issues = conventionTraceIssues(
+      {
+        components: [{ id: 'C1', parts: [{ id: 'C1.1', tracesTo: ['CONV-1'] }] }],
+        tests: [{ id: 'T1', verifies: ['CONV-4'] }],
+      },
+      conventions,
+    );
+
+    expect(issues.map((issue) => issue.split(':')[0])).toEqual(['C1.1', 'T1']);
+  });
+
+  it('says nothing about requirement ids, however similar they look', () => {
+    expect(
+      conventionTraceIssues(
+        { components: [{ id: 'C1', tracesTo: ['LOAN-1', 'CONV-99', 'NFR-2'] }] },
+        conventions,
+      ),
+    ).toEqual([]);
+  });
+
+  it('holds a task only to the conventions it was shown', () => {
+    // The set comes from the assembled context, so a task whose conventions
+    // were withheld by the egress policy is not held to ids it never saw.
+    expect(conventionTraceIssues({ a: { id: 'X', tracesTo: ['CONV-1'] } }, [])).toEqual(
+      [],
+    );
   });
 });
