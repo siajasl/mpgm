@@ -410,3 +410,27 @@ export {
   GitHubChecksError,
   githubChecksProvider,
 } from './implement/github-checks.js';
+export type { ModelTier } from './agent/models.js';
+export { canEscalate, escalateModel, MODEL_TIERS, tierOf } from './agent/models.js';
+export type { AwaitChecksOptions, SettledChecks } from './implement/checks.js';
+export {
+  awaitChecks,
+  DEFAULT_CHECKS_INTERVAL_MS,
+  DEFAULT_CHECKS_TIMEOUT_MS,
+} from './implement/checks.js';
+export { fetchCheckLog, jobIdFromUrl } from './implement/github-checks.js';
+export type {
+  AttemptRecord,
+  RepairOptions,
+  RepairOutcome,
+  RepairReport,
+  RepairRequest,
+  RepairStatus,
+} from './implement/repair.js';
+export {
+  DEFAULT_LOG_LINES,
+  DEFAULT_REPAIR_ATTEMPTS,
+  renderFeedback,
+  repairUntilGreen,
+  tail,
+} from './implement/repair.js';

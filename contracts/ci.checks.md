@@ -42,6 +42,22 @@ A provider MUST:
   which blocks the merge — that is the intended outcome, not a failure of the
   provider.
 
+### `logs`
+
+| | |
+|---|---|
+| Input | `{ repo: string, ref: string, check: string }` — the check name exactly as `status` reported it |
+| Output | `{ check: string, text: string }` |
+| Effects | `read-only` |
+
+What the check printed, for feeding back to the agent that broke it (IMP-2).
+
+Empty text is a legitimate answer: not every CI exposes logs through an API,
+and a log may have expired or been redacted. The repair loop then feeds back
+the verdict alone — worse feedback, but honest. A provider MUST NOT fail the
+call because a log is unavailable; an unreadable log is not a reason to abandon
+a repair that still knows what failed.
+
 ## How the verdict is decided
 
 Kinds required before any merge: `build`, `lint`, `typecheck`, `test`, `scan`.
@@ -79,3 +95,11 @@ merge on a value nobody understood is the failure worth preventing.
 - Triggering or re-running checks. A repair pushes a commit, which re-triggers
   CI on its own; explicit re-runs would be for infrastructure failures, and are
   not needed until something needs them.
+
+## Consumers
+
+- [`src/implement/repair.ts`](../src/implement/repair.ts) — the bounded repair
+  loop (IMP-2, NFR-1). It requires a *settled* verdict: `awaitChecks` polls
+  until nothing is still running, because a verdict read mid-run is not an
+  answer and repairing against one spends an attempt on a build that had not
+  failed yet.

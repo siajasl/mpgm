@@ -121,12 +121,57 @@ export async function fetchCheckRuns(
   return result.flatMap((page) => page.check_runs.map(toCheckRun));
 }
 
+/**
+ * The Actions job behind a check run.
+ *
+ * A check run's `html_url` ends `/job/<id>` for Actions; the job id is what
+ * the logs endpoint takes. Parsed rather than requested separately because the
+ * check-runs response already carries it, and a second round-trip per failing
+ * check is a second thing that can fail while an agent waits.
+ */
+export function jobIdFromUrl(url: string): string | undefined {
+  return /\/job\/(\d+)\b/.exec(url)?.[1];
+}
+
+/**
+ * What a failing check printed.
+ *
+ * Returns empty text when the check cannot be found or has no job behind it.
+ * Empty is a legitimate answer under the contract: the repair loop then feeds
+ * back the verdict alone, which is worse feedback but honest, rather than
+ * failing the whole repair because a log was unavailable.
+ */
+export async function fetchCheckLog(
+  repo: string,
+  ref: string,
+  check: string,
+  options: GitHubChecksOptions = {},
+): Promise<string> {
+  const api = options.api ?? ghCli;
+  const runs = await fetchCheckRuns(repo, ref, options);
+  const jobId = jobIdFromUrl(runs.find((run) => run.name === check)?.url ?? '');
+  if (jobId === undefined) {
+    return '';
+  }
+  try {
+    return await api(['api', `repos/${repo}/actions/jobs/${jobId}/logs`]);
+  } catch {
+    // A log that has expired or been redacted is not a reason to abandon the
+    // repair; the verdict still says what failed.
+    return '';
+  }
+}
+
 /** A provider satisfying `ciChecksContract` against GitHub Actions. */
 export function githubChecksProvider(options: GitHubChecksOptions = {}): Provider {
   return {
     status: async (input: never): Promise<unknown> => {
       const { repo, ref } = input as { repo: string; ref: string };
       return { ref, runs: await fetchCheckRuns(repo, ref, options) };
+    },
+    logs: async (input: never): Promise<unknown> => {
+      const { repo, ref, check } = input as { repo: string; ref: string; check: string };
+      return { check, text: await fetchCheckLog(repo, ref, check, options) };
     },
   };
 }
