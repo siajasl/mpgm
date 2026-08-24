@@ -310,7 +310,12 @@ export const priorArtSchema = z.object({
  * the dependencies that must land first.
  */
 export const planTaskSchema = z.object({
-  id: z.string().regex(/^T[0-9]+(?:\.[0-9]+)+$/, 'e.g. T2.1.3'),
+  /**
+   * Stable task id. The optional letter suffix is how a plan records a task
+   * that was split after approval — `T3.1.2a`, `T3.1.2b` — without renumbering
+   * everything after it and invalidating every trace to it.
+   */
+  id: z.string().regex(/^T[0-9]+(?:\.[0-9]+)+[a-z]?$/, 'e.g. T2.1.3, T3.1.2a'),
   title: z.string().min(1),
   /**
    * How to tell it is done. At least one: a task whose completion is a matter

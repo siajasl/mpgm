@@ -335,6 +335,13 @@ export type {
   ReplanVerdict,
 } from './plan/replan.js';
 export { classifyReplan } from './plan/replan.js';
+export type { DryRunReport, IngestedTask, PlanGraph } from './plan/ingest.js';
+export {
+  dependencyWaves,
+  dryRunPlan,
+  ingestPlan,
+  PlanIngestError,
+} from './plan/ingest.js';
 export type { ApplyReplanOptions, ReplanOutcome } from './plan/apply.js';
 export { applyReplan, completedTasks } from './plan/apply.js';
 export type { GateTagRequest } from './git/tag.js';
