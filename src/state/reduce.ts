@@ -6,6 +6,8 @@ import type {
   changeMerged,
   changeReviewed,
   checksReported,
+  destructiveOpConfirmed,
+  dryRunRecorded,
   effectCompleted,
   effectEscalated,
   effectFailed,
@@ -31,6 +33,7 @@ import {
   emptyState,
   zeroUsage,
   type ChecksState,
+  type DestructiveCallState,
   type EffectState,
   type MergeState,
   type ReviewState,
@@ -51,7 +54,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 9;
+export const REDUCER_VERSION = 10;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -157,6 +160,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         planRevisions: [],
         kbUpdates: [],
         effects: {},
+        destructiveCalls: {},
         usage: zeroUsage,
         interventions: 0,
       };
@@ -422,6 +426,56 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         reviewTaskId: payload.reviewTaskId,
       };
       return withRun(state, withTask(run, { ...task, merged }), seq);
+    }
+
+    case 'DryRunRecorded': {
+      const payload = event.payload as PayloadOf<typeof dryRunRecorded>;
+      const run = requireRun(state, event.runId, type);
+      requireTask(run, payload.taskId, type);
+      const existing = run.destructiveCalls[payload.fingerprint];
+      const call: DestructiveCallState = {
+        fingerprint: payload.fingerprint,
+        tool: payload.tool,
+        taskId: payload.taskId,
+        dryRun: true,
+        // A repeated dry run does not retract a confirmation already given for
+        // the same call; the parameters are identical, so there is nothing new
+        // for the operator to decide.
+        confirmedBy: existing?.confirmedBy ?? null,
+      };
+      return withRun(
+        state,
+        {
+          ...run,
+          destructiveCalls: { ...run.destructiveCalls, [payload.fingerprint]: call },
+        },
+        seq,
+      );
+    }
+
+    case 'DestructiveOpConfirmed': {
+      const payload = event.payload as PayloadOf<typeof destructiveOpConfirmed>;
+      const run = requireRun(state, event.runId, type);
+      requireTask(run, payload.taskId, type);
+      const existing = run.destructiveCalls[payload.fingerprint];
+      const call: DestructiveCallState = {
+        fingerprint: payload.fingerprint,
+        tool: payload.tool,
+        taskId: payload.taskId,
+        // Confirming something never simulated leaves `dryRun` false, and the
+        // guard still refuses it. An operator cannot approve their way past
+        // the simulation SAF-4 asks for.
+        dryRun: existing?.dryRun ?? false,
+        confirmedBy: payload.by,
+      };
+      return withRun(
+        state,
+        {
+          ...run,
+          destructiveCalls: { ...run.destructiveCalls, [payload.fingerprint]: call },
+        },
+        seq,
+      );
     }
 
     case 'KnowledgeBaseUpdated': {

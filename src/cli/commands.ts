@@ -224,6 +224,51 @@ export function intervene(
   }
 }
 
+/**
+ * `mpgm confirm <fingerprint>` — let a simulated destructive call proceed
+ * (SAF-4, HIL-2).
+ *
+ * Only a call that has actually been simulated can be confirmed: the operator
+ * is approving *what the dry run did*, and an unknown fingerprint means there
+ * is nothing to have looked at. Confirming by hand what nothing simulated
+ * would be approving a description.
+ */
+export function confirm(
+  context: CliContext,
+  runId: string,
+  fingerprint: string,
+  by: string,
+  reason = '',
+): CommandResult {
+  const { db, log, projector } = open(context);
+  try {
+    const run = projector.project().runs[runId];
+    if (run === undefined) {
+      context.write(`no such run: ${runId}`);
+      return { ok: false, detail: 'unknown run' };
+    }
+
+    const call = run.destructiveCalls[fingerprint];
+    if (!call?.dryRun) {
+      context.write(
+        `nothing has been simulated with fingerprint ${fingerprint} in ${runId}. ` +
+          `A destructive call must be dry-run before it can be confirmed (SAF-4).`,
+      );
+      return { ok: false, detail: 'no dry run' };
+    }
+
+    log.append({
+      runId,
+      type: 'DestructiveOpConfirmed',
+      payload: { taskId: call.taskId, tool: call.tool, fingerprint, by, reason },
+    });
+    context.write(`${call.tool} (${fingerprint.slice(0, 12)}) confirmed by ${by}`);
+    return { ok: true, detail: 'confirmed' };
+  } finally {
+    db.close();
+  }
+}
+
 /** `mpgm approve <gate>` — record a gate decision (HIL-5). */
 /**
  * Withdraw a phase's approval and cascade to what traced to it (ORC-6).

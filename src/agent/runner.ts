@@ -10,6 +10,7 @@ import type {
   ToolGate,
 } from './session.js';
 import type { SecretBroker } from '../secret/broker.js';
+import type { DestructiveGuard } from '../policy/destructive.js';
 
 /**
  * Runs one SDK session per task (ADR-5) and turns its result into events.
@@ -64,6 +65,11 @@ export interface SessionRunnerOptions {
    * a broker with nothing declared would only add a layer that never fires.
    */
   readonly secrets?: SecretBroker;
+  /**
+   * Refuses destructive calls that have not been simulated and confirmed
+   * (SAF-4). Omitted for runs with no destructive tools in reach.
+   */
+  readonly destructive?: DestructiveGuard;
 }
 
 export const DEFAULT_MAX_VALIDATION_ATTEMPTS = 3;
@@ -76,6 +82,7 @@ export class SessionRunner {
   readonly #now: Now | undefined;
   readonly #policyRoot: string;
   readonly #secrets: SecretBroker | undefined;
+  readonly #destructive: DestructiveGuard | undefined;
 
   constructor(options: SessionRunnerOptions) {
     this.#log = options.log;
@@ -85,6 +92,7 @@ export class SessionRunner {
     this.#now = options.now;
     this.#policyRoot = options.policyRoot ?? process.cwd();
     this.#secrets = options.secrets;
+    this.#destructive = options.destructive;
 
     if (this.#maxAttempts < 1) {
       throw new Error('maxValidationAttempts must be at least 1');
@@ -106,7 +114,13 @@ export class SessionRunner {
     seen: (tool: string) => void,
   ): ToolGate {
     const inner = policy.gate();
-    const gate = this.#secrets === undefined ? inner : this.#secrets.gate(inner);
+    // Destructive first, then policy, then the broker: a destructive call is
+    // reported as destructive rather than as whatever else is also wrong with
+    // it, and no credential is resolved for a call that is about to be
+    // refused anyway.
+    const brokered = this.#secrets === undefined ? inner : this.#secrets.gate(inner);
+    const gate =
+      this.#destructive === undefined ? brokered : this.#destructive.gate(brokered);
 
     return async (tool: string, input: Record<string, unknown>) => {
       const decision = await gate(tool, input);

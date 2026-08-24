@@ -299,6 +299,7 @@ export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
 export type { CliContext, CommandResult } from './cli/commands.js';
 export {
   approve,
+  confirm,
   chat,
   intervene,
   reopen,
@@ -480,3 +481,20 @@ export {
   secretDeclarationSchema,
   secretReference,
 } from './secret/broker.js';
+export type { DestructiveCallState } from './state/kernel-state.js';
+export type {
+  ConfirmationRequest,
+  DestructiveGuardOptions,
+  DestructiveOperation,
+  DestructiveOperationInput,
+  DryRunRecord,
+  ShellDenial,
+} from './policy/destructive.js';
+export {
+  DEFAULT_SHELL_DENIALS,
+  DestructiveGuard,
+  DestructiveGuardError,
+  destructiveOperationSchema,
+  fingerprint,
+  stateLedger,
+} from './policy/destructive.js';

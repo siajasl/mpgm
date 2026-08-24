@@ -108,6 +108,27 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'DryRunRecorded',
+        payload: {
+          taskId: 'T1',
+          tool: 'mcp__deploy__release',
+          fingerprint: 'f1',
+          summary: 'would replace 3 pods',
+        },
+      },
+      {
+        runId: RUN,
+        type: 'DestructiveOpConfirmed',
+        payload: {
+          taskId: 'T1',
+          tool: 'mcp__deploy__release',
+          fingerprint: 'f1',
+          by: 'operator',
+          reason: 'the simulated effect is the intended one',
+        },
+      },
+      {
+        runId: RUN,
         type: 'KnowledgeBaseUpdated',
         payload: {
           taskId: 'T1',

@@ -1,6 +1,7 @@
 import {
   approve,
   chat,
+  confirm,
   intervene,
   reopen,
   replay,
@@ -14,7 +15,7 @@ import {
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: eleven verbs and a handful of flags. A CLI framework would
+ * Deliberately small: twelve verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -27,6 +28,7 @@ export const VERBS = [
   'kill',
   'redirect',
   'approve',
+  'confirm',
   'reopen',
   'chat',
   'trace',
@@ -44,6 +46,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm kill --run <id>                 stop a run permanently
   mpgm redirect --run <id> --note <s>  record an operator redirection
   mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>] [--tag]
+  mpgm confirm <fingerprint> --run <id> --by <who> [--reason <s>]
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
   mpgm trace <id> | --coverage | --dangling
@@ -120,6 +123,15 @@ export async function runCli(
         flags.reject === 'true',
         flags.reason ?? '',
         flags.tag === 'true',
+      );
+
+    case 'confirm':
+      return confirm(
+        context,
+        runId,
+        require('a call fingerprint', positional[0]),
+        require('--by', flags.by),
+        flags.reason ?? '',
       );
 
     case 'reopen':

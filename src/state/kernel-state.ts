@@ -42,6 +42,21 @@ export interface ReviewState {
   readonly undeclaredDeviations: readonly string[];
 }
 
+/**
+ * A destructive call the kernel knows about (SAF-4).
+ *
+ * Keyed by fingerprint, so the record is about one exact call rather than
+ * about a capability. `confirmedBy` is null until an operator has seen what
+ * the dry run did.
+ */
+export interface DestructiveCallState {
+  readonly fingerprint: string;
+  readonly tool: string;
+  readonly taskId: string;
+  readonly dryRun: boolean;
+  readonly confirmedBy: string | null;
+}
+
 /** Where a task's change ended up (IMP-1). */
 export interface MergeState {
   readonly branch: string;
@@ -157,6 +172,8 @@ export interface RunState {
   /** Knowledge-base documents written by tasks, oldest first (CTX-4). */
   readonly kbUpdates: readonly KbUpdateState[];
   readonly effects: Readonly<Record<string, EffectState>>;
+  /** Fingerprint → what is known about that destructive call (SAF-4). */
+  readonly destructiveCalls: Readonly<Record<string, DestructiveCallState>>;
   readonly usage: Usage;
   readonly interventions: number;
 }
