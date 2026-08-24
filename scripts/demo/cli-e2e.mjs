@@ -362,6 +362,35 @@ try {
     refused.output,
   );
 
+  // trace — the derived graph (ADR-4), and coverage (TST-2)
+  const traced = await call(['trace', 'definition-brief@1']);
+  check(
+    'trace reports the graph around an artifact',
+    traced.result.ok && traced.output.includes('declared in'),
+    traced.output,
+  );
+
+  const coverage = await call(['trace', '--coverage']);
+  check(
+    'trace --coverage reports requirement coverage',
+    coverage.result.ok && coverage.output.includes('Requirement coverage'),
+    coverage.output.split('\n')[0] ?? '',
+  );
+
+  const dangling = await call(['trace', '--dangling']);
+  check(
+    'trace --dangling finds nothing to complain about here',
+    dangling.result.ok && dangling.output.includes('No citation resolves to nothing'),
+    dangling.output,
+  );
+
+  const unknownId = await call(['trace', 'NOPE-1']);
+  check(
+    'trace refuses an id the graph has never seen',
+    !unknownId.result.ok && unknownId.output.includes('Nothing in the trace graph'),
+    unknownId.output,
+  );
+
   // kill — terminal, and resume does not undo it
   await call(['kill', '--run', 'r1']);
   const afterKill = await call(['resume', '--run', 'r1']);

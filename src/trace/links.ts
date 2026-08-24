@@ -20,6 +20,13 @@ export type TraceNodeKind = 'artifact' | 'element' | 'commit';
 export type TraceRelation =
   /** The source cites the target as something it serves or derives from. */
   | 'traces-to'
+  /**
+   * The source demonstrates that the target holds — a test, or a change whose
+   * commit says so. Kept apart from `traces-to` because TST-2 asks which
+   * requirements are *verified*, and a design element citing a requirement is
+   * not evidence that anything checks it.
+   */
+  | 'verifies'
   /** The source artifact declares the target element. */
   | 'declares'
   /** The source artifact version replaces the target version. */
@@ -157,9 +164,12 @@ export function extractArtifactLinks(
     for (const cited of stringsOf(value.tracesTo)) {
       links.push({ src: here, dst: cited, relation: 'traces-to', source });
     }
+    for (const verified of stringsOf(value.verifies)) {
+      links.push({ src: here, dst: verified, relation: 'verifies', source });
+    }
 
     for (const [key, child] of Object.entries(value)) {
-      if (key !== 'tracesTo') {
+      if (key !== 'tracesTo' && key !== 'verifies') {
         walk(child, here);
       }
     }
@@ -181,7 +191,14 @@ export interface CommitRecord {
  * are conveniences that mean the same thing with a narrower intent, so that a
  * commit can say what it implements without inventing a vocabulary per repo.
  */
-const TRAILER_KEYS = new Set(['traces-to', 'implements', 'verifies', 'closes-task']);
+const TRAILER_RELATIONS: Readonly<Record<string, TraceRelation>> = {
+  'traces-to': 'traces-to',
+  implements: 'traces-to',
+  'closes-task': 'traces-to',
+  // TST-2 coverage counts this one and not the others: a commit that
+  // *implements* a requirement is not evidence that anything checks it.
+  verifies: 'verifies',
+};
 
 /**
  * Read the links a commit declares in its trailers.
@@ -203,17 +220,13 @@ export function extractCommitLinks(commit: CommitRecord): ExtractedLinks {
     const match = /^([A-Za-z][A-Za-z-]*):[ \t]*(.+)$/.exec(line.trim());
     const key = match?.[1]?.toLowerCase();
     const values = match?.[2];
-    if (key === undefined || values === undefined || !TRAILER_KEYS.has(key)) {
+    const relation = key === undefined ? undefined : TRAILER_RELATIONS[key];
+    if (relation === undefined || values === undefined) {
       continue;
     }
     for (const cited of values.split(',').map((entry) => entry.trim())) {
       if (cited !== '') {
-        links.push({
-          src: commit.sha,
-          dst: cited,
-          relation: 'traces-to',
-          source: commit.sha,
-        });
+        links.push({ src: commit.sha, dst: cited, relation, source: commit.sha });
       }
     }
   }

@@ -15,6 +15,7 @@ import { isGitRepository, tagGate } from '../git/tag.js';
 import { runPhase } from '../phase/runner.js';
 import { TraceIndex } from '../trace/index-store.js';
 import { planReopen, reopenPhase } from '../gate/reopen.js';
+import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
 import { RoleRegistry } from '../role/loader.js';
 import { Projector } from '../state/projector.js';
@@ -283,6 +284,129 @@ export function reopen(
     }
 
     return { ok: true, detail: dryRun ? 'planned' : 'reopened' };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Show the traceability graph around an id, or a coverage report (ADR-4).
+ *
+ * The index is brought up to the repository first: it is derived, so a stale
+ * answer is a bug in the reader rather than in the data, and `trace` is
+ * exactly where a stale answer would mislead.
+ */
+export function trace(
+  context: CliContext,
+  id: string | undefined,
+  mode: 'node' | 'coverage' | 'dangling' = 'node',
+): CommandResult {
+  const { db } = open(context);
+  try {
+    const index = TraceIndex.attach(db);
+    const artifacts = new ArtifactStore({
+      root: context.root,
+      schemas: context.artifactSchemas,
+    });
+    new TraceIndexer({ repo: context.root, index, artifacts }).update();
+
+    if (mode === 'dangling') {
+      const dangling = index.danglingReferences();
+      context.write(
+        dangling.length === 0
+          ? 'No citation resolves to nothing.'
+          : `${String(dangling.length)} citation(s) resolve to nothing:`,
+      );
+      for (const entry of dangling) {
+        context.write(`  ${entry.src} -> ${entry.dst}  (${entry.source})`);
+      }
+      return { ok: dangling.length === 0, detail: `${String(dangling.length)} dangling` };
+    }
+
+    if (mode === 'coverage') {
+      // Requirements are the elements declared by artifacts stored under the
+      // `scope` schema. Everything else an artifact declares — an ADR, a plan
+      // task — is not something TST-2 asks for coverage of.
+      const scopeSources = new Set(
+        artifacts
+          .list()
+          .filter((entry) => entry.artifact.schema === 'scope')
+          .map((entry) => entry.relativePath),
+      );
+      const requirements = index
+        .declaredElements()
+        .filter((element) => scopeSources.has(element.source))
+        .map((element) => element.id);
+
+      const rows = index.coverage(requirements);
+      const verified = rows.filter((row) => row.verified).length;
+
+      context.write(
+        `Requirement coverage: ${String(verified)}/${String(rows.length)} verified (TST-2)`,
+      );
+      for (const row of rows) {
+        context.write(
+          `  ${row.verified ? 'verified  ' : 'UNVERIFIED'} ${row.id}` +
+            (row.verifiedBy.length > 0 ? `  by ${row.verifiedBy.join(', ')}` : '') +
+            (row.verifiedBy.length === 0 && row.tracedBy.length > 0
+              ? `  (traced by ${row.tracedBy.join(', ')}, but nothing verifies it)`
+              : ''),
+        );
+      }
+      if (rows.length === 0) {
+        context.write('  (no requirements are declared yet)');
+      }
+      return { ok: true, detail: `${String(verified)}/${String(rows.length)}` };
+    }
+
+    if (id === undefined) {
+      context.write('trace: an id is required, or --coverage / --dangling');
+      return { ok: false, detail: 'no id' };
+    }
+
+    const declarations = index.declarationsOf(id);
+    const from = index.tracesFrom(id);
+    const to = index.tracesTo(id);
+
+    if (declarations.length === 0 && from.length === 0 && to.length === 0) {
+      context.write(`Nothing in the trace graph mentions '${id}'.`);
+      return { ok: false, detail: 'unknown id' };
+    }
+
+    context.write(id);
+    for (const declaration of declarations) {
+      context.write(
+        `  declared in ${declaration.source}` +
+          (declaration.label === '' ? '' : ` — ${declaration.label}`),
+      );
+    }
+    if (declarations.length > 1) {
+      // Two artifacts claiming the same id makes every citation of it
+      // ambiguous, so it is called out rather than merely listed.
+      context.write(`  WARNING: declared in ${String(declarations.length)} places`);
+    }
+
+    context.write('\nTraces to');
+    for (const link of from) {
+      context.write(`  ${link.relation}  ${link.dst}`);
+    }
+    if (from.length === 0) {
+      context.write('  (nothing)');
+    }
+
+    context.write('\nTraced from');
+    for (const link of to) {
+      context.write(`  ${link.src}  ${link.relation}`);
+    }
+    if (to.length === 0) {
+      context.write('  (nothing)');
+    }
+
+    const downstream = index.downstreamOf(id);
+    context.write('\nEverything a change here would reach (ORC-6)');
+    context.write(downstream.length === 0 ? '  (nothing)' : `  ${downstream.join(', ')}`);
+
+    return { ok: true, detail: `${String(downstream.length)} downstream` };
   } finally {
     db.close();
   }

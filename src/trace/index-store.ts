@@ -25,6 +25,16 @@ export interface Declaration extends TraceNode {
   readonly source: string;
 }
 
+/** One requirement's coverage (TST-2). */
+export interface CoverageRow {
+  readonly id: string;
+  /** Nodes claiming to verify it — tests, or commits whose trailer says so. */
+  readonly verifiedBy: readonly string[];
+  /** Nodes that merely cite it. */
+  readonly tracedBy: readonly string[];
+  readonly verified: boolean;
+}
+
 /** A citation of something no artifact declares. */
 export interface DanglingReference {
   readonly src: string;
@@ -201,12 +211,57 @@ export class TraceIndex {
       .prepare(
         `SELECT l.src AS src, l.dst AS dst, l.source AS source
            FROM trace_links l
-          WHERE l.relation = 'traces-to'
+          WHERE l.relation IN ('traces-to', 'verifies')
             AND NOT EXISTS (SELECT 1 FROM trace_nodes n WHERE n.id = l.dst)
           ORDER BY l.dst, l.src, l.source`,
       )
       .all() as unknown as DanglingReference[];
     return rows.filter((row) => looksLikeId(row.dst));
+  }
+
+  /** Elements some artifact declares, with what declared them. */
+  declaredElements(): readonly Declaration[] {
+    return this.#db
+      .prepare(
+        `SELECT id, kind, label, source FROM trace_nodes
+          WHERE kind = 'element' ORDER BY id, source`,
+      )
+      .all() as unknown as Declaration[];
+  }
+
+  /** What demonstrates that this holds (TST-2). */
+  verifiedBy(id: string): readonly string[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT DISTINCT src FROM trace_links
+          WHERE dst = ? AND relation = 'verifies' ORDER BY src`,
+      )
+      .all(id) as unknown as { src: string }[];
+    return rows.map((row) => row.src);
+  }
+
+  /**
+   * Requirement-level coverage (TST-2).
+   *
+   * `verifiedBy` is deliberately narrow: something has to claim to *verify*
+   * the requirement. `tracedBy` is everything else that cites it, reported
+   * separately because a design element referring to a requirement is
+   * evidence that it was designed for, not that it was checked — and the
+   * difference is the whole point of a coverage report.
+   */
+  coverage(ids: readonly string[]): readonly CoverageRow[] {
+    return ids.map((id) => {
+      const verifiedBy = this.verifiedBy(id);
+      return {
+        id,
+        verifiedBy,
+        tracedBy: this.tracesTo(id)
+          .filter((link) => link.relation === 'traces-to')
+          .map((link) => link.src)
+          .filter((src, index, all) => all.indexOf(src) === index),
+        verified: verifiedBy.length > 0,
+      };
+    });
   }
 
   /**

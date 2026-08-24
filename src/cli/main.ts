@@ -6,6 +6,7 @@ import {
   replay,
   run,
   status,
+  trace,
   type CliContext,
   type CommandResult,
 } from './commands.js';
@@ -13,7 +14,7 @@ import {
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: ten verbs and a handful of flags. A CLI framework would
+ * Deliberately small: eleven verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -28,6 +29,7 @@ export const VERBS = [
   'approve',
   'reopen',
   'chat',
+  'trace',
   'replay',
 ] as const;
 
@@ -44,6 +46,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>] [--tag]
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
+  mpgm trace <id> | --coverage | --dangling
   mpgm replay [--run <id>]             re-derive state from the log alone
 `;
 
@@ -138,6 +141,17 @@ export async function runCli(
         runId,
         require('a phase name', positional[0]),
         flags.brief ?? '',
+      );
+
+    case 'trace':
+      return trace(
+        context,
+        positional[0],
+        flags.coverage === 'true'
+          ? 'coverage'
+          : flags.dangling === 'true'
+            ? 'dangling'
+            : 'node',
       );
 
     case 'replay':
