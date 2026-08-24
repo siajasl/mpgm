@@ -209,6 +209,25 @@ export const voteTallied = defineEvent(
   }),
 );
 
+/**
+ * A plan revision that was applied without an operator (PLN-4).
+ *
+ * Only autonomous revisions are recorded here: a revision that needs the Plan
+ * gate is not applied, so there is nothing yet to record beyond the operator's
+ * own decision when they take it. Logging the deltas means an autonomous
+ * change is reconstructable later without diffing two artifact versions by
+ * hand.
+ */
+export const planRevised = defineEvent(
+  'PlanRevised',
+  z.object({
+    fromVersion: z.number().int().positive(),
+    toVersion: z.number().int().positive(),
+    rationale: nonEmpty,
+    deltas: z.array(z.object({ kind: nonEmpty, at: nonEmpty })),
+  }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -228,6 +247,7 @@ export const kernelEvents = [
   operatorIntervened,
   phaseEntered,
   phaseReopened,
+  planRevised,
   runStarted,
   sessionUsage,
   taskCompleted,
