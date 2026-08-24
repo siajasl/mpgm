@@ -32,7 +32,10 @@ export interface Convention {
 export const CONVENTIONS_KIND = 'conventions';
 
 /** `- **CONV-1** One logical change per commit.` */
-const CONVENTION_ITEM = /^[-*]\s+\*\*([A-Z][A-Z0-9]*-\d+)\*\*\s+(.+)$/;
+// `(\S.*)` rather than `(.+)`: `.` matches a space, so with `\s+` in front
+// the two overlap and a heavily indented line backtracks quadratically
+// (CodeQL js/polynomial-redos).
+const CONVENTION_ITEM = /^[-*][ \t]+\*\*([A-Z][A-Z0-9]*-\d+)\*\*[ \t]+(\S.*)$/;
 
 export function isConventionsDocument(document: KbDocument): boolean {
   return document.kind === CONVENTIONS_KIND;
