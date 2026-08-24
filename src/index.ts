@@ -179,6 +179,14 @@ export {
 } from './context/egress.js';
 export type { KbDocument } from './context/knowledge-base.js';
 export { loadKnowledgeBase, parseKbDocument } from './context/knowledge-base.js';
+export type { Convention } from './context/conventions.js';
+export {
+  CONVENTIONS_KIND,
+  duplicateConventionIds,
+  isConventionsDocument,
+  parseConventions,
+  undeclaredDeviations,
+} from './context/conventions.js';
 export type {
   AssembledContext,
   AssembleRequest,

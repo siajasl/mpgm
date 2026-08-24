@@ -90,7 +90,9 @@ describe('reduce', () => {
           ref: 'abc1234',
           approved: true,
           summary: 'reads correctly and the tests can fail',
-          findings: 0,
+          findings: 1,
+          deviations: ['CONV-6'],
+          undeclaredDeviations: ['CONV-6'],
         },
       },
       {

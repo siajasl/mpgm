@@ -406,6 +406,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         ref: payload.ref,
         approved: payload.approved,
         summary: payload.summary,
+        undeclaredDeviations: payload.undeclaredDeviations,
       };
       return withRun(state, withTask(run, { ...task, review }), seq);
     }
