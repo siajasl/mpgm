@@ -217,7 +217,10 @@ export function extractCommitLinks(commit: CommitRecord): ExtractedLinks {
   const links: TraceLink[] = [];
 
   for (const line of commit.body.split('\n')) {
-    const match = /^([A-Za-z][A-Za-z-]*):[ \t]*(.+)$/.exec(line.trim());
+    // `(\S.*)` rather than `(.+)`: `.` matches a tab, so with `[ \t]*` in
+    // front of it the two alternatives overlap and a line like `A:\t\t\t…`
+    // backtracks quadratically (CodeQL js/polynomial-redos).
+    const match = /^([A-Za-z][A-Za-z-]*):[ \t]*(\S.*)$/.exec(line.trim());
     const key = match?.[1]?.toLowerCase();
     const values = match?.[2];
     const relation = key === undefined ? undefined : TRAILER_RELATIONS[key];

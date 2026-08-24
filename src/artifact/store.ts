@@ -145,15 +145,20 @@ export class ArtifactStore {
     }
     const extension = extname(basePath) || '.md';
     const stem = basename(basePath, extension);
-    const pattern = new RegExp(
-      `^${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.v(\\d+)${extension.replace('.', '\\.')}$`,
-    );
+    // Matched with string operations rather than a regular expression built
+    // from the path: an artifact id reaches this from a playbook, and a
+    // pattern assembled from caller-supplied text is one escaping mistake away
+    // from matching things it should not (CodeQL js/regex-injection).
+    const prefix = `${stem}.v`;
 
     let latest = 0;
     for (const entry of readdirSync(directory)) {
-      const match = pattern.exec(entry);
-      if (match?.[1] !== undefined) {
-        latest = Math.max(latest, Number(match[1]));
+      if (!entry.startsWith(prefix) || !entry.endsWith(extension)) {
+        continue;
+      }
+      const version = entry.slice(prefix.length, entry.length - extension.length);
+      if (/^\d+$/.test(version)) {
+        latest = Math.max(latest, Number(version));
       }
     }
     return latest;

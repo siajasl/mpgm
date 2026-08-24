@@ -534,8 +534,7 @@ gate:
       load(
         body
           .replace('      type: choice\n', '      type: approval\n')
-          .replace('      options: [event-sourced, crud]\n', '')
-          .replace('vote: plurality', 'vote: plurality'),
+          .replace('      options: [event-sourced, crud]\n', ''),
       ),
     ).toThrow(/under another name/);
   });
