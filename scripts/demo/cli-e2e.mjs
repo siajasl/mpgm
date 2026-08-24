@@ -441,6 +441,24 @@ try {
     confirmed.output,
   );
 
+  // implement — the self-hosting entry point (T3.1.8). The sample project has
+  // no gated Plan artifact, so the verb refuses rather than dispatching an
+  // agent against a task it invented. Getting this wrong would be worse than
+  // failing: a run that starts on a plan nobody approved.
+  const noPlan = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/sample',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'implement refuses without a gated Plan artifact',
+    !noPlan.result.ok && noPlan.output.includes('could not read the gated Plan'),
+    noPlan.output.split('\n')[0] ?? '',
+  );
+
   // kill — terminal, and resume does not undo it
   await call(['kill', '--run', 'r1']);
   const afterKill = await call(['resume', '--run', 'r1']);

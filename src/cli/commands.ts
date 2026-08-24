@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import type { AgentSessionProvider } from '../agent/session.js';
 import { SessionRunner } from '../agent/runner.js';
@@ -18,6 +19,12 @@ import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
 import { RoleRegistry } from '../role/loader.js';
+import { assertRolesFrozen, loadRoleFreeze } from '../role/freeze.js';
+import { awaitChecks, mergeVerdict } from '../implement/checks.js';
+import { fetchCheckLog, fetchCheckRuns } from '../implement/github-checks.js';
+import { implementTask } from '../implement/loop.js';
+import { WorktreeManager } from '../implement/worktree.js';
+import { ingestPlan, readyTasks } from '../plan/ingest.js';
 import { Projector } from '../state/projector.js';
 import { fold } from '../state/reduce.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
@@ -223,6 +230,138 @@ export function intervene(
     db.close();
   }
 }
+
+/**
+ * `mpgm implement <task>` — run one plan task through the implement loop
+ * (IMP-1 to IMP-5, PLAN T3.1.8).
+ *
+ * The self-hosting entry point: mpgm reads its own gated Plan, finds the task,
+ * gives it a worktree, and does not come back until the change has merged or
+ * something an operator should look at has stopped it.
+ *
+ * The role freeze is checked first and refuses the run outright. From
+ * switchover the agents writing the code are the agents whose definitions are
+ * in the repository, and until the eval harness lands nothing would notice a
+ * role getting quietly worse (PLAN section 1).
+ */
+export async function implement(
+  context: CliContext,
+  runId: string,
+  taskId: string,
+  repo: string,
+): Promise<CommandResult> {
+  const { db, log, projector } = open(context);
+  try {
+    try {
+      assertRolesFrozen(
+        loadRoleFreeze(join(context.root, 'roles', 'freeze.json')),
+        join(context.root, 'roles'),
+      );
+    } catch (error) {
+      context.write(error instanceof Error ? error.message : String(error));
+      return { ok: false, detail: 'role freeze' };
+    }
+
+    const artifacts = new ArtifactStore({
+      root: context.root,
+      schemas: context.artifactSchemas,
+    });
+    let graph;
+    try {
+      graph = ingestPlan(artifacts.read(PLAN_ARTIFACT).data as never);
+    } catch (error) {
+      context.write(
+        `could not read the gated Plan at ${PLAN_ARTIFACT}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return { ok: false, detail: 'no plan' };
+    }
+
+    const task = graph.tasks.find((candidate) => candidate.id === taskId);
+    if (task === undefined) {
+      context.write(
+        `no task '${taskId}' in the plan. Ready now: ` +
+          (readyTasks(graph, completedTaskIds(projector.project().runs[runId]))
+            .map((candidate) => candidate.id)
+            .join(', ') || '(none)'),
+      );
+      return { ok: false, detail: 'unknown task' };
+    }
+
+    if (projector.project().runs[runId] === undefined) {
+      log.append({
+        runId,
+        type: 'RunStarted',
+        payload: { project: context.root, operator: 'operator' },
+      });
+    }
+
+    const result = await implementTask({
+      runId,
+      task,
+      repo: context.root,
+      worktrees: new WorktreeManager({ repo: context.root }),
+      sessions: new SessionRunner({
+        log,
+        provider: context.provider,
+        schemas: context.outputSchemas,
+        policyRoot: context.root,
+      }),
+      roles: RoleRegistry.fromDirectory(join(context.root, 'roles')),
+      log,
+      kb: knowledgeBase(context),
+      policy: context.policy ?? DEFAULT_EGRESS_POLICY,
+      // The kernel publishes; agents cannot (the destructive guard refuses
+      // `git push`). Without this the branch is invisible to CI and every
+      // required check reports nothing, which blocks rather than merges.
+      publish: async (branch) => {
+        await Promise.resolve(
+          execFileSync('git', ['push', '--force-with-lease', 'origin', branch], {
+            cwd: context.root,
+            stdio: 'ignore',
+          }),
+        );
+      },
+      checks: async (ref) => {
+        const settled = await awaitChecks({
+          poll: async () => mergeVerdict({ ref, runs: await fetchCheckRuns(repo, ref) }),
+        });
+        return settled.verdict;
+      },
+      logsFor: (check, ref) => fetchCheckLog(repo, ref, check),
+    });
+
+    if (result.status === 'merged') {
+      context.write(
+        `${result.taskId} merged as ${String(result.commit)} ` +
+          `(reviewed by ${result.review?.reviewerRole ?? 'nobody'})`,
+      );
+      return { ok: true, detail: 'merged' };
+    }
+
+    context.write(
+      `${result.taskId} did not merge: ${result.reason ?? 'no reason given'}`,
+    );
+    context.write(`Its worktree is left at ${result.worktree} on ${result.branch}.`);
+    return { ok: false, detail: 'blocked' };
+  } finally {
+    db.close();
+  }
+}
+
+/** Task ids a run has completed, for the ready set. */
+function completedTaskIds(
+  run: { tasks: Readonly<Record<string, { status: string }>> } | undefined,
+) {
+  return new Set(
+    Object.entries(run?.tasks ?? {})
+      .filter(([, task]) => task.status === 'completed')
+      .map(([id]) => id),
+  );
+}
+
+/** Where a project's gated Plan lives. */
+const PLAN_ARTIFACT = 'artifacts/plan/plan.md';
 
 /**
  * `mpgm confirm <fingerprint>` — let a simulated destructive call proceed

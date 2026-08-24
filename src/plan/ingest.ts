@@ -168,3 +168,21 @@ export function dependencyWaves(graph: PlanGraph): string[][] {
 
   return waves;
 }
+
+/**
+ * Tasks whose dependencies are all complete.
+ *
+ * The ready set, which is what the implement loop asks for and what the board
+ * shows in its `ready` column. Ordering follows declaration order, so two runs
+ * over the same plan pick the same task first (ORC-3).
+ */
+export function readyTasks(
+  graph: PlanGraph,
+  completed: ReadonlySet<string>,
+): IngestedTask[] {
+  return graph.tasks.filter(
+    (task) =>
+      !completed.has(task.id) &&
+      task.dependsOn.every((dependency) => completed.has(dependency)),
+  );
+}
