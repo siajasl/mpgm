@@ -105,7 +105,10 @@ export const DEFAULT_LOG_LINES = 60;
  * log is the setup and none of the problem.
  */
 export function tail(text: string, lines: number): string {
-  const all = text.replace(/\s+$/, '').split('\n');
+  // `trimEnd` rather than /\s+$/: an end-anchored greedy whitespace class
+  // backtracks quadratically on a long run of spaces, and CI logs are long
+  // (CodeQL js/polynomial-redos).
+  const all = text.trimEnd().split('\n');
   return all.length <= lines ? all.join('\n') : all.slice(-lines).join('\n');
 }
 
