@@ -37,14 +37,31 @@ export interface SessionRequest {
    * another to the gate.
    */
   readonly cwd?: string;
+  /**
+   * Environment for the session's own process, replacing rather than
+   * extending the kernel's (SAF-2). This is where credentials stop being
+   * reachable by a shell: the value the broker scrubbed is not in the
+   * environment `printenv` would print. Omitted means "inherit", which is
+   * only right for a run with no secrets to lose.
+   */
+  readonly env?: Readonly<Record<string, string | undefined>>;
   /** Enforced outside the model (ADR-6, SAF-1). */
   readonly canUseTool?: ToolGate;
   readonly signal?: AbortSignal;
 }
 
-/** Decision on a single tool call. */
+/**
+ * Decision on a single tool call.
+ *
+ * `updatedInput` is how the secret broker substitutes a credential at the tool
+ * boundary (SAF-2, ADR-6): the model wrote a symbolic reference, and the value
+ * appears only in the call the tool actually receives. Absent means "as
+ * supplied" — the gate rewriting input it did not mean to touch is a worse
+ * failure than one that cannot rewrite at all.
+ */
 export type ToolDecision =
-  { readonly behavior: 'allow' } | { readonly behavior: 'deny'; readonly reason: string };
+  | { readonly behavior: 'allow'; readonly updatedInput?: Record<string, unknown> }
+  | { readonly behavior: 'deny'; readonly reason: string };
 
 export type ToolGate = (
   toolName: string,

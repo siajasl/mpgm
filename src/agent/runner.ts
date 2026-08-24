@@ -3,7 +3,13 @@ import type { Role } from '../role/definition.js';
 import { RolePolicy } from '../policy/role-policy.js';
 import { BudgetLedger, runWithWallClock, type Now } from './budget.js';
 import type { OutputSchemaRegistry } from './output-registry.js';
-import type { AgentSessionProvider, SessionRequest, SessionResult } from './session.js';
+import type {
+  AgentSessionProvider,
+  SessionRequest,
+  SessionResult,
+  ToolGate,
+} from './session.js';
+import type { SecretBroker } from '../secret/broker.js';
 
 /**
  * Runs one SDK session per task (ADR-5) and turns its result into events.
@@ -52,6 +58,12 @@ export interface SessionRunnerOptions {
    * directory.
    */
   readonly policyRoot?: string;
+  /**
+   * Resolves credential references at the tool boundary and scrubs them from
+   * the session environment (SAF-2, ADR-6). Omitted for runs with no secrets:
+   * a broker with nothing declared would only add a layer that never fires.
+   */
+  readonly secrets?: SecretBroker;
 }
 
 export const DEFAULT_MAX_VALIDATION_ATTEMPTS = 3;
@@ -63,6 +75,7 @@ export class SessionRunner {
   readonly #maxAttempts: number;
   readonly #now: Now | undefined;
   readonly #policyRoot: string;
+  readonly #secrets: SecretBroker | undefined;
 
   constructor(options: SessionRunnerOptions) {
     this.#log = options.log;
@@ -71,10 +84,46 @@ export class SessionRunner {
     this.#maxAttempts = options.maxValidationAttempts ?? DEFAULT_MAX_VALIDATION_ATTEMPTS;
     this.#now = options.now;
     this.#policyRoot = options.policyRoot ?? process.cwd();
+    this.#secrets = options.secrets;
 
     if (this.#maxAttempts < 1) {
       throw new Error('maxValidationAttempts must be at least 1');
     }
+  }
+
+  /**
+   * The tool gate the session actually gets.
+   *
+   * Policy decides first, the broker substitutes second, and the log wraps
+   * both — so a refusal to hand over a credential is an audited tool decision
+   * like any other rather than a silent substitution failure, and the event
+   * records the decision that was finally taken (OBS-1, DESIGN §7).
+   */
+  #gate(
+    runId: string,
+    taskId: string,
+    policy: RolePolicy,
+    seen: (tool: string) => void,
+  ): ToolGate {
+    const inner = policy.gate();
+    const gate = this.#secrets === undefined ? inner : this.#secrets.gate(inner);
+
+    return async (tool: string, input: Record<string, unknown>) => {
+      const decision = await gate(tool, input);
+      seen(tool);
+      this.#log.append({
+        runId,
+        type: 'ToolCallLogged',
+        payload: {
+          taskId,
+          tool,
+          decision: decision.behavior === 'allow' ? 'allowed' : 'denied',
+          detail: decision.behavior === 'allow' ? '' : decision.reason,
+          outputBlob: null,
+        },
+      });
+      return decision;
+    };
   }
 
   async runTask(request: RunTaskRequest): Promise<TaskOutcome> {
@@ -145,21 +194,10 @@ export class SessionRunner {
         // The session resolves relative paths against the same root the policy
         // does, so the agent and the gate agree on what a path means.
         cwd: this.#policyRoot,
-        canUseTool: policy.gate((tool, decision) => {
-          gatedTools.add(tool);
-          // Every tool call is an event, allowed or not (OBS-1, DESIGN §7).
-          this.#log.append({
-            runId,
-            type: 'ToolCallLogged',
-            payload: {
-              taskId,
-              tool,
-              decision: decision.behavior === 'allow' ? 'allowed' : 'denied',
-              detail: decision.behavior === 'allow' ? '' : decision.reason,
-              outputBlob: null,
-            },
-          });
-        }),
+        ...(this.#secrets === undefined
+          ? {}
+          : { env: this.#secrets.environment(process.env) }),
+        canUseTool: this.#gate(runId, taskId, policy, (tool) => gatedTools.add(tool)),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       };
       gatedTools = new Set<string>();

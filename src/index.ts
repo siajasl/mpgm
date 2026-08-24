@@ -463,3 +463,20 @@ export {
   MergeError,
   mergeMessage,
 } from './implement/merge.js';
+export type {
+  RefusalReason,
+  Resolution as SecretResolution,
+  SecretBrokerOptions,
+  SecretDeclaration,
+  SecretDeclarationInput,
+  SecretRefusal,
+} from './secret/broker.js';
+export {
+  MIN_SECRET_LENGTH,
+  referencedSecrets,
+  SECRET_REFERENCE,
+  SecretBroker,
+  SecretError,
+  secretDeclarationSchema,
+  secretReference,
+} from './secret/broker.js';

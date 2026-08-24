@@ -48,6 +48,9 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
         settingSources: [],
         abortController: controller,
         ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+        // Replaces the subprocess environment entirely rather than merging, so
+        // a secret the broker scrubbed cannot come back through inheritance.
+        ...(request.env === undefined ? {} : { env: { ...request.env } }),
         // Enforcement lives in PreToolUse, not canUseTool. canUseTool is only
         // consulted when the CLI decides a permission *prompt* is warranted,
         // and read-only tools never prompt -- so a Read would execute, and be
@@ -146,6 +149,13 @@ function gateHooks(gate: ToolGate | undefined): {
         ...(decision.behavior === 'deny'
           ? { permissionDecisionReason: decision.reason }
           : {}),
+        // Where the secret broker's substitution lands (SAF-2). PreToolUse is
+        // the authoritative enforcement point, so it has to be the injection
+        // point too — a value substituted anywhere earlier would have been in
+        // the model's context on the way there.
+        ...(decision.behavior === 'allow' && decision.updatedInput !== undefined
+          ? { updatedInput: decision.updatedInput }
+          : {}),
       },
     };
   };
@@ -173,7 +183,7 @@ function gateOption(gate: ToolGate | undefined): {
     canUseTool: async (toolName: string, input: Record<string, unknown>) => {
       const decision = await gate(toolName, input);
       return decision.behavior === 'allow'
-        ? { behavior: 'allow' as const, updatedInput: input }
+        ? { behavior: 'allow' as const, updatedInput: decision.updatedInput ?? input }
         : { behavior: 'deny' as const, message: decision.reason };
     },
   };

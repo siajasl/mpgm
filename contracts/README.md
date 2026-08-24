@@ -38,6 +38,25 @@ one the kernel actually enforces — so a change to either is a change to both.
 | `compensatable` | The effect can be undone; resume undoes, then retries. |
 | `manual` | None of the above. Only an operator can say what happened. |
 
+## Credentials
+
+A provider that needs a credential never receives it from the agent. The role's
+prompt and the tool call the model writes contain a symbolic reference —
+`${secret:github-token}` — and the kernel's broker substitutes the real value
+at the tool boundary, after checking that this secret is declared for this tool
+(SAF-2, ADR-6). Declare it in the project's secret list:
+
+```yaml
+- name: github-token
+  env: MPGM_GITHUB_TOKEN
+  tools: ['mcp__github__*']
+```
+
+`tools` is the whole of the control. `Bash` is not a sensible entry: a shell
+that can interpolate a credential can also print it, and the tool boundary
+stops being a boundary. A reference in a tool that may not have it is denied,
+not passed through — the placeholder is never quietly resolved to nothing.
+
 ## Contracts
 
 | Contract | Specification | Landed in |
