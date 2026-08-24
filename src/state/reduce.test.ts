@@ -71,6 +71,16 @@ describe('reduce', () => {
       { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
       {
         runId: RUN,
+        type: 'PlanRevised',
+        payload: {
+          fromVersion: 1,
+          toVersion: 2,
+          rationale: 'split T1.1.1 in two',
+          deltas: [{ kind: 'task-split', at: 'T1.1.1' }],
+        },
+      },
+      {
+        runId: RUN,
         type: 'VoteTallied',
         payload: {
           taskId: 'p1-tally',

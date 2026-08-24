@@ -43,6 +43,7 @@ export type {
   KernelState,
   RunState,
   TaskState,
+  PlanRevisionState,
   TaskStatus,
   Usage,
   VoteState,
@@ -314,6 +315,18 @@ export {
   headCommit,
   readCommits,
 } from './trace/git-history.js';
+export type {
+  DeclaredSplit,
+  DeltaKind,
+  Plan,
+  PlanDelta,
+  ReplanClassification,
+  ReplanProposal,
+  ReplanVerdict,
+} from './plan/replan.js';
+export { classifyReplan } from './plan/replan.js';
+export type { ApplyReplanOptions, ReplanOutcome } from './plan/apply.js';
+export { applyReplan, completedTasks } from './plan/apply.js';
 export type { GateTagRequest } from './git/tag.js';
 export {
   gateTagName,

@@ -58,6 +58,14 @@ export interface VoteState {
   readonly summary: string;
 }
 
+/** A plan revision applied without an operator (PLN-4). */
+export interface PlanRevisionState {
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  readonly rationale: string;
+  readonly deltas: number;
+}
+
 export type EffectStatus = 'pending' | 'completed' | 'failed' | 'escalated';
 
 /**
@@ -97,6 +105,8 @@ export interface RunState {
   readonly gates: Readonly<Record<string, GateState>>;
   /** Tally step id → what the kernel counted (ORC-4). */
   readonly votes: Readonly<Record<string, VoteState>>;
+  /** Autonomous plan revisions, oldest first (PLN-4). */
+  readonly planRevisions: readonly PlanRevisionState[];
   readonly effects: Readonly<Record<string, EffectState>>;
   readonly usage: Usage;
   readonly interventions: number;
