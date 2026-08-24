@@ -62,3 +62,4 @@ not passed through — the placeholder is never quietly resolved to nothing.
 | Contract | Specification | Landed in |
 |---|---|---|
 | `ci.checks` | [ci.checks.md](ci.checks.md) | T3.1.2a |
+| `pm.github` | [pm.github.md](pm.github.md) | T3.1.7 |

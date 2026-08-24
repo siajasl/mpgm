@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { Provider } from '../contract/capability.js';
@@ -16,20 +16,56 @@ const run = promisify(execFile);
 
 export class GitHubChecksError extends Error {}
 
-/** Runs a `gh` command and returns stdout. Injectable so tests need no network. */
-export type GitHubApi = (args: readonly string[]) => Promise<string>;
+/**
+ * Runs a `gh` command and returns stdout. Injectable so tests need no network.
+ *
+ * `stdin` carries a request body for `gh api --input -`. Passing JSON on the
+ * command line would put it in the process table, and a request body is
+ * exactly where a credential or a customer's data would be.
+ */
+export type GitHubApi = (args: readonly string[], stdin?: string) => Promise<string>;
 
-export const ghCli: GitHubApi = async (args) => {
-  try {
-    const { stdout } = await run('gh', [...args], {
-      encoding: 'utf8',
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    return stdout;
-  } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw new GitHubChecksError(`gh ${args.join(' ')} failed: ${detail}`, { cause });
+export const ghCli: GitHubApi = async (args, stdin) => {
+  if (stdin === undefined) {
+    try {
+      const { stdout } = await run('gh', [...args], {
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      return stdout;
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      throw new GitHubChecksError(`gh ${args.join(' ')} failed: ${detail}`, { cause });
+    }
   }
+
+  // `execFile` has no way to supply stdin, so a request body needs `spawn`.
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn('gh', [...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => (out += chunk));
+    child.stderr.on('data', (chunk: string) => (err += chunk));
+    child.on('error', (cause) => {
+      reject(
+        new GitHubChecksError(`gh ${args.join(' ')} failed: ${cause.message}`, { cause }),
+      );
+    });
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(out);
+      } else {
+        reject(
+          new GitHubChecksError(
+            `gh ${args.join(' ')} exited ${String(code)}: ${err.trim() || out.trim()}`,
+          ),
+        );
+      }
+    });
+    child.stdin.end(stdin);
+  });
 };
 
 /**
