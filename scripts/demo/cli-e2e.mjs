@@ -305,6 +305,63 @@ try {
     stillApproved.output,
   );
 
+  // reopen — ORC-6. A dry run first: reopening costs a phase of work, and an
+  // append-only log is not where to discover that.
+  const planned = await call([
+    'reopen',
+    'definition',
+    '--run',
+    'r1',
+    '--reason',
+    'the operator revised a goal',
+    '--dry-run',
+  ]);
+  check(
+    'reopen --dry-run shows the cascade without recording it',
+    planned.result.ok && planned.output.includes('Would reopen'),
+    planned.output,
+  );
+  const notYet = await call(['status', '--run', 'r1']);
+  check(
+    'the dry run changed nothing',
+    notYet.output.includes('gate definition-gate approved by macg'),
+    notYet.output,
+  );
+
+  const reopened = await call([
+    'reopen',
+    'definition',
+    '--run',
+    'r1',
+    '--reason',
+    'the operator revised a goal',
+  ]);
+  check(
+    'reopen invalidates the phase gate',
+    reopened.result.ok && reopened.output.includes('definition-gate'),
+    reopened.output,
+  );
+  const afterReopen = await call(['status', '--run', 'r1']);
+  check(
+    'the approval is withdrawn, and says so',
+    afterReopen.output.includes('definition-gate invalidated'),
+    afterReopen.output,
+  );
+
+  const refused = await call([
+    'reopen',
+    'scope',
+    '--run',
+    'r1',
+    '--reason',
+    'no such gate here',
+  ]);
+  check(
+    'reopening a phase this run never gated is refused',
+    !refused.result.ok && refused.output.includes('no gate for phase'),
+    refused.output,
+  );
+
   // kill — terminal, and resume does not undo it
   await call(['kill', '--run', 'r1']);
   const afterKill = await call(['resume', '--run', 'r1']);

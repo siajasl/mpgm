@@ -218,6 +218,13 @@ export {
   gateOracleFromState,
   isApproved,
 } from './gate/manager.js';
+export type {
+  GateVerdict,
+  ReopenOptions,
+  ReopenPlan,
+  ReopenRequest,
+} from './gate/reopen.js';
+export { planReopen, reopenPhase } from './gate/reopen.js';
 export {
   ArtifactStore,
   ArtifactStoreError,
@@ -274,7 +281,7 @@ export {
 export type { PhaseOutcome, PhaseResult, PhaseRunOptions } from './phase/runner.js';
 export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
 export type { CliContext, CommandResult } from './cli/commands.js';
-export { approve, chat, intervene, replay, run, status } from './cli/commands.js';
+export { approve, chat, intervene, reopen, replay, run, status } from './cli/commands.js';
 export type { Verb } from './cli/main.js';
 export { parseArgs, runCli, USAGE, VERBS } from './cli/main.js';
 export type {

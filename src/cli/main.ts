@@ -2,6 +2,7 @@ import {
   approve,
   chat,
   intervene,
+  reopen,
   replay,
   run,
   status,
@@ -12,7 +13,7 @@ import {
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: nine verbs and a handful of flags. A CLI framework would
+ * Deliberately small: ten verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -25,6 +26,7 @@ export const VERBS = [
   'kill',
   'redirect',
   'approve',
+  'reopen',
   'chat',
   'replay',
 ] as const;
@@ -40,6 +42,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm kill --run <id>                 stop a run permanently
   mpgm redirect --run <id> --note <s>  record an operator redirection
   mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>] [--tag]
+  mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
   mpgm replay [--run <id>]             re-derive state from the log alone
 `;
@@ -114,6 +117,19 @@ export async function runCli(
         flags.reject === 'true',
         flags.reason ?? '',
         flags.tag === 'true',
+      );
+
+    case 'reopen':
+      return reopen(
+        context,
+        runId,
+        require('a phase name', positional[0]),
+        require('--reason', flags.reason),
+        (flags.changed ?? '')
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== ''),
+        flags['dry-run'] === 'true',
       );
 
     case 'chat':
