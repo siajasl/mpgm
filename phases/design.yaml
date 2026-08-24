@@ -178,6 +178,29 @@ tasks:
         four lenses.
       produces: design-findings
 
+  # CTX-4. The knowledge base is what an implementer reads before touching the
+  # code, and the Design gate is the first moment there is anything settled
+  # enough to put in it. Declared per task rather than per role: a role that
+  # can write `kb/` from any task it is given is a role that can rewrite the
+  # conventions it is being held to.
+  - id: record-conventions
+    role: kb-curator
+    description: >
+      Record what the design implies for anyone writing code against it.
+    prompt: >
+      From the design of record and the requirement set, update the knowledge
+      base with what an implementer needs before touching the code.
+
+      Conventions, glossary terms, and the standing consequences of the ADRs —
+      not a paraphrase of the design, which they already have. Prefer revising
+      an existing document to adding a new one.
+
+      If the design implies nothing an implementer would not already infer,
+      return no updates and say so.
+    dependsOn: [record-design]
+    consumes: [requirement-set]
+    updatesKb: true
+
 gate:
   id: design-gate
   description: >

@@ -262,6 +262,7 @@ export { demoTimestamp, syntheticRun } from './demo/workload.js';
 export { demoSchemaRegistry, toySummarySchema } from './demo/schemas.js';
 export {
   adrSchema,
+  kbCurationSchema,
   milestoneSchema,
   planPhaseSchema,
   planSchema,

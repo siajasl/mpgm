@@ -71,6 +71,16 @@ describe('reduce', () => {
       { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
       {
         runId: RUN,
+        type: 'KnowledgeBaseUpdated',
+        payload: {
+          taskId: 'T1',
+          path: 'kb/conventions/testing.md',
+          title: 'Testing conventions',
+          rationale: 'the review found the convention undocumented',
+        },
+      },
+      {
+        runId: RUN,
         type: 'PlanRevised',
         payload: {
           fromVersion: 1,

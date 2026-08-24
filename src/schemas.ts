@@ -4,6 +4,7 @@ import {
   ArtifactSchemaRegistry,
   defineArtifactSchema,
 } from './artifact/schema-registry.js';
+import { kbUpdateSchema } from './context/kb-writer.js';
 import {
   conclusionsSchema,
   elicitationOutputSchema,
@@ -453,6 +454,18 @@ export const planSchema = z
   }, 'a milestone may only claim to validate a risk the plan declares (PLN-2)')
   .refine((plan) => isAcyclic(allTasks(plan)), 'task dependencies form a cycle');
 
+/**
+ * What a knowledge-base curating task returns (CTX-4).
+ *
+ * `kbUpdates` may be empty: a task that looked and found nothing worth
+ * recording has said something useful, and forcing it to invent an entry
+ * would fill the knowledge base with the ones nobody needed.
+ */
+export const kbCurationSchema = z.object({
+  summary: z.string().min(1),
+  kbUpdates: z.array(kbUpdateSchema),
+});
+
 /** The elicitation record: conclusions plus the dialogue that produced them. */
 export const elicitationSchema = z.object({
   conclusions: conclusionsSchema,
@@ -467,6 +480,7 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
     scope: scopeSchema,
     'prior-art': priorArtSchema,
     plan: planSchema,
+    'kb-curation': kbCurationSchema,
     'design-candidate': designCandidateSchema,
     'design-candidates': designCandidatesSchema,
     'design-verdict': designVerdictSchema,

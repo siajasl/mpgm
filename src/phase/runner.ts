@@ -2,6 +2,8 @@ import { relative } from 'node:path';
 import type { SessionRunner } from '../agent/runner.js';
 import type { Artifact, ArtifactStore, Provenance } from '../artifact/store.js';
 import { assembleContext, type UpstreamResult } from '../context/assembler.js';
+import { collectDecisions, relevantDecisions } from '../context/decisions.js';
+import { kbUpdatesOf, writeKbDocument } from '../context/kb-writer.js';
 import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
 import type { EventLog } from '../event/store.js';
@@ -174,6 +176,10 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
   const graph = playbook.graph;
   const stepById = new Map(graph.steps.map((step) => [step.id, step]));
 
+  // Decisions already recorded anywhere the phase can see, so a task can be
+  // shown the ones it might contradict (CTX-3).
+  const decisions = collectDecisions(Object.values(available));
+
   /** Artifacts a step should see: its dependencies' output, plus what it consumes. */
   const upstreamOf = (step: GraphStep): Artifact[] => {
     const artifacts: Artifact[] = [];
@@ -264,12 +270,43 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     }
   };
 
+  /**
+   * Ids the material in front of a step touches — what it cites and what it
+   * declares. A decision about none of them is one this step has no way to
+   * contradict.
+   */
+  const touchedBy = (upstream: readonly Artifact[]): Set<string> => {
+    const ids = new Set<string>();
+    const index = options.traces;
+    if (index === undefined) {
+      return ids;
+    }
+    for (const artifact of upstream) {
+      const node = `${artifact.id}@${String(artifact.version)}`;
+      for (const link of index.tracesFrom(node)) {
+        ids.add(link.dst);
+        if (link.relation === 'declares') {
+          for (const nested of index.tracesFrom(link.dst)) {
+            ids.add(nested.dst);
+          }
+        }
+      }
+    }
+    return ids;
+  };
+
   const runSession = async (step: SessionStep): Promise<StepOutcome<unknown>> => {
     const role = options.roles.get(step.role);
+    const upstream = upstreamOf(step);
     const context = assembleContext({
       task: step,
-      upstream: upstreamOf(step),
+      upstream,
       results: resultsFor(step),
+      decisions: relevantDecisions({
+        decisions,
+        touching: touchedBy(upstream),
+        alreadyPresent: new Set(upstream.map((artifact) => artifact.id)),
+      }),
       kb: options.kb,
       policy: options.policy,
     });
@@ -287,6 +324,42 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
 
     record(step, outcome.output);
     writeArtifact(step, role.name, role.model, outcome.output);
+
+    if (step.updatesKb === true) {
+      const provenance: Provenance = {
+        task: step.id,
+        role: role.name,
+        model: role.model,
+        runId,
+      };
+      for (const update of kbUpdatesOf(outcome.output)) {
+        try {
+          const path = writeKbDocument({
+            root: options.artifacts.root,
+            update,
+            producedBy: provenance,
+          });
+          log.append({
+            runId,
+            type: 'KnowledgeBaseUpdated',
+            payload: {
+              taskId: step.id,
+              path,
+              title: update.title,
+              rationale: update.rationale,
+            },
+          });
+        } catch (cause) {
+          // A rejected path is the task's mistake, not the kernel's: block
+          // rather than silently dropping the update it thinks it made.
+          return {
+            status: 'blocked',
+            reason: cause instanceof Error ? cause.message : String(cause),
+          };
+        }
+      }
+    }
+
     return { status: 'completed', value: outcome.output };
   };
 

@@ -66,6 +66,13 @@ export interface PlanRevisionState {
   readonly deltas: number;
 }
 
+/** A knowledge-base document a task wrote (CTX-4). */
+export interface KbUpdateState {
+  readonly taskId: string;
+  readonly path: string;
+  readonly title: string;
+}
+
 export type EffectStatus = 'pending' | 'completed' | 'failed' | 'escalated';
 
 /**
@@ -107,6 +114,8 @@ export interface RunState {
   readonly votes: Readonly<Record<string, VoteState>>;
   /** Autonomous plan revisions, oldest first (PLN-4). */
   readonly planRevisions: readonly PlanRevisionState[];
+  /** Knowledge-base documents written by tasks, oldest first (CTX-4). */
+  readonly kbUpdates: readonly KbUpdateState[];
   readonly effects: Readonly<Record<string, EffectState>>;
   readonly usage: Usage;
   readonly interventions: number;

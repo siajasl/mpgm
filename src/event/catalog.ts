@@ -228,6 +228,23 @@ export const planRevised = defineEvent(
   }),
 );
 
+/**
+ * A task changed the knowledge base (CTX-4).
+ *
+ * Recorded because it is a change to the repository that no artifact version
+ * captures: the knowledge base is not versioned per file, so without this the
+ * log could not say which task wrote a convention or why.
+ */
+export const knowledgeBaseUpdated = defineEvent(
+  'KnowledgeBaseUpdated',
+  z.object({
+    taskId: nonEmpty,
+    path: nonEmpty,
+    title: nonEmpty,
+    rationale: nonEmpty,
+  }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -244,6 +261,7 @@ export const kernelEvents = [
   gateInvalidated,
   gatePresented,
   gateRejected,
+  knowledgeBaseUpdated,
   operatorIntervened,
   phaseEntered,
   phaseReopened,
