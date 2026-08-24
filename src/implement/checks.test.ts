@@ -135,6 +135,7 @@ describe('ci.checks contract', () => {
     const bound = registry.bind(ciChecksContract, {
       status: () =>
         Promise.resolve({ ref: 'abc', runs: [{ name: 'build', status: 'nonsense' }] }),
+      logs: () => Promise.resolve({ check: 'build', text: '' }),
     });
 
     await expect(bound.invoke('status', { repo: 'o/r', ref: 'abc' })).rejects.toThrow(

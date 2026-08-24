@@ -248,6 +248,62 @@ export function requireMergeable(verdict: MergeVerdict): void {
   }
 }
 
+/**
+ * Wait for CI to finish, or give up.
+ *
+ * A verdict read while checks are still running is not an answer, and acting
+ * on one is how a bounded retry budget evaporates: the repair loop would spend
+ * an attempt fixing a build that had not failed yet. Nothing is "settled"
+ * until at least one check has reported and none is still pending — an empty
+ * report right after a push means CI has not started, not that CI is happy.
+ */
+export interface AwaitChecksOptions {
+  readonly poll: () => Promise<MergeVerdict>;
+  readonly timeoutMs?: number;
+  readonly intervalMs?: number;
+  /** Injectable so tests need no real time. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
+}
+
+export interface SettledChecks {
+  readonly verdict: MergeVerdict;
+  /** False when the wait timed out with checks still running. */
+  readonly settled: boolean;
+  readonly polls: number;
+}
+
+export const DEFAULT_CHECKS_TIMEOUT_MS = 30 * 60 * 1000;
+export const DEFAULT_CHECKS_INTERVAL_MS = 15 * 1000;
+
+export async function awaitChecks(options: AwaitChecksOptions): Promise<SettledChecks> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_CHECKS_TIMEOUT_MS;
+  const intervalMs = options.intervalMs ?? DEFAULT_CHECKS_INTERVAL_MS;
+  const now = options.now ?? Date.now;
+  const sleep =
+    options.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      }));
+
+  const deadline = now() + timeoutMs;
+  let polls = 0;
+  for (;;) {
+    const verdict = await options.poll();
+    polls += 1;
+    const reported = verdict.kinds.some((kind) => kind.runs.length > 0);
+    const stillRunning = verdict.kinds.some((kind) => kind.problem === 'pending');
+    if (reported && !stillRunning) {
+      return { verdict, settled: true, polls };
+    }
+    if (now() >= deadline) {
+      return { verdict, settled: false, polls };
+    }
+    await sleep(intervalMs);
+  }
+}
+
 export const checksStatusInput = z.object({
   /** `owner/repo`. */
   repo: z.string().min(1),
@@ -258,6 +314,24 @@ export const checksStatusInput = z.object({
 export const checksStatusOutput = z.object({
   ref: z.string().min(1),
   runs: z.array(checkRunSchema),
+});
+
+export const checksLogsInput = z.object({
+  repo: z.string().min(1),
+  ref: z.string().min(1),
+  /** Check run name, exactly as `status` reported it. */
+  check: z.string().min(1),
+});
+
+export const checksLogsOutput = z.object({
+  check: z.string().min(1),
+  /**
+   * What the check printed, or empty when the provider cannot supply it. Empty
+   * is a legitimate answer — not every CI exposes logs through an API — and
+   * the repair loop then feeds back the verdict alone rather than pretending
+   * it has more.
+   */
+  text: z.string(),
 });
 
 /**
@@ -275,6 +349,14 @@ export const ciChecksContract: ContractSpec = {
       output: checksStatusOutput,
       // Asking costs nothing and changes nothing, so no intent needs recording
       // before it (DESIGN §6).
+      effects: 'read-only',
+    },
+    {
+      name: 'logs',
+      summary:
+        'What a failing check printed, for feeding back to the agent that broke it.',
+      input: checksLogsInput,
+      output: checksLogsOutput,
       effects: 'read-only',
     },
   ],
