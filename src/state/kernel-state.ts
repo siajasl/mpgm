@@ -16,6 +16,20 @@ export interface Usage {
 
 export type TaskStatus = 'dispatched' | 'completed' | 'blocked';
 
+/**
+ * The last merge verdict CI produced for a task's change (IMP-2).
+ *
+ * Only the latest is kept: earlier verdicts are in the log, and what the
+ * scheduler and the operator console need to know is whether this change can
+ * merge *now*.
+ */
+export interface ChecksState {
+  readonly ref: string;
+  readonly mergeable: boolean;
+  readonly summary: string;
+  readonly blocking: readonly string[];
+}
+
 export interface TaskState {
   readonly taskId: string;
   readonly role: string;
@@ -27,6 +41,8 @@ export interface TaskState {
   readonly budgetBreaches: number;
   readonly toolCalls: number;
   readonly deniedToolCalls: number;
+  /** Null until CI has reported on this task's change. */
+  readonly checks: ChecksState | null;
   readonly usage: Usage;
 }
 

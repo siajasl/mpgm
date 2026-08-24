@@ -3,6 +3,7 @@ import { EventLogError } from '../event/errors.js';
 import type { EventDefinition } from '../event/registry.js';
 import type {
   budgetExceeded,
+  checksReported,
   effectCompleted,
   effectEscalated,
   effectFailed,
@@ -27,6 +28,7 @@ import type {
 import {
   emptyState,
   zeroUsage,
+  type ChecksState,
   type EffectState,
   type RunControl,
   type GateState,
@@ -45,7 +47,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 7;
+export const REDUCER_VERSION = 8;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -198,6 +200,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         budgetBreaches: 0,
         toolCalls: 0,
         deniedToolCalls: 0,
+        checks: null,
         usage: zeroUsage,
       };
       return withRun(state, withTask(run, task), seq);
@@ -372,6 +375,19 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         { ...run, planRevisions: [...run.planRevisions, revision] },
         seq,
       );
+    }
+
+    case 'ChecksReported': {
+      const payload = event.payload as PayloadOf<typeof checksReported>;
+      const run = requireRun(state, event.runId, type);
+      const task = requireTask(run, payload.taskId, type);
+      const checks: ChecksState = {
+        ref: payload.ref,
+        mergeable: payload.mergeable,
+        summary: payload.summary,
+        blocking: payload.blocking,
+      };
+      return withRun(state, withTask(run, { ...task, checks }), seq);
     }
 
     case 'KnowledgeBaseUpdated': {

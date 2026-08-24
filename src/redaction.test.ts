@@ -68,7 +68,8 @@ describe('Redactor', () => {
   });
 
   it('does not mutate its input', () => {
-    const input = { token: 'sk-ant-aaaaaaaaaaaaaaaaaaaaaaaa' };
+    // Fabricated, kept literal so the rule meets the shape it must match.
+    const input = { token: 'sk-ant-aaaaaaaaaaaaaaaaaaaaaaaa' }; // mpgm-secret-scan: allow
     const snapshot = structuredClone(input);
 
     new Redactor().redact(input);

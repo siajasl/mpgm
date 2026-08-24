@@ -71,6 +71,17 @@ describe('reduce', () => {
       { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
       {
         runId: RUN,
+        type: 'ChecksReported',
+        payload: {
+          taskId: 'T1',
+          ref: 'abc1234',
+          mergeable: false,
+          summary: 'failing: test',
+          blocking: ['test: failing (test (node 24.x))'],
+        },
+      },
+      {
+        runId: RUN,
         type: 'KnowledgeBaseUpdated',
         payload: {
           taskId: 'T1',

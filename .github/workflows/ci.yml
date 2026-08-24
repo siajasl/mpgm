@@ -13,9 +13,55 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Jobs are named after the check kinds IMP-2 requires — build, lint, typecheck,
+# test, scan — because the merge gate (`ci.checks`, src/implement/checks.ts)
+# decides per kind, and a workflow whose jobs say which obligation they serve
+# needs no mapping table to be understood. A kind with no reported result
+# blocks the merge exactly as a failing one does, so deleting a job here does
+# not make merges easier; it stops them.
+
 jobs:
-  check:
-    name: check (node ${{ matrix.node-version }})
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci
+      - name: Format
+        run: npm run format:check
+      - name: Lint
+        run: npm run lint
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  test:
+    name: test (node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -24,26 +70,15 @@ jobs:
         node-version: ['24.x', '26.x']
     steps:
       - uses: actions/checkout@v7
-
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      - run: npm ci
 
-      - name: Install
-        run: npm ci
-
-      - name: Format
-        run: npm run format:check
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      # Build precedes test: the crash-resume fixture runs as a subprocess
-      # against the built package, because Node cannot import the TS sources.
+      # Build precedes test: the crash-resume and worktree fixtures run as
+      # subprocesses against the built package, because Node cannot import the
+      # TS sources.
       - name: Build
         run: npm run build
 
@@ -58,3 +93,48 @@ jobs:
       # T1.3.6: every operator-console verb, against a scripted provider.
       - name: CLI end-to-end
         run: npm run demo:cli
+
+      # T2.2.5 / T2.2.7: trace queries and plan ingestion, both offline.
+      - name: Trace queries
+        run: npm run demo:trace
+      - name: Plan ingestion dry run
+        run: npm run demo:ingest
+
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci
+
+      # SAF-5, dependency audit.
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      # SAF-5, secret scanning — the same patterns the kernel redacts with
+      # (SAF-6), so there is one definition of what a credential looks like.
+      - name: Build
+        run: npm run build
+      - name: Secret scan
+        run: node scripts/scan-secrets.mjs
+
+  codeql:
+    name: scan (codeql)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+      # SAF-5, static analysis. eslint is a linter, not a security analyser;
+      # this is the part of the scan that looks for vulnerabilities rather than
+      # for style.
+      - uses: github/codeql-action/analyze@v4
