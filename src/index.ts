@@ -353,6 +353,25 @@ export {
   ingestPlan,
   PlanIngestError,
 } from './plan/ingest.js';
+export { readyTasks } from './plan/ingest.js';
+export type { RoleDrift, RoleFreeze } from './role/freeze.js';
+export {
+  assertRolesFrozen,
+  digestOf,
+  loadRoleFreeze,
+  roleDigests,
+  roleDrift,
+  roleFreezeSchema,
+  RoleFreezeError,
+  unapprovedDrift,
+} from './role/freeze.js';
+export type {
+  ImplementOptions,
+  ImplementResult,
+  ImplementStatus,
+  ImplementTask,
+} from './implement/loop.js';
+export { implementTask } from './implement/loop.js';
 export type { ApplyReplanOptions, ReplanOutcome } from './plan/apply.js';
 export { applyReplan, completedTasks } from './plan/apply.js';
 export type { GateTagRequest } from './git/tag.js';

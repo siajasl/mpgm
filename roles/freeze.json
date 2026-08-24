@@ -1,0 +1,24 @@
+{
+  "reason": "Switchover (T3.1.8): mpgm now executes its own plan, and the agents writing the code are the agents whose definitions are in this repository. Until the eval harness lands (T5.2.1a) nothing would notice a role getting quietly worse, so changes are made deliberate rather than forbidden — edit the digest here in the same commit and the merge gate shows an operator what moved.",
+  "frozenAt": "2026-08-24",
+  "digests": {
+    "analyst": "7e76412c7ea59eefbbcd6c2eaa8abd24d7bb78d85fbb9716f97bda8d8a69e645",
+    "code-reviewer": "03cff30476e05b31660a85ac623533b30952e8dac144aad73cac2df3fd6f7ddd",
+    "design-architect": "2bd1c4f5ce438b5f74ef48b17efdb816eae0fe9f0802eab5b3da356cc5ec64d2",
+    "design-comparer": "4938ced65d28c3cbd0b3605e9300f07dfd258b7be52166a56507a803ff91378d",
+    "design-critic": "551c19bc43b548c73c05ec8407b401d7fcd724462f40524ac680fb1f1ecb92c6",
+    "design-judge": "0a714aeae57efc5fce24064fd37da0c9af4ddb9fd2bb90ff99c5bad394555a86",
+    "design-proposer": "94a9abd5ae9ae16413bbd1ff65f46736fab15748120447b3aa98deed78408c00",
+    "elicitor": "cfc13e819bc19d30e92700a64808d7a5d61e2f4b89d50eefb4768e391fa86e46",
+    "implementer": "39e9e3b6324531e6fe60b1546e99d15e77e8487a83b06676fc3e6d4c328b73df",
+    "kb-curator": "ef6c60fa02a32eb6ba35f29f9e4ce65713e0ef67ea9be231ae9a509e536f1bd0",
+    "plan-critic": "b6bf73641d2a737027558a1d116c1a96a3ef86eb2959143e90189e1a1b0b5ae1",
+    "planner": "1b9baf3a12c59b99bd6f0b174b3d32346f9016eab05f502847377c57929039ea",
+    "requirements-analyst": "e707e450a0420bc5736670c65c7070d50bfb0ab7d62eca4b76c9eedf8c8050a3",
+    "requirements-critic": "76533334d3f9919af5394203ef795bd307a3c3966372656281723bd25690a6c2",
+    "researcher": "9fa4634a77bfc9b12d59c14f182ec803c6c3ddac521ae94f254327538ed34c7b",
+    "reviewer": "8a5bb59ac23a495dbf3a7b54250bb4fd52a1da0e850f92192b25f36654558027",
+    "toy-analyst": "3fba4cdfb9f38fab0203f466fd19d78e1321db9ba5cc711c1fe4472ea747c6bd"
+  },
+  "exemptions": []
+}

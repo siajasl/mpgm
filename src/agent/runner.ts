@@ -30,6 +30,15 @@ export interface RunTaskRequest {
    * TaskDispatched for replay and eval attribution.
    */
   readonly model?: string;
+  /**
+   * Root this session's paths resolve against, overriding the runner's.
+   *
+   * An implementation task works in its own worktree (IMP-1, ADR-5), so its
+   * root is neither the project's nor the same as any other task's. The
+   * override is per task rather than per runner because one runner dispatches
+   * them all.
+   */
+  readonly policyRoot?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -152,7 +161,8 @@ export class SessionRunner {
       payload: { taskId, role: role.name, model },
     });
 
-    const policy = new RolePolicy(role, { root: this.#policyRoot });
+    const root = request.policyRoot ?? this.#policyRoot;
+    const policy = new RolePolicy(role, { root });
     // Tools the gate ruled on during this session, so a denial the SDK also
     // reports is not written to the audit trail twice.
     let gatedTools = new Set<string>();
@@ -207,7 +217,7 @@ export class SessionRunner {
         outputJsonSchema,
         // The session resolves relative paths against the same root the policy
         // does, so the agent and the gate agree on what a path means.
-        cwd: this.#policyRoot,
+        cwd: root,
         ...(this.#secrets === undefined
           ? {}
           : { env: this.#secrets.environment(process.env) }),

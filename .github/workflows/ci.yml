@@ -100,6 +100,11 @@ jobs:
       - name: Plan ingestion dry run
         run: npm run demo:ingest
 
+      # T3.1.8: the switchover — mpgm reads its own plan, implements a task in
+      # a worktree, has it reviewed, and merges it.
+      - name: Switchover
+        run: npm run demo:switchover
+
   scan:
     name: scan
     runs-on: ubuntu-latest
