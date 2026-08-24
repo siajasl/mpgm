@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { z } from 'zod';
 import { egressClassSchema, type EgressClass } from '../context/egress.js';
@@ -125,6 +125,11 @@ export class ArtifactStore {
     this.#gates = options.gates ?? new StaticGateOracle();
   }
 
+  /** Absolute project root every stored path is resolved against. */
+  get root(): string {
+    return this.#root;
+  }
+
   /** `artifacts/definition/brief.md` + version 2 → `<root>/artifacts/definition/brief.v2.md`. */
   pathFor(basePath: string, version: number): string {
     const extension = extname(basePath) || '.md';
@@ -185,6 +190,54 @@ export class ArtifactStore {
     }
     const existing = this.read(request.basePath, version);
     return this.#writeVersion(request, version, existing.supersedes);
+  }
+
+  /**
+   * Every artifact version stored under `subdirectory`, oldest id first.
+   *
+   * Used to rebuild derived state — the trace index (ADR-4) above all — from
+   * the files, which are the source of truth. Unreadable files are skipped
+   * rather than fatal: a rebuild that dies on one malformed artifact leaves
+   * the project with no index at all.
+   */
+  list(subdirectory = 'artifacts'): { artifact: Artifact; relativePath: string }[] {
+    const root = join(this.#root, subdirectory);
+    if (!existsSync(root)) {
+      return [];
+    }
+
+    const found: { artifact: Artifact; relativePath: string }[] = [];
+    const walk = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      )) {
+        const full = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        const match = /^(.*)\.v([0-9]+)(\.[^.]+)$/.exec(entry.name);
+        if (match === null) {
+          continue;
+        }
+        const [, stem, version, extension] = match;
+        const basePath = relative(
+          this.#root,
+          join(directory, `${String(stem)}${String(extension)}`),
+        );
+        try {
+          found.push({
+            artifact: this.read(basePath, Number(version)),
+            relativePath: relative(this.#root, full),
+          });
+        } catch {
+          // Skipped: see above.
+        }
+      }
+    };
+
+    walk(root);
+    return found;
   }
 
   read(basePath: string, version?: number): Artifact {

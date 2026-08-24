@@ -13,6 +13,7 @@ import { elicit, type OperatorIo } from '../elicit/session.js';
 import { GateManager, gateOracleFromState } from '../gate/manager.js';
 import { isGitRepository, tagGate } from '../git/tag.js';
 import { runPhase } from '../phase/runner.js';
+import { TraceIndex } from '../trace/index-store.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
 import { RoleRegistry } from '../role/loader.js';
 import { Projector } from '../state/projector.js';
@@ -109,6 +110,9 @@ export async function run(
       projector,
       kb: knowledgeBase(context),
       policy: context.policy ?? DEFAULT_EGRESS_POLICY,
+      // Kept current as artifacts are written, so `trace` and gate
+      // invalidation see the phase's output without waiting for a commit.
+      traces: TraceIndex.attach(db),
     });
 
     if (result.outcome.status === 'stopped') {

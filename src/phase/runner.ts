@@ -1,3 +1,4 @@
+import { relative } from 'node:path';
 import type { SessionRunner } from '../agent/runner.js';
 import type { Artifact, ArtifactStore, Provenance } from '../artifact/store.js';
 import { assembleContext, type UpstreamResult } from '../context/assembler.js';
@@ -16,6 +17,7 @@ import type { GraphStep, Playbook, SessionStep } from '../playbook/graph.js';
 import type { RoleRegistry } from '../role/loader.js';
 import type { Projector } from '../state/projector.js';
 import { runControl } from '../state/reduce.js';
+import type { TraceIndex } from '../trace/index-store.js';
 
 /**
  * Executes one phase from its playbook (DESIGN §4.1).
@@ -49,6 +51,14 @@ export interface PhaseRunOptions {
   readonly kb: readonly KbDocument[];
   readonly policy: EgressPolicy;
   readonly concurrency?: number;
+  /**
+   * Derived trace index (ADR-4), updated as artifacts are written.
+   *
+   * Indexed here rather than only on commit, because an artifact that exists
+   * but has not been committed is exactly the state a phase is in when it
+   * reaches its gate — and the gate is what wants to know what traces to what.
+   */
+  readonly traces?: TraceIndex;
 }
 
 export type PhaseOutcome =
@@ -222,13 +232,18 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       );
     }
     const provenance: Provenance = { task: step.id, role, model, runId };
-    produced[step.produces] = options.artifacts.write({
+    const artifact = options.artifacts.write({
       id: step.produces,
       basePath: template.path,
       schema: template.schema,
       data,
       producedBy: provenance,
     });
+    produced[step.produces] = artifact;
+    options.traces?.indexArtifactAs(
+      artifact,
+      relative(options.artifacts.root, artifact.path),
+    );
   };
 
   const record = (step: GraphStep, value: unknown): void => {
