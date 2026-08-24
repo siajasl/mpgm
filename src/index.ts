@@ -354,3 +354,17 @@ export {
 } from './git/tag.js';
 export type { RunControl } from './state/kernel-state.js';
 export { runControl } from './state/reduce.js';
+export type {
+  ReleaseOptions,
+  ReleaseResult,
+  Worktree,
+  WorktreeManagerOptions,
+} from './implement/worktree.js';
+export {
+  assertUsableTaskId,
+  branchNameFor,
+  DEFAULT_BRANCH_PREFIX,
+  taskIdFromBranch,
+  WorktreeError,
+  WorktreeManager,
+} from './implement/worktree.js';
