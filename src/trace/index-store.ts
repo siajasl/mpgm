@@ -209,6 +209,32 @@ export class TraceIndex {
     return rows.filter((row) => looksLikeId(row.dst));
   }
 
+  /**
+   * Dangling citations made by one artifact, or by an element it declares.
+   *
+   * Keyed on node ids rather than on the source path, so a caller does not
+   * have to know how the artifact was spelled when it was indexed — the same
+   * artifact indexed absolutely and relatively answers identically.
+   */
+  danglingFrom(artifactNode: string): readonly DanglingReference[] {
+    const rows = this.#db
+      .prepare(
+        `WITH owned(id) AS (
+           SELECT ?
+           UNION
+           SELECT dst FROM trace_links WHERE src = ? AND relation = 'declares'
+         )
+         SELECT l.src AS src, l.dst AS dst, l.source AS source
+           FROM trace_links l
+           JOIN owned o ON l.src = o.id
+          WHERE l.relation = 'traces-to'
+            AND NOT EXISTS (SELECT 1 FROM trace_nodes n WHERE n.id = l.dst)
+          ORDER BY l.dst, l.src, l.source`,
+      )
+      .all(artifactNode, artifactNode) as unknown as DanglingReference[];
+    return rows.filter((row) => looksLikeId(row.dst));
+  }
+
   /** Every row, ordered — for comparing a rebuild against an update. */
   snapshot(): {
     nodes: readonly Declaration[];

@@ -143,7 +143,16 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
   const available: Record<string, Artifact> = {};
   for (const [inputId, template] of Object.entries(playbook.inputs)) {
     try {
-      available[inputId] = options.artifacts.read(template.path);
+      const input = options.artifacts.read(template.path);
+      available[inputId] = input;
+      // Indexed as well as read: what a phase's own artifacts cite lands in
+      // the index when they are written, but the ids they cite are declared
+      // by these — and a `traces-resolve` criterion over an index that never
+      // saw them would report every citation as dangling.
+      options.traces?.indexArtifactAs(
+        input,
+        relative(options.artifacts.root, input.path),
+      );
     } catch (cause) {
       if (!template.optional) {
         return {

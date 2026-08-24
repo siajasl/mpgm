@@ -12,9 +12,10 @@ import { ArtifactStore, GatedArtifactError, type Artifact } from '../artifact/st
 import { MEMORY, openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
-import { loadPlaybookFile } from '../playbook/loader.js';
+import { loadPlaybookFile, parsePlaybook } from '../playbook/loader.js';
 import { Projector } from '../state/projector.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
+import { TraceIndex } from '../trace/index-store.js';
 import {
   canProceed,
   GateError,
@@ -301,6 +302,118 @@ describe('agent assertions are read, not assumed', () => {
       // Completing successfully while reporting unresolved findings must not
       // open the gate.
       expect(packet.allMet).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('the traces-resolve criterion (ART-2)', () => {
+  const tracedPlaybook = parsePlaybook(
+    'plan.yaml',
+    [
+      'phase: plan',
+      'description: a phase',
+      'artifacts:',
+      '  plan:',
+      '    schema: definition',
+      '    path: artifacts/plan/plan.md',
+      '    description: the plan',
+      'tasks:',
+      '  - id: decompose',
+      '    role: planner',
+      '    description: decompose it',
+      '    prompt: decompose it',
+      '    produces: plan',
+      'gate:',
+      '  id: plan-gate',
+      '  description: the plan is traced',
+      '  criteria:',
+      '    - id: plan-traced',
+      '      kind: traces-resolve',
+      '      description: every citation resolves',
+      '      artifact: plan',
+    ].join('\n'),
+  );
+
+  function planEvidence(
+    root: string,
+    tracesTo: readonly string[],
+  ): { evidence: GateEvidence; artifact: Artifact } {
+    const store = new ArtifactStore({ root, schemas });
+    const artifact = store.write({
+      id: 'plan',
+      basePath: 'artifacts/plan/plan.md',
+      schema: 'definition',
+      data: { problem: 'x' },
+      producedBy: { ...provenance, task: 'decompose', role: 'planner' },
+      tracesTo,
+    });
+    return { evidence: { artifacts: { plan: artifact }, outputs: {} }, artifact };
+  }
+
+  it('passes when every citation resolves', () => {
+    const { db, log, projector } = harness();
+    try {
+      const traces = TraceIndex.attach(db);
+      const { evidence, artifact } = planEvidence(newRoot(), ['LOAN-1']);
+      // Something declares LOAN-1.
+      traces.indexArtifactAs(
+        {
+          ...artifact,
+          id: 'requirement-set',
+          data: { requirements: [{ id: 'LOAN-1', statement: 'Record a loan.' }] },
+          tracesTo: [],
+        },
+        'artifacts/scope/requirements.v1.md',
+      );
+      traces.indexArtifactAs(artifact, 'artifacts/plan/plan.v1.md');
+
+      const packet = new GateManager({ log, projector, traces }).present(
+        'run-1',
+        tracedPlaybook,
+        evidence,
+      );
+
+      expect(packet.criteria[0]).toMatchObject({ id: 'plan-traced', met: true });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fails and names the citations that resolve to nothing', () => {
+    const { db, log, projector } = harness();
+    try {
+      const traces = TraceIndex.attach(db);
+      const { evidence, artifact } = planEvidence(newRoot(), ['LOAN-9']);
+      traces.indexArtifactAs(artifact, 'artifacts/plan/plan.v1.md');
+
+      const packet = new GateManager({ log, projector, traces }).present(
+        'run-1',
+        tracedPlaybook,
+        evidence,
+      );
+
+      expect(packet.criteria[0]?.met).toBe(false);
+      expect(packet.criteria[0]?.detail).toContain('LOAN-9');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is unmet, not met, when no index is wired', () => {
+    // A check that silently passes when its evidence is unavailable is worse
+    // than no check: the packet reports it as satisfied.
+    const { db, log, projector } = harness();
+    try {
+      const packet = new GateManager({ log, projector }).present(
+        'run-1',
+        tracedPlaybook,
+        planEvidence(newRoot(), ['LOAN-9']).evidence,
+      );
+
+      expect(packet.criteria[0]?.met).toBe(false);
+      expect(packet.criteria[0]?.detail).toMatch(/no trace index/);
     } finally {
       db.close();
     }

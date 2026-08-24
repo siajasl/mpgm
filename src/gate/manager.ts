@@ -5,6 +5,8 @@ import type { EventLog } from '../event/store.js';
 import type { GateCriterion } from '../playbook/definition.js';
 import type { Playbook } from '../playbook/graph.js';
 import type { KernelState } from '../state/kernel-state.js';
+import type { TraceIndex } from '../trace/index-store.js';
+import { artifactNodeId } from '../trace/links.js';
 
 /**
  * Gate manager (DESIGN §4.1, HIL-1/4/5).
@@ -82,7 +84,11 @@ function readString(output: unknown, field: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function evaluate(criterion: GateCriterion, evidence: GateEvidence): CriterionResult {
+function evaluate(
+  criterion: GateCriterion,
+  evidence: GateEvidence,
+  traces: TraceIndex | undefined,
+): CriterionResult {
   if (criterion.kind === 'artifact-exists') {
     const artifact = evidence.artifacts[criterion.artifact];
     return {
@@ -110,6 +116,44 @@ function evaluate(criterion: GateCriterion, evidence: GateEvidence): CriterionRe
         carried === undefined
           ? `panel '${criterion.panel}' has not been counted`
           : `${criterion.panel}: ${summary ?? (carried ? 'carried' : 'did not carry')}`,
+    };
+  }
+
+  if (criterion.kind === 'traces-resolve') {
+    const artifact = evidence.artifacts[criterion.artifact];
+    if (artifact === undefined) {
+      return {
+        id: criterion.id,
+        kind: criterion.kind,
+        description: criterion.description,
+        met: false,
+        detail: `artifact '${criterion.artifact}' has not been produced`,
+      };
+    }
+    if (traces === undefined) {
+      // Unmet rather than met: a check that silently passes when its evidence
+      // is unavailable is worse than no check, because the packet reports it
+      // as satisfied.
+      return {
+        id: criterion.id,
+        kind: criterion.kind,
+        description: criterion.description,
+        met: false,
+        detail: 'no trace index is wired, so citations could not be checked',
+      };
+    }
+
+    const dangling = traces.danglingFrom(artifactNodeId(artifact.id, artifact.version));
+    return {
+      id: criterion.id,
+      kind: criterion.kind,
+      description: criterion.description,
+      met: dangling.length === 0,
+      detail:
+        dangling.length === 0
+          ? `every citation in ${artifact.id} v${String(artifact.version)} resolves`
+          : `${String(dangling.length)} citation(s) resolve to nothing: ` +
+            dangling.map((entry) => `${entry.src} -> ${entry.dst}`).join(', '),
     };
   }
 
@@ -192,15 +236,24 @@ export interface GateManagerOptions {
    * a caller forgets to wire it is worse than no guard, because it is trusted.
    */
   readonly projector: { project(): KernelState };
+  /**
+   * Derived trace index, for `traces-resolve` criteria (ADR-4).
+   *
+   * Optional because most gates do not ask about traces; a gate that does and
+   * finds no index reports the criterion unmet rather than met.
+   */
+  readonly traces?: TraceIndex;
 }
 
 export class GateManager {
   readonly #log: EventLog;
   readonly #projector: { project(): KernelState };
+  readonly #traces: TraceIndex | undefined;
 
   constructor(options: GateManagerOptions) {
     this.#log = options.log;
     this.#projector = options.projector;
+    this.#traces = options.traces;
   }
 
   /**
@@ -229,7 +282,7 @@ export class GateManager {
     }
 
     const criteria = playbook.gate.criteria.map((criterion) =>
-      evaluate(criterion, evidence),
+      evaluate(criterion, evidence, this.#traces),
     );
     const allMet = criteria.every((criterion) => criterion.met);
 

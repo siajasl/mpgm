@@ -40,6 +40,7 @@ import {
   projectOutputSchemas,
   runCli,
 } from '../../dist/index.js';
+import { SCOPE } from './sample-project.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const failures = [];
@@ -52,135 +53,6 @@ function check(label, condition, detail = '') {
     failures.push(label);
   }
 }
-
-const SCOPE = {
-  summary:
-    'Requirements for a school library loan tracker, derived from the gated ' +
-    'Definition. The intranet-only constraint was resolved in favour of the ' +
-    'constraint: notifications are in-app rather than off-site.',
-  requirements: [
-    {
-      kind: 'functional',
-      id: 'LOAN-1',
-      statement: 'A librarian records a loan of a book to a member.',
-      rationale: 'The Definition goal "record every loan and return".',
-      priority: 'must',
-      acceptanceCriteria: [
-        'Recording a loan makes it visible to the member immediately.',
-        'A loan cannot be recorded against an unknown member.',
-      ],
-      tracesTo: ['goal: record every loan and return'],
-    },
-    {
-      kind: 'functional',
-      id: 'LOAN-2',
-      statement: 'A librarian records the return of a loaned book.',
-      rationale: 'The same Definition goal; a loan with no return is half a record.',
-      priority: 'must',
-      acceptanceCriteria: ['A returned book stops appearing on the member view.'],
-      tracesTo: ['goal: record every loan and return'],
-    },
-    {
-      kind: 'functional',
-      id: 'LOAN-3',
-      statement: 'A member sees what they currently have out and when it is due.',
-      rationale: 'The Definition goal "let members see what they have out".',
-      priority: 'must',
-      acceptanceCriteria: ['The member view lists every open loan with its due date.'],
-      tracesTo: ['goal: let members see what they have out'],
-    },
-    {
-      kind: 'functional',
-      id: 'LOAN-4',
-      statement: 'A member is notified in the application when a loan is due.',
-      rationale:
-        'The notification goal, narrowed to what the intranet-only constraint ' +
-        'permits: off-site delivery would require outbound network access.',
-      priority: 'should',
-      acceptanceCriteria: ['An overdue loan is flagged on the member view.'],
-      tracesTo: ['goal: notify members a book is due', 'constraint: intranet only'],
-    },
-    {
-      kind: 'functional',
-      id: 'LOAN-5',
-      statement: 'Member identity comes from the school directory, not a local copy.',
-      rationale: 'The Definition constraint against duplicating member records.',
-      priority: 'must',
-      acceptanceCriteria: ['No member record is created by this system.'],
-      tracesTo: ['constraint: member records already exist'],
-    },
-    {
-      kind: 'functional',
-      id: 'LOAN-6',
-      statement:
-        'The member view is reachable without signing in, so a pupil can check ' +
-        'their loans from a shared classroom machine without a password.',
-      rationale:
-        'Pupils share machines and forget passwords; the librarian asked for ' +
-        'something they can use in ten seconds at the door.',
-      priority: 'should',
-      acceptanceCriteria: [
-        'Opening the member view on a shared machine shows loans without a login step.',
-      ],
-      tracesTo: ['stakeholder: members'],
-    },
-    {
-      kind: 'non-functional',
-      id: 'NFR-1',
-      statement: 'No loan record is lost, including across an unclean shutdown.',
-      rationale: 'The Definition success metric "no loan record lost over a term".',
-      priority: 'must',
-      acceptanceCriteria: ['A recorded loan survives a power failure mid-write.'],
-      tracesTo: ['success metric: no loan record lost'],
-      threshold: {
-        metric: 'loan records lost per term',
-        value: 0,
-        unit: 'records',
-        measuredBy: 'kill -9 during a write, then compare against the audit log',
-      },
-    },
-    {
-      kind: 'non-functional',
-      id: 'NFR-2',
-      statement: 'Recording a loan is fast enough not to slow the issue desk.',
-      rationale: 'Librarians record loans with a queue in front of them.',
-      priority: 'should',
-      acceptanceCriteria: ['p95 stays within the threshold at the desk load below.'],
-      tracesTo: ['stakeholder: librarians'],
-      threshold: {
-        metric: 'p95 loan-recording latency',
-        value: 500,
-        unit: 'ms',
-        measuredBy: '20 loans/minute sustained for 10 minutes on the intranet server',
-      },
-    },
-    {
-      kind: 'non-functional',
-      id: 'NFR-3',
-      statement: 'The system runs on the existing single intranet machine.',
-      rationale: 'The Definition constraint: one machine, no budget, no cloud.',
-      priority: 'must',
-      acceptanceCriteria: [
-        'It runs within the stated footprint with no external service.',
-      ],
-      tracesTo: ['constraint: single machine, no cloud'],
-      threshold: {
-        metric: 'resident memory under normal load',
-        value: 512,
-        unit: 'MB',
-        measuredBy: 'peak RSS during the NFR-2 load test',
-      },
-    },
-  ],
-  outOfScope: [
-    { item: 'Replacing the library catalogue.', why: 'A stated non-goal.' },
-    { item: 'Purchasing and budgets.', why: 'A stated non-goal.' },
-    {
-      item: 'Off-site notification by email or SMS.',
-      why: 'Requires outbound network access, which the intranet-only constraint forbids.',
-    },
-  ],
-};
 
 const requirementIds = new Set(SCOPE.requirements.map((entry) => entry.id));
 const workspace = mkdtempSync(join(tmpdir(), 'mpgm-t213a-'));

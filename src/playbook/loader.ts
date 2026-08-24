@@ -142,6 +142,16 @@ function checkGate(
         }
         break;
 
+      case 'traces-resolve':
+        if (!(criterion.artifact in definition.artifacts)) {
+          throw new PlaybookLoadError(
+            sourcePath,
+            `gate criterion '${criterion.id}' names artifact '${criterion.artifact}', ` +
+              `which is not declared`,
+          );
+        }
+        break;
+
       case 'vote-carried':
         if (nodeKinds.get(criterion.panel) !== 'panel') {
           throw new PlaybookLoadError(
