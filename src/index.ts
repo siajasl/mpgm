@@ -277,6 +277,32 @@ export type { CliContext, CommandResult } from './cli/commands.js';
 export { approve, chat, intervene, replay, run, status } from './cli/commands.js';
 export type { Verb } from './cli/main.js';
 export { parseArgs, runCli, USAGE, VERBS } from './cli/main.js';
+export type {
+  CommitRecord,
+  ExtractedLinks,
+  TraceLink,
+  TraceNode,
+  TraceNodeKind,
+  TraceRelation,
+} from './trace/links.js';
+export {
+  artifactNodeId,
+  extractArtifactLinks,
+  extractCommitLinks,
+  looksLikeId,
+  TRACE_ID_PATTERN,
+} from './trace/links.js';
+export type { Declaration, DanglingReference } from './trace/index-store.js';
+export { TraceIndex } from './trace/index-store.js';
+export { TRACE_DDL } from './trace/ddl.js';
+export type { IndexerOptions, IndexReport } from './trace/indexer.js';
+export { TraceIndexer } from './trace/indexer.js';
+export {
+  changedPaths,
+  GitHistoryError,
+  headCommit,
+  readCommits,
+} from './trace/git-history.js';
 export type { GateTagRequest } from './git/tag.js';
 export {
   gateTagName,
