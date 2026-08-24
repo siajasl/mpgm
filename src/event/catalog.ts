@@ -245,6 +245,28 @@ export const knowledgeBaseUpdated = defineEvent(
   }),
 );
 
+/**
+ * What CI reported for a task's change, and the merge decision taken from it
+ * (IMP-2, SAF-5).
+ *
+ * The verdict is logged and not merely the raw check runs, because the verdict
+ * is what the kernel acted on. Replay must be able to say *why* a merge was
+ * refused without asking a CI provider what it thinks today — by then the
+ * checks may have been re-run, or the branch deleted.
+ */
+export const checksReported = defineEvent(
+  'ChecksReported',
+  z.object({
+    taskId: nonEmpty,
+    /** Commit the checks belong to. */
+    ref: nonEmpty,
+    mergeable: z.boolean(),
+    summary: nonEmpty,
+    /** One line per reason the merge was refused; empty when it was not. */
+    blocking: z.array(nonEmpty).default([]),
+  }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -253,6 +275,7 @@ export const operatorIntervened = defineEvent(
 /** Every kernel event type currently defined. */
 export const kernelEvents = [
   budgetExceeded,
+  checksReported,
   effectCompleted,
   effectEscalated,
   effectFailed,

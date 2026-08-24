@@ -352,7 +352,7 @@ export {
   listGateTags,
   tagGate,
 } from './git/tag.js';
-export type { RunControl } from './state/kernel-state.js';
+export type { ChecksState, RunControl } from './state/kernel-state.js';
 export { runControl } from './state/reduce.js';
 export type {
   ReleaseOptions,
@@ -368,3 +368,45 @@ export {
   WorktreeError,
   WorktreeManager,
 } from './implement/worktree.js';
+export type {
+  ContractSpec,
+  OperationEffects,
+  OperationSpec,
+  Provider,
+} from './contract/capability.js';
+export {
+  BoundContract,
+  CapabilityRegistry,
+  ContractError,
+} from './contract/capability.js';
+export type {
+  CheckKind,
+  CheckMapping,
+  CheckRun,
+  KindProblem,
+  KindVerdict,
+  MergeVerdict,
+  MergeVerdictInput,
+} from './implement/checks.js';
+export {
+  blockingReasons,
+  CHECK_KINDS,
+  checkMappingSchema,
+  checkRunSchema,
+  ciChecksContract,
+  DEFAULT_CHECK_MAPPING,
+  failed,
+  MergeBlockedError,
+  mergeVerdict,
+  passed,
+  pending,
+  requireMergeable,
+  REQUIRED_CHECK_KINDS,
+} from './implement/checks.js';
+export type { GitHubApi, GitHubChecksOptions } from './implement/github-checks.js';
+export {
+  fetchCheckRuns,
+  ghCli,
+  GitHubChecksError,
+  githubChecksProvider,
+} from './implement/github-checks.js';

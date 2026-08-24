@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.10 — knowledge-base write flow and prior-decision surfacing (§4.3) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.11 — merge-check contract and its verdict rules (§4.7) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-24
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -110,7 +110,7 @@ The event log **is** the telemetry source: a projection layer derives per-phase/
 ### 4.7 Delivery Integrations (IMP-*, TST-*, DEP-*)
 Each integration is an **MCP capability contract** — a named interface (inputs, outputs, effect semantics) specified in `contracts/` and satisfied by a pluggable server (EXT-1); the kernel supervises through contracts and never re-implements the underlying tooling.
 
-- **CI (`ci.checks`):** merge checks (build/lint/type/test/scan — IMP-2, SAF-5) run in project CI — GitHub Actions for v1 (§9); the kernel treats CI results as an oracle.
+- **CI (`ci.checks`):** merge checks (build/lint/type/test/scan — IMP-2, SAF-5) run in project CI — GitHub Actions for v1 (§9); the kernel treats CI results as an oracle. It asks what ran and decides for itself whether that is enough: a required kind blocks the merge unless some check covering it *passed*, so a check that failed, is still running, was skipped, or was never configured all block alike — **absence is not success**. Which check names cover which kinds is per-project configuration, not part of the contract, so the same kernel code sits in front of a workflow with a job per kind and one with a single job (EXT-2/3). The verdict is a pure function of the reported runs and is logged (`ChecksReported`), so replay can say why a merge was refused without re-asking a provider whose answer has since changed.
 - **Test runner (`test.nfr`):** executes the Test-phase suites — NFR validation (perf/load, DAST) against SCP-1 thresholds (TST-3) and requirement-coverage reporting (TST-2). A **quarantine ledger** tracks flaky tests (TST-6): quarantined tests are excluded from coverage claims and raised as maintenance tasks.
 - **Environments (`env.provision`):** provisions test/staging/prod from in-repo IaC (DEP-1/4).
 - **Release (`release.deliver`):** progressive delivery is delegated to existing CD tooling (e.g. Argo Rollouts or a cloud-native equivalent) behind this contract; mpgm supplies release artifacts (DEP-3), watches health signals, records outcomes (DEP-5), and issues promote/rollback decisions per policy (DEP-2) — it does not implement rollout mechanics.
@@ -131,7 +131,7 @@ An event-driven **PM projector** subscribes to the kernel event stream and maint
 
 ## 5. Data Model (kernel)
 
-Event log (append-only): `RunStarted, PhaseEntered, TaskDispatched, SessionUsage, ToolCallLogged, TaskCompleted{artifactRefs}, ValidationFailed, VoteTallied{rule, carried, ballots}, GatePresented, GateApproved/Rejected{by}, PhaseReopened, GateInvalidated, BudgetExceeded, OperatorIntervened, ...` — each `{seq, ts, runId, type, payload, schemaVersion}`.
+Event log (append-only): `RunStarted, PhaseEntered, TaskDispatched, SessionUsage, ToolCallLogged, TaskCompleted{artifactRefs}, ValidationFailed, VoteTallied{rule, carried, ballots}, ChecksReported{ref, mergeable, blocking}, GatePresented, GateApproved/Rejected{by}, PhaseReopened, GateInvalidated, BudgetExceeded, OperatorIntervened, ...` — each `{seq, ts, runId, type, payload, schemaVersion}`.
 
 Derived (rebuildable) tables: `runs, tasks, gates, budgets, trace_links, metrics`. Artifacts and roles live in git only (ADR-3) — the DB stores references (path + commit hash), never artifact content; large session transcripts/tool outputs live as content-addressed blobs referenced from events (ADR-2).
 
