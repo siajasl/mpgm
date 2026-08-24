@@ -30,6 +30,24 @@ export interface ChecksState {
   readonly blocking: readonly string[];
 }
 
+/** An independent review of a task's change (IMP-3). */
+export interface ReviewState {
+  readonly reviewTaskId: string;
+  readonly reviewerRole: string;
+  /** The commit reviewed — approval is of a state, not of a branch. */
+  readonly ref: string;
+  readonly approved: boolean;
+  readonly summary: string;
+}
+
+/** Where a task's change ended up (IMP-1). */
+export interface MergeState {
+  readonly branch: string;
+  readonly into: string;
+  readonly commit: string;
+  readonly reviewTaskId: string;
+}
+
 export interface TaskState {
   readonly taskId: string;
   readonly role: string;
@@ -43,6 +61,10 @@ export interface TaskState {
   readonly deniedToolCalls: number;
   /** Null until CI has reported on this task's change. */
   readonly checks: ChecksState | null;
+  /** The latest review of this task's change, or null if none. */
+  readonly review: ReviewState | null;
+  /** Null until the change has been merged. */
+  readonly merged: MergeState | null;
   readonly usage: Usage;
 }
 

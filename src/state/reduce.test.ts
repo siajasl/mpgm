@@ -82,6 +82,30 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: 'abc1234',
+          approved: true,
+          summary: 'reads correctly and the tests can fail',
+          findings: 0,
+        },
+      },
+      {
+        runId: RUN,
+        type: 'ChangeMerged',
+        payload: {
+          taskId: 'T1',
+          branch: 'mpgm/T1',
+          into: 'main',
+          commit: 'def5678',
+          reviewTaskId: 'T1-review',
+        },
+      },
+      {
+        runId: RUN,
         type: 'KnowledgeBaseUpdated',
         payload: {
           taskId: 'T1',

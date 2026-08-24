@@ -1,4 +1,4 @@
-import { isAbsolute, matchesGlob, relative, resolve } from 'node:path';
+import { isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path';
 import type { Role } from '../role/definition.js';
 import type { ToolDecision } from '../agent/session.js';
 
@@ -233,6 +233,21 @@ export class RolePolicy {
         reason:
           `path '${raw}' resolves outside the project root '${this.#root}'. ` +
           `Paths must be inside it; relative paths resolve from it.`,
+      };
+    }
+
+    // Git's own metadata is never writable, whatever a role declares. An
+    // implementation task's worktree is its sandbox precisely because the
+    // branch it is on is not the trunk (IMP-1) — and an agent that can write
+    // `.git/HEAD` or `.git/config` can change which branch that is. Git
+    // operations belong to the kernel, so no role loses anything it should
+    // have had.
+    if (mode === 'write' && (rel === '.git' || rel.split(sep)[0] === '.git')) {
+      return {
+        behavior: 'deny',
+        reason:
+          `tool '${toolName}' may not write '${rel}': git metadata is never writable, ` +
+          `whatever a role declares. Git operations go through the kernel.`,
       };
     }
 

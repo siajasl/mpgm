@@ -115,6 +115,32 @@ describe('path allowlist', () => {
     ).toBe('allow');
   });
 
+  it('never writes git metadata, whatever the role declares (IMP-1)', () => {
+    // An implementer's worktree is its sandbox because the branch it is on is
+    // not the trunk; an agent that can write `.git/HEAD` can change that. This
+    // role asks for git metadata explicitly and still does not get it.
+    const permissive = new RolePolicy(
+      role(['Read', 'Write'], ['**', '.git/**'], ['**', '.git/**', '.gitignore']),
+      { root: ROOT },
+    );
+
+    expect(permissive.decide('Write', { file_path: 'src/a.ts' }).behavior).toBe('allow');
+    expect(permissive.decide('Write', { file_path: '.gitignore' }).behavior).toBe(
+      'allow',
+    );
+
+    for (const path of ['.git/config', '.git/HEAD', '.git', '.git/hooks/pre-commit']) {
+      const decision = permissive.decide('Write', { file_path: path });
+      expect(decision.behavior).toBe('deny');
+      expect(decision.behavior === 'deny' && decision.reason).toMatch(
+        /git metadata is never writable/,
+      );
+    }
+
+    // Reading it is another matter: a reviewer may want the history.
+    expect(permissive.decide('Read', { file_path: '.git/HEAD' }).behavior).toBe('allow');
+  });
+
   it('normalises before matching, so traversal cannot satisfy a glob', () => {
     const decision = analyst.decide('Read', { file_path: 'artifacts/../../etc/passwd' });
 
