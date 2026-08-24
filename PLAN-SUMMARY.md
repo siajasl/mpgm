@@ -109,7 +109,8 @@ The eval harness and its adoption gate — after which the role freeze lifts and
 | M1.3 | complete | passed (operator-run, live) — **re-run advised**: the phase gained a prior-art research task in M2.1 |
 | M2.1 | complete | not yet reported run (operator-run, live) |
 | M2.2 | complete | trace and plan-ingestion demos passing offline in CI; the reopen scenario is exercised offline but not yet on the sample project |
-| M3.1 | next | — |
-| M3.2 – M5.2 | not started | — |
+| M3.1 | complete | switchover demo passing offline in CI; the live end-to-end (real sessions, real CI, real board) is not yet reported run |
+| M3.2 | next | — |
+| M4.1 – M5.2 | not started | — |
 
 "Built" means the milestone's tasks are implemented, reviewed and merged with the offline gates green. It does not mean the milestone's verification demo has been run: the live demos make real model calls, need credentials, and are run by the operator.
