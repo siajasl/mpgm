@@ -11,7 +11,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  EventLog,
+  fingerprint,
+  kernelRegistry,
   listGateTags,
+  openDatabase,
   projectArtifactSchemas,
   projectOutputSchemas,
   runCli,
@@ -389,6 +393,52 @@ try {
     'trace refuses an id the graph has never seen',
     !unknownId.result.ok && unknownId.output.includes('Nothing in the trace graph'),
     unknownId.output,
+  );
+
+  // confirm — SAF-4. A destructive call may only be confirmed once it has
+  // actually been simulated: the operator approves what the dry run *did*, and
+  // an unknown fingerprint means there was nothing to look at.
+  const releaseCall = { environment: 'staging', version: '1.0.0' };
+  const print = fingerprint('mcp__deploy__release', releaseCall, 'dryRun');
+
+  const premature = await call(['confirm', print, '--run', 'r1', '--by', 'macg']);
+  check(
+    'confirming a call nothing simulated is refused',
+    !premature.result.ok && premature.output.includes('must be dry-run'),
+    premature.output,
+  );
+
+  // Record the dry run the way the guard would have, then confirm it.
+  {
+    const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
+    const log = EventLog.attach(db, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r1',
+      type: 'DryRunRecorded',
+      payload: {
+        taskId: 'draft-brief',
+        tool: 'mcp__deploy__release',
+        fingerprint: print,
+        summary: 'would replace 1 service',
+      },
+    });
+    db.close();
+  }
+
+  const confirmed = await call([
+    'confirm',
+    print,
+    '--run',
+    'r1',
+    '--by',
+    'macg',
+    '--reason',
+    'the simulated effect is the intended one',
+  ]);
+  check(
+    'a simulated call can be confirmed, and says by whom',
+    confirmed.result.ok && confirmed.output.includes('confirmed by macg'),
+    confirmed.output,
   );
 
   // kill — terminal, and resume does not undo it

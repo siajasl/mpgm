@@ -317,6 +317,36 @@ export const changeMerged = defineEvent(
   }),
 );
 
+/**
+ * A destructive operation was simulated (SAF-4).
+ *
+ * The fingerprint covers every parameter except the dry-run flag, so a
+ * confirmation is for the call that was simulated rather than for the
+ * operation in general — otherwise one approved deploy would approve every
+ * later one.
+ */
+export const dryRunRecorded = defineEvent(
+  'DryRunRecorded',
+  z.object({
+    taskId: nonEmpty,
+    tool: nonEmpty,
+    fingerprint: nonEmpty,
+    summary: z.string().default(''),
+  }),
+);
+
+/** An operator confirmed a simulated destructive call may proceed (SAF-4, HIL-2). */
+export const destructiveOpConfirmed = defineEvent(
+  'DestructiveOpConfirmed',
+  z.object({
+    taskId: nonEmpty,
+    tool: nonEmpty,
+    fingerprint: nonEmpty,
+    by: nonEmpty,
+    reason: z.string().default(''),
+  }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -328,6 +358,8 @@ export const kernelEvents = [
   changeMerged,
   changeReviewed,
   checksReported,
+  destructiveOpConfirmed,
+  dryRunRecorded,
   effectCompleted,
   effectEscalated,
   effectFailed,
