@@ -111,3 +111,70 @@ export function undeclaredDeviations(
   const stated = new Set(declared);
   return [...new Set(found)].filter((id) => !stated.has(id)).sort();
 }
+
+/**
+ * Convention ids used where a requirement id belongs.
+ *
+ * A convention is a rule about *how* work is done; a trace says *what* a piece
+ * of work serves (ART-2, DSG-4). Citing one in `tracesTo` puts an id in the
+ * trace graph that no artifact declares, so it shows up as a dangling
+ * reference forever — and it hides the real problem, which is that the element
+ * has no requirement behind it.
+ *
+ * This exists because the context tells every task that conventions are
+ * binding and nameable, and `tracesTo` is the only id-shaped field most
+ * artifacts have. Telling agents not to do it is not enough on its own: the
+ * field is right there, and it is the obvious place to put an id.
+ */
+export function conventionTraceIssues(
+  output: unknown,
+  conventions: readonly string[],
+): string[] {
+  const known = new Set(conventions);
+  const issues: string[] = [];
+
+  const report = (field: string, id: string, owner: string): void => {
+    issues.push(
+      `${owner}: '${id}' is a project convention, not a requirement, and cannot appear in ` +
+        `\`${field}\`. A trace says what the element serves; if the element departs from ` +
+        `${id}, say so in its own text instead.`,
+    );
+  };
+
+  const walk = (value: unknown, owner: string): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        walk(entry, owner);
+      }
+      return;
+    }
+    if (typeof value !== 'object' || value === null) {
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    const declared = record.id;
+    const here = typeof declared === 'string' && declared !== '' ? declared : owner;
+
+    for (const field of ['tracesTo', 'verifies'] as const) {
+      const cited = record[field];
+      if (!Array.isArray(cited)) {
+        continue;
+      }
+      for (const id of cited) {
+        if (typeof id === 'string' && known.has(id)) {
+          report(field, id, here);
+        }
+      }
+    }
+
+    for (const [key, child] of Object.entries(record)) {
+      if (key !== 'tracesTo' && key !== 'verifies') {
+        walk(child, here);
+      }
+    }
+  };
+
+  walk(output, 'output');
+  return issues;
+}
