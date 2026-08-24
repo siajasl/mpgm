@@ -296,6 +296,10 @@ export const changeReviewed = defineEvent(
     approved: z.boolean(),
     summary: nonEmpty,
     findings: z.number().int().nonnegative().default(0),
+    /** Convention ids the reviewer found broken (IMP-4). */
+    deviations: z.array(nonEmpty).default([]),
+    /** Of those, the ones the author never declared. */
+    undeclaredDeviations: z.array(nonEmpty).default([]),
   }),
 );
 

@@ -11,6 +11,7 @@ import { fold } from '../state/reduce.js';
 import { codeReviewSchema } from '../schemas.js';
 import { mergeVerdict, type CheckRun } from './checks.js';
 import {
+  changeReviewed,
   decideMerge,
   gitMergeContract,
   mergeChange,
@@ -144,6 +145,41 @@ describe('decideMerge', () => {
     );
 
     expect(decision.refusals).toEqual(['checks-not-green']);
+  });
+
+  // T3.1.4 completion criterion: a planted deviation is flagged. The reviewer
+  // found a convention broken; the change never declared it (IMP-4).
+  it('refuses a change that broke a convention without declaring it', () => {
+    const decision = decideMerge({
+      ...request(),
+      review: { ...approval('abc123'), deviations: ['CONV-1', 'CONV-6'] },
+      declaredDeviations: ['CONV-1'],
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.refusals).toEqual(['undeclared-deviation']);
+    expect(decision.reasons[0]).toContain('CONV-6');
+    expect(decision.reasons[0]).not.toContain('CONV-1');
+  });
+
+  it('allows a deviation the change declared, since the reviewer judged it', () => {
+    const decision = decideMerge({
+      ...request(),
+      review: { ...approval('abc123'), deviations: ['CONV-6'] },
+      declaredDeviations: ['CONV-6'],
+    });
+
+    expect(decision.allowed).toBe(true);
+  });
+
+  it('does not hold a change to deviations it declared and nobody found', () => {
+    const decision = decideMerge({
+      ...request(),
+      review: { ...approval('abc123'), deviations: [] },
+      declaredDeviations: ['CONV-2'],
+    });
+
+    expect(decision.allowed).toBe(true);
   });
 
   it('reports every reason at once rather than one at a time', () => {
@@ -322,6 +358,23 @@ describe('mergeChange', () => {
     expect(await gitMergeContract.check?.(intent)).toBe(false);
     await mergeChange({ runId: 'run-1', repo, branch, request: request({ ref }) });
     expect(await gitMergeContract.check?.(intent)).toBe(true);
+  });
+});
+
+describe('changeReviewed', () => {
+  it('records what the reviewer found and what nobody had declared', () => {
+    const event = changeReviewed(
+      'run-1',
+      'T1',
+      { ...approval('abc123'), deviations: ['CONV-1', 'CONV-6'] },
+      2,
+      ['CONV-1'],
+    );
+
+    expect(event.payload).toMatchObject({
+      deviations: ['CONV-1', 'CONV-6'],
+      undeclaredDeviations: ['CONV-6'],
+    });
   });
 });
 

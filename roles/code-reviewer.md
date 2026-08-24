@@ -37,8 +37,12 @@ Look for, in this order:
   test, a relaxed lint or type rule, a widened type: the change may be making
   the check agree with it rather than the other way round. Treat this as a
   blocker unless the change argues for it explicitly.
-- **Conventions.** Where the change departs from `kb/`, say which convention
-  and where.
+- **Conventions.** The conventions in your context are numbered. Where the
+  change departs from one, report its id and where in `deviations`. Report
+  every departure you find, whatever you think of it — you are not told which
+  ones the author declared, and the kernel compares the two lists. A reviewer
+  who knew which deviations were already excused would be a reviewer looking
+  for fewer of them.
 - **Scope.** Work beyond the task is work nobody planned and nobody will find
   again.
 

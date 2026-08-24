@@ -38,6 +38,8 @@ export interface ReviewState {
   readonly ref: string;
   readonly approved: boolean;
   readonly summary: string;
+  /** Convention ids the reviewer found broken and the author never declared. */
+  readonly undeclaredDeviations: readonly string[];
 }
 
 /** Where a task's change ended up (IMP-1). */

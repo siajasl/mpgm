@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import type { EffectJournal } from '../effect/journal.js';
 import type { EffectContract, EffectIntent } from '../effect/contract.js';
 import type { EventInput } from '../event/envelope.js';
+import { undeclaredDeviations } from '../context/conventions.js';
 import { blockingReasons, type MergeVerdict } from './checks.js';
 
 /**
@@ -34,6 +35,8 @@ export type MergeRefusal =
   | 'changes-requested'
   /** The reviewer shares the author's role (IMP-3). */
   | 'reviewer-not-independent'
+  /** The reviewer found a convention broken that the change never declared. */
+  | 'undeclared-deviation'
   /** The review is of an earlier commit than the one being merged. */
   | 'review-is-stale';
 
@@ -51,6 +54,8 @@ export interface ReviewRecord {
   readonly ref: string;
   readonly approved: boolean;
   readonly summary: string;
+  /** Convention ids the reviewer found the change departing from (IMP-4). */
+  readonly deviations?: readonly string[];
 }
 
 export interface MergeDecisionRequest {
@@ -61,6 +66,8 @@ export interface MergeDecisionRequest {
   readonly ref: string;
   readonly verdict: MergeVerdict;
   readonly review?: ReviewRecord;
+  /** Convention ids the change declared it departs from (IMP-4). */
+  readonly declaredDeviations?: readonly string[];
 }
 
 export interface MergeDecision {
@@ -118,6 +125,22 @@ export function decideMerge(request: MergeDecisionRequest): MergeDecision {
     refuse('changes-requested', `reviewer requested changes: ${review.summary}`);
   }
 
+  // IMP-4. A convention the reviewer found broken and the author never
+  // mentioned was introduced silently, and "flagged, not silently introduced"
+  // has to bite somewhere or it is a preference. Declaring one does not excuse
+  // it — the reviewer still judges it — it only makes it a decision somebody
+  // took rather than one nobody noticed.
+  const undeclared = undeclaredDeviations(
+    review.deviations ?? [],
+    request.declaredDeviations ?? [],
+  );
+  if (undeclared.length > 0) {
+    refuse(
+      'undeclared-deviation',
+      `the change departs from ${undeclared.join(', ')} without declaring it (IMP-4)`,
+    );
+  }
+
   return { allowed: refusals.length === 0, refusals, reasons };
 }
 
@@ -126,7 +149,9 @@ export function changeReviewed(
   taskId: string,
   review: ReviewRecord,
   findings: number,
+  declaredDeviations: readonly string[] = [],
 ): EventInput {
+  const deviations = review.deviations ?? [];
   return {
     runId,
     type: 'ChangeReviewed',
@@ -138,6 +163,8 @@ export function changeReviewed(
       approved: review.approved,
       summary: review.summary,
       findings,
+      deviations: [...deviations],
+      undeclaredDeviations: undeclaredDeviations(deviations, declaredDeviations),
     },
   };
 }

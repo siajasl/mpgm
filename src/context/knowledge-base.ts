@@ -14,6 +14,12 @@ import { egressClassSchema, type EgressClass } from './egress.js';
 const kbFrontmatterSchema = z.looseObject({
   title: z.string().min(1).optional(),
   egress: egressClassSchema.optional(),
+  /**
+   * What the document is, when the harness treats one kind differently from
+   * the rest. `conventions` is the only value that means anything today
+   * (IMP-4); everything else is a document like any other.
+   */
+  kind: z.string().min(1).optional(),
 });
 
 export interface KbDocument {
@@ -21,6 +27,8 @@ export interface KbDocument {
   readonly path: string;
   readonly title: string;
   readonly egress: EgressClass | undefined;
+  /** Declared kind, if the document claims one. */
+  readonly kind: string | undefined;
   readonly content: string;
 }
 
@@ -34,6 +42,7 @@ export function parseKbDocument(path: string, contents: string): KbDocument {
     path,
     title: frontmatter.title ?? path,
     egress: frontmatter.egress,
+    kind: frontmatter.kind,
     content: body.trim(),
   };
 }

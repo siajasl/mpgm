@@ -2,6 +2,7 @@ import type { Artifact } from '../artifact/store.js';
 import { classOf, permitted, type EgressClass, type EgressPolicy } from './egress.js';
 import type { PriorDecision } from './decisions.js';
 import type { KbDocument } from './knowledge-base.js';
+import { isConventionsDocument, parseConventions } from './conventions.js';
 
 /**
  * Builds a task's context (CTX-1, CTX-2, DESIGN §4.3).
@@ -68,6 +69,8 @@ export interface AssembledContext {
   readonly includedResults: readonly string[];
   readonly includedDecisions: readonly string[];
   readonly includedKb: readonly string[];
+  /** Ids of the conventions the task was held to (IMP-4). */
+  readonly conventions: readonly string[];
   /**
    * What the policy withheld. Reported here in full for the operator and the
    * event log; the prompt itself gets only a count, so the model learns that
@@ -165,10 +168,38 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
     );
   }
 
-  if (kb.length > 0) {
+  // Conventions come out of the knowledge base rather than from the caller:
+  // a task assembled without them would be one nobody remembered to pass them
+  // to, and the deviation would surface in review as the author's fault
+  // (IMP-4, CTX-1). The documents they came from are then not repeated in the
+  // digest below.
+  const conventionDocuments = kb.filter(isConventionsDocument);
+  const conventions = parseConventions(conventionDocuments);
+  const digest = kb.filter((document) => !isConventionsDocument(document));
+
+  if (conventionDocuments.length > 0) {
+    sections.push(
+      '',
+      '## Conventions',
+      '',
+      'These are binding on this project. Follow them rather than your own',
+      'preference. If your work requires departing from one, declare the',
+      'deviation by id and say why — an undeclared deviation is refused at',
+      'merge, and a convention you believe is wrong is a finding somebody can',
+      'act on rather than something to work around.',
+      '',
+      conventionDocuments
+        .map((document) => `### ${document.title}\n\n${document.content}`)
+        .join('\n\n'),
+    );
+  }
+
+  if (digest.length > 0) {
     sections.push('', '## Knowledge base', '');
     sections.push(
-      kb.map((document) => `### ${document.title}\n\n${document.content}`).join('\n\n'),
+      digest
+        .map((document) => `### ${document.title}\n\n${document.content}`)
+        .join('\n\n'),
     );
   }
 
@@ -189,6 +220,7 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
     includedResults: results.map((result) => result.taskId),
     includedDecisions: decisions.map((decision) => decision.id),
     includedKb: kb.map((document) => document.path),
+    conventions: conventions.map((convention) => convention.id),
     withheld,
   };
 }

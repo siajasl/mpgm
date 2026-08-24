@@ -492,6 +492,22 @@ export const changeSchema = z
     complete: z.boolean(),
     /** What is left. */
     remaining: z.string(),
+    /**
+     * Conventions this change knowingly departs from, by id (IMP-4).
+     *
+     * Declaring one is not asking permission — the reviewer still judges it —
+     * but an undeclared deviation the reviewer finds refuses the merge, which
+     * is what "flagged, not silently introduced" has to mean if it is to mean
+     * anything.
+     */
+    deviations: z
+      .array(
+        z.object({
+          convention: z.string().min(1),
+          why: z.string().min(1),
+        }),
+      )
+      .default([]),
   })
   .refine((change) => change.complete || change.remaining.trim() !== '', {
     error: 'an incomplete change must say what remains',
@@ -531,6 +547,22 @@ export const codeReviewSchema = z
         severity: z.enum(['blocker', 'major', 'minor']),
       }),
     ),
+    /**
+     * Conventions the change departs from, by id (IMP-4).
+     *
+     * Reported whether or not the author declared them: the reviewer is not
+     * told what was declared, because a reviewer who knows which deviations
+     * are already excused is a reviewer looking for fewer of them. The kernel
+     * does the comparison.
+     */
+    deviations: z
+      .array(
+        z.object({
+          convention: z.string().min(1),
+          where: z.string().min(1),
+        }),
+      )
+      .default([]),
   })
   .refine(
     (review) =>

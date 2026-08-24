@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.13 — reviewed merge and what it refuses (§4.7) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-24
+**Status:** v0.14 — convention enforcement through declared deviations (§4.3) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-24
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -96,6 +96,7 @@ A deterministic state machine, no LLM calls. Owns:
 
 ### 4.3 Context & Knowledge (CTX-*)
 - **Knowledge base:** `kb/` in-repo — conventions, glossary, code map, decision log; updated by tasks whose outputs change it (CTX-4). Tasks do not write it directly: a task declares `updatesKb` in the playbook and the kernel writes what its validated output asked for, exactly as it does for artifacts. Roles stay read-only, because a role that could write `kb/` from any task it was given could rewrite the conventions it is being held to. Paths are confined to `kb/`, and a rejected path blocks the task rather than silently dropping an update it believes it made. Every write carries its task, role and rationale (`KnowledgeBaseUpdated`), since the knowledge base is not versioned per file and no artifact version records it.
+- **Conventions (IMP-4):** a knowledge-base document declaring `kind: conventions` numbers its rules, and the assembler lifts them into a binding section of every task's context rather than leaving them in the digest — a task assembled without them would be one nobody remembered to pass them to, and the deviation would surface in review as the author's fault. Numbering is what makes "flagged, not silently introduced" enforceable: the author declares departures by id, the reviewer reports departures by id and is **not** told which were declared (a reviewer who knew would look for fewer), and the kernel refuses the merge on the difference. Declaring a deviation excuses nothing — the reviewer still judges it — it only makes it a decision somebody took rather than one nobody noticed.
 - **Context assembler:** builds each task's prompt from (a) the task spec, (b) upstream artifacts it traces to, (c) KB digest, (d) relevant prior decisions (CTX-3). Relevance is the overlap between what a decision was decided *about* and what the task's own material traces to — handing an agent every decision ever taken is the same as handing it none, because it stops reading them. A decision recorded in an artifact already in the task's context is not read back to it. The section states the decisions as binding *and* contestable: an agent that quietly routes around one produces work the project cannot reconcile, where one that says the decision no longer holds produces a finding somebody can act on. Transcripts of other agents are never included (CTX-2). Egress filter applied last (SAF-6).
 
 ### 4.4 Operator Console (HIL-*, OBS-3)
