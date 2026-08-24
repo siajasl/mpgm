@@ -36,6 +36,7 @@ const task: TaskTemplate = {
   dependsOn: [],
   consumes: [],
   produces: 'definition-brief',
+  updatesKb: false,
 };
 
 const schemas = new ArtifactSchemaRegistry([

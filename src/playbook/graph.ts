@@ -32,6 +32,8 @@ export interface SessionStep {
   /** Input artifact ids this step reads. */
   readonly consumes: readonly string[];
   readonly produces?: string;
+  /** Whether this step may write knowledge-base documents (CTX-4). */
+  readonly updatesKb?: boolean;
 }
 
 /**
@@ -291,6 +293,7 @@ export function expandPlaybook(
           dependsOn: inherited,
           consumes: node.consumes,
           ...(node.produces === undefined ? {} : { produces: node.produces }),
+          ...(node.updatesKb ? { updatesKb: true } : {}),
         });
         break;
 

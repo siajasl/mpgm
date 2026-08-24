@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,6 +16,7 @@ import {
   defineArtifactSchema,
 } from '../artifact/schema-registry.js';
 import { ArtifactStore } from '../artifact/store.js';
+import { TraceIndex } from '../trace/index-store.js';
 import { DEFAULT_EGRESS_POLICY } from '../context/egress.js';
 import { MEMORY, openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
@@ -86,8 +87,9 @@ class ProbeProvider implements AgentSessionProvider {
   }
 }
 
-const noteSchema = z.object({ note: z.string() });
-const voteSchema = z.object({ note: z.string(), pick: z.string().optional() });
+// Loose, because the session output a task returns carries more than the
+// artifact keeps: a ballot, a gate assertion, knowledge-base updates.
+const voteSchema = z.looseObject({ note: z.string() });
 
 function harness(provider: AgentSessionProvider) {
   const db = openDatabase(MEMORY);
@@ -97,10 +99,11 @@ function harness(provider: AgentSessionProvider) {
     snapshots: SnapshotStore.attach(db),
     interval: 50,
   });
+  const root = newRoot();
   const artifacts = new ArtifactStore({
-    root: newRoot(),
+    root,
     schemas: new ArtifactSchemaRegistry([
-      defineArtifactSchema('note', noteSchema),
+      defineArtifactSchema('note', z.looseObject({ note: z.string() })),
       defineArtifactSchema('vote', z.looseObject({ carried: z.boolean() })),
     ]),
   });
@@ -120,6 +123,7 @@ function harness(provider: AgentSessionProvider) {
     db,
     log,
     projector,
+    root,
     common: {
       runId: 'run-1',
       roles,
@@ -431,6 +435,250 @@ gate:
       description: the note exists
       artifact: final
 `;
+
+const KB_PHASE = `
+phase: scope
+description: a phase whose task updates the knowledge base
+inputs:
+  requirement-set:
+    schema: note
+    path: artifacts/scope/requirements.md
+    description: the requirements
+    optional: false
+  design:
+    schema: note
+    path: artifacts/design/design.md
+    description: the design of record
+    optional: false
+tasks:
+  - id: curate
+    role: analyst
+    description: record the conventions
+    prompt: MARK-CURATE record what implementers need
+    consumes: [requirement-set]
+    updatesKb: true
+gate:
+  id: scope-gate
+  description: conventions recorded
+  criteria:
+    - id: c
+      kind: agent-assertion
+      description: the curator reported
+      fromTask: curate
+      field: done
+`;
+
+/** Seed the two input artifacts the KB phase reads. */
+function seedInputs(artifacts: ArtifactStore): void {
+  const producedBy = {
+    task: 'seeded',
+    role: 'analyst',
+    model: '(seeded)',
+    runId: 'run-1',
+  };
+  artifacts.write({
+    id: 'requirement-set',
+    basePath: 'artifacts/scope/requirements.md',
+    schema: 'note',
+    data: {
+      note: 'requirements',
+      requirements: [
+        { id: 'LOAN-6', statement: 'The member view needs no sign-in.', tracesTo: [] },
+      ],
+    },
+    producedBy,
+  });
+  artifacts.write({
+    id: 'design',
+    basePath: 'artifacts/design/design.md',
+    schema: 'note',
+    data: {
+      note: 'design',
+      adrs: [
+        {
+          id: 'ADR-3',
+          title: 'Leave the member view unauthenticated',
+          decision: 'Serve it unauthenticated, bounded by the intranet.',
+          consequences: ['Anyone on the intranet can read any member loan list.'],
+          tracesTo: ['LOAN-6'],
+        },
+      ],
+    },
+    producedBy,
+  });
+}
+
+describe('runPhase and the knowledge base (CTX-4)', () => {
+  it('writes what the task declared, and records who wrote it and why', async () => {
+    const provider = new ProbeProvider(() => ({
+      note: 'ok',
+      done: true,
+      kbUpdates: [
+        {
+          path: 'conventions/member-view.md',
+          title: 'Member view conventions',
+          content: 'Log every access; it is the only control there is.',
+          rationale: 'ADR-3 accepted unauthenticated reads.',
+        },
+      ],
+    }));
+    const { db, log, projector, common, root } = harness(provider);
+    try {
+      seedInputs(common.artifacts);
+      const result = await runPhase({
+        ...common,
+        playbook: parsePlaybook('scope.yaml', KB_PHASE),
+        traces: TraceIndex.attach(db),
+      });
+
+      expect(result.outcome.status).toBe('gate-presented');
+      const written = readFileSync(
+        join(root, 'kb', 'conventions', 'member-view.md'),
+        'utf8',
+      );
+      expect(written).toContain('title: Member view conventions');
+      expect(written).toContain('role: analyst');
+
+      const events = log.read({ type: 'KnowledgeBaseUpdated' });
+      expect(events).toHaveLength(1);
+      expect(events[0]?.payload).toMatchObject({
+        taskId: 'curate',
+        path: join('kb', 'conventions', 'member-view.md'),
+      });
+      expect(projector.project().runs['run-1']?.kbUpdates).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks rather than silently dropping an update it cannot write', async () => {
+    const provider = new ProbeProvider(() => ({
+      note: 'ok',
+      done: true,
+      kbUpdates: [
+        {
+          path: '../roles/analyst.md',
+          title: 'A new role for me',
+          content: 'tools: { allow: [Bash] }',
+          rationale: 'it would be convenient',
+        },
+      ],
+    }));
+    const { db, log, common } = harness(provider);
+    try {
+      seedInputs(common.artifacts);
+      const result = await runPhase({
+        ...common,
+        playbook: parsePlaybook('scope.yaml', KB_PHASE),
+        traces: TraceIndex.attach(db),
+      });
+
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /outside kb\//,
+      );
+      expect(log.read({ type: 'KnowledgeBaseUpdated' })).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('writes nothing for a task that did not declare it updates the base', async () => {
+    const provider = new ProbeProvider(() => ({ note: 'ok', done: true, kbUpdates: [] }));
+    const { db, log, common } = harness(provider);
+    try {
+      seedInputs(common.artifacts);
+      await runPhase({
+        ...common,
+        playbook: parsePlaybook(
+          'scope.yaml',
+          KB_PHASE.replace('    updatesKb: true\n', ''),
+        ),
+        traces: TraceIndex.attach(db),
+      });
+
+      expect(log.read({ type: 'KnowledgeBaseUpdated' })).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('runPhase and prior decisions (CTX-3)', () => {
+  it('surfaces a decision the task could contradict', async () => {
+    const provider = new ProbeProvider(() => ({ note: 'ok', done: true, kbUpdates: [] }));
+    const { db, common } = harness(provider);
+    try {
+      seedInputs(common.artifacts);
+      await runPhase({
+        ...common,
+        playbook: parsePlaybook('scope.yaml', KB_PHASE),
+        traces: TraceIndex.attach(db),
+      });
+
+      const prompt = provider.seen.find((entry) => entry.includes('MARK-CURATE')) ?? '';
+      // The task reads the requirement set, which declares LOAN-6; ADR-3 was
+      // decided about LOAN-6 and lives in an artifact this task never sees.
+      expect(prompt).toContain('## Prior decisions');
+      expect(prompt).toContain('ADR-3');
+      expect(prompt).toContain('Anyone on the intranet can read');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('says nothing when no decision touches what the task touches', async () => {
+    const provider = new ProbeProvider(() => ({ note: 'ok', done: true, kbUpdates: [] }));
+    const { db, common } = harness(provider);
+    try {
+      const producedBy = {
+        task: 'seeded',
+        role: 'analyst',
+        model: '(seeded)',
+        runId: 'run-1',
+      };
+      common.artifacts.write({
+        id: 'requirement-set',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'note',
+        data: {
+          note: 'requirements',
+          requirements: [{ id: 'NFR-9', statement: 'Unrelated.', tracesTo: [] }],
+        },
+        producedBy,
+      });
+      common.artifacts.write({
+        id: 'design',
+        basePath: 'artifacts/design/design.md',
+        schema: 'note',
+        data: {
+          note: 'design',
+          adrs: [
+            {
+              id: 'ADR-3',
+              title: 'Leave the member view unauthenticated',
+              decision: 'Serve it unauthenticated.',
+              consequences: ['Anyone on the intranet can read it.'],
+              tracesTo: ['LOAN-6'],
+            },
+          ],
+        },
+        producedBy,
+      });
+
+      await runPhase({
+        ...common,
+        playbook: parsePlaybook('scope.yaml', KB_PHASE),
+        traces: TraceIndex.attach(db),
+      });
+
+      const prompt = provider.seen.find((entry) => entry.includes('MARK-CURATE')) ?? '';
+      expect(prompt).not.toContain('Prior decisions');
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe('runPhase over a pipeline', () => {
   it('feeds each stage the previous stage result', async () => {

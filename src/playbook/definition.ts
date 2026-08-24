@@ -77,6 +77,14 @@ export const taskTemplateSchema = z
     prompt: nonEmpty,
     /** Artifact id this task produces, if any. */
     produces: identifier.optional(),
+    /**
+     * Whether this task may write knowledge-base documents (CTX-4).
+     *
+     * Off by default and declared per task rather than per role, so that a
+     * role which happens to notice a convention cannot rewrite the knowledge
+     * base from any task it is given.
+     */
+    updatesKb: z.boolean().default(false),
   })
   .strict();
 

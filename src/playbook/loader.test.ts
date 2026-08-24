@@ -386,6 +386,7 @@ describe('the design playbook', () => {
       'review-design-lens-3',
       'review-design-lens-4',
       'review-design-collect',
+      'record-conventions',
     ]);
     // DSG-1: at least two candidates, generated without seeing each other.
     expect(graph.members['propose-candidates']).toHaveLength(4);
@@ -474,6 +475,16 @@ describe('the design playbook', () => {
       fromTask: 'review-design',
       field: 'allResolved',
     });
+  });
+
+  it('lets exactly one task write the knowledge base (CTX-4)', () => {
+    const writers = playbook().graph.steps.filter(
+      (step) => step.kind === 'session' && step.updatesKb === true,
+    );
+
+    // Declared per task, not per role: the architect and the critics run
+    // read-only whatever their roles could otherwise be asked to do.
+    expect(writers.map((step) => step.id)).toStrictEqual(['record-conventions']);
   });
 
   it('shows the architect the candidates as well as the tally', () => {

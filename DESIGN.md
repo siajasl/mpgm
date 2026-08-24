@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.9 — trace index, reopen cascade, `reopen` and `trace` verbs (§4.1, §4.4) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.10 — knowledge-base write flow and prior-decision surfacing (§4.3) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -95,8 +95,8 @@ A deterministic state machine, no LLM calls. Owns:
 - **Improvement loop (AGT-7):** a maintenance-phase agent mines the event log for feedback signals and proposes role/knowledge-base diffs as ordinary reviewed changes; adoption requires a green eval run (AGT-6) executed by the eval harness (§4.6).
 
 ### 4.3 Context & Knowledge (CTX-*)
-- **Knowledge base:** `kb/` in-repo — conventions, glossary, code map, decision log; updated by tasks whose outputs change it (CTX-4).
-- **Context assembler:** builds each task's prompt from (a) the task spec, (b) upstream artifacts it traces to, (c) KB digest, (d) relevant prior decisions found via the trace index (CTX-3). Transcripts of other agents are never included (CTX-2). Egress filter applied last (SAF-6).
+- **Knowledge base:** `kb/` in-repo — conventions, glossary, code map, decision log; updated by tasks whose outputs change it (CTX-4). Tasks do not write it directly: a task declares `updatesKb` in the playbook and the kernel writes what its validated output asked for, exactly as it does for artifacts. Roles stay read-only, because a role that could write `kb/` from any task it was given could rewrite the conventions it is being held to. Paths are confined to `kb/`, and a rejected path blocks the task rather than silently dropping an update it believes it made. Every write carries its task, role and rationale (`KnowledgeBaseUpdated`), since the knowledge base is not versioned per file and no artifact version records it.
+- **Context assembler:** builds each task's prompt from (a) the task spec, (b) upstream artifacts it traces to, (c) KB digest, (d) relevant prior decisions (CTX-3). Relevance is the overlap between what a decision was decided *about* and what the task's own material traces to — handing an agent every decision ever taken is the same as handing it none, because it stops reading them. A decision recorded in an artifact already in the task's context is not read back to it. The section states the decisions as binding *and* contestable: an agent that quietly routes around one produces work the project cannot reconcile, where one that says the decision no longer holds produces a finding somebody can act on. Transcripts of other agents are never included (CTX-2). Egress filter applied last (SAF-6).
 
 ### 4.4 Operator Console (HIL-*, OBS-3)
 `mpgm` CLI: `run`, `status`, `approve <gate>`, `pause|resume|kill <task|run>`, `redirect <task>` (revise a task's instructions/context and requeue), `rollback <release|artifact>`, `chat <phase|gate>` (§4.2), `reopen <phase>` (ORC-6, with `--dry-run` — the cascade is shown before it is caused, and the gates it *retains* are printed alongside the ones it invalidates), `trace <id>` (also `--coverage` for requirement-level TST-2 coverage and `--dangling` for citations that resolve to nothing), `replay <run>` — covering all HIL-3 verbs. A read-only local web dashboard — deferred to the first Implement milestone (§9) — renders live run state, pending approvals, spend, and the traceability graph from the event stream; until then `mpgm status` serves OBS-3. Interventions are events like any other (HIL-5).

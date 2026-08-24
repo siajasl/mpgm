@@ -1,5 +1,6 @@
 import type { Artifact } from '../artifact/store.js';
 import { classOf, permitted, type EgressClass, type EgressPolicy } from './egress.js';
+import type { PriorDecision } from './decisions.js';
 import type { KbDocument } from './knowledge-base.js';
 
 /**
@@ -49,6 +50,13 @@ export interface AssembleRequest {
   readonly upstream: readonly Artifact[];
   /** Upstream step results not carried by an artifact. */
   readonly results?: readonly UpstreamResult[];
+  /**
+   * Prior decisions this task could contradict (CTX-3).
+   *
+   * Already filtered for relevance by the caller: handing an agent every
+   * decision ever taken is the same as handing it none.
+   */
+  readonly decisions?: readonly PriorDecision[];
   readonly kb: readonly KbDocument[];
   readonly policy: EgressPolicy;
 }
@@ -58,6 +66,7 @@ export interface AssembledContext {
   readonly prompt: string;
   readonly includedArtifacts: readonly string[];
   readonly includedResults: readonly string[];
+  readonly includedDecisions: readonly string[];
   readonly includedKb: readonly string[];
   /**
    * What the policy withheld. Reported here in full for the operator and the
@@ -86,6 +95,17 @@ function renderResult(result: UpstreamResult): string {
     '```json',
     JSON.stringify(result.data, null, 2),
     '```',
+  ].join('\n');
+}
+
+function renderDecision(decision: PriorDecision): string {
+  return [
+    `### ${decision.id} — ${decision.title}`,
+    '',
+    decision.decision.trim(),
+    '',
+    `Consequences accepted: ${decision.consequences.join('; ')}`,
+    `Decided about: ${decision.tracesTo.join(', ')} (recorded in ${decision.source})`,
   ].join('\n');
 }
 
@@ -128,6 +148,23 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
     sections.push(results.map(renderResult).join('\n\n'));
   }
 
+  const decisions = request.decisions ?? [];
+  if (decisions.length > 0) {
+    // Stated as binding, and as contestable. An agent that quietly works
+    // around a decision produces work the project cannot reconcile; one that
+    // says the decision no longer holds produces a finding somebody can act on.
+    sections.push(
+      '',
+      '## Prior decisions',
+      '',
+      'These decisions were already taken about material this task touches.',
+      'Work within them. If your work requires contradicting one, say so',
+      'explicitly and say why — do not route around it silently.',
+      '',
+      decisions.map(renderDecision).join('\n\n'),
+    );
+  }
+
   if (kb.length > 0) {
     sections.push('', '## Knowledge base', '');
     sections.push(
@@ -150,6 +187,7 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
     prompt: `${sections.join('\n').trimEnd()}\n`,
     includedArtifacts: artifacts.map((artifact) => artifact.id),
     includedResults: results.map((result) => result.taskId),
+    includedDecisions: decisions.map((decision) => decision.id),
     includedKb: kb.map((document) => document.path),
     withheld,
   };

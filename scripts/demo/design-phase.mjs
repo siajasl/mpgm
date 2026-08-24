@@ -4,9 +4,10 @@
  *   seeded requirement set → three proposers argue three stances in parallel →
  *   a comparer puts them side by side → a three-judge panel votes and the
  *   *kernel* counts → an architect turns the winner into the design of record
- *   with ADRs → four critics attack it, one DSG-3 lens each → gate packet
+ *   with ADRs → four critics attack it, one DSG-3 lens each, and a curator
+ *   records what implementers will need in the knowledge base → gate packet
  *
- * Makes real model calls (thirteen sessions). Not part of `npm run check` or
+ * Makes real model calls (fourteen sessions). Not part of `npm run check` or
  * CI: CI has no credentials, and a verification that silently skipped itself
  * would be worse than none. Run with `npm run demo:design`.
  *
@@ -24,7 +25,14 @@
  * a flaw in output that does not exist until the phase runs.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -135,6 +143,7 @@ try {
   const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
   let dispatched = [];
   let tallies = [];
+  let kbWrites = [];
   let votes = {};
   try {
     const log = EventLog.attach(db, { registry: kernelRegistry() });
@@ -147,6 +156,7 @@ try {
     dispatched = Object.keys(state?.tasks ?? {});
     votes = state?.votes ?? {};
     tallies = log.read({ type: 'VoteTallied' });
+    kbWrites = log.read({ type: 'KnowledgeBaseUpdated' });
   } finally {
     db.close();
   }
@@ -280,7 +290,27 @@ try {
     `allResolved=${String(findings.allResolved)} with ${String(openFindings.length)} open`,
   );
 
-  process.stdout.write('\n6. Status\n');
+  process.stdout.write('\n6. Knowledge base (CTX-4)\n');
+  const kbFiles = existsSync(join(workspace, 'kb'))
+    ? readdirSync(join(workspace, 'kb'), { recursive: true }).filter((entry) =>
+        String(entry).endsWith('.md'),
+      )
+    : [];
+  process.stdout.write(`  ${kbFiles.map(String).join(', ') || '(nothing)'}\n`);
+
+  check(
+    'the curator task ran',
+    dispatched.includes('record-conventions'),
+    'CTX-4: the knowledge base has to stay current as decisions land',
+  );
+  check(
+    'every knowledge-base write is attributable (CTX-4)',
+    kbWrites.every((event) => event.payload.taskId === 'record-conventions'),
+    kbWrites.map((event) => `${event.payload.path}: ${event.payload.title}`).join('; ') ||
+      'the curator returned no updates, which is a legitimate answer',
+  );
+
+  process.stdout.write('\n7. Status\n');
   await call(['status', '--run', 'r1']);
 } finally {
   rmSync(workspace, { recursive: true, force: true });

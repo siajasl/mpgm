@@ -11,6 +11,7 @@ import type {
   gateInvalidated,
   gatePresented,
   gateRejected,
+  knowledgeBaseUpdated,
   operatorIntervened,
   phaseEntered,
   phaseReopened,
@@ -32,6 +33,7 @@ import {
   type KernelState,
   type RunState,
   type TaskState,
+  type KbUpdateState,
   type PlanRevisionState,
   type Usage,
   type VoteState,
@@ -43,7 +45,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 6;
+export const REDUCER_VERSION = 7;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -147,6 +149,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         gates: {},
         votes: {},
         planRevisions: [],
+        kbUpdates: [],
         effects: {},
         usage: zeroUsage,
         interventions: 0,
@@ -369,6 +372,17 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         { ...run, planRevisions: [...run.planRevisions, revision] },
         seq,
       );
+    }
+
+    case 'KnowledgeBaseUpdated': {
+      const payload = event.payload as PayloadOf<typeof knowledgeBaseUpdated>;
+      const run = requireRun(state, event.runId, type);
+      const update: KbUpdateState = {
+        taskId: payload.taskId,
+        path: payload.path,
+        title: payload.title,
+      };
+      return withRun(state, { ...run, kbUpdates: [...run.kbUpdates, update] }, seq);
     }
 
     case 'OperatorIntervened': {
