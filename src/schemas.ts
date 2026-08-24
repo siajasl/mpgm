@@ -471,6 +471,83 @@ export const kbCurationSchema = z.object({
   kbUpdates: z.array(kbUpdateSchema),
 });
 
+/**
+ * What an implementation session reports (IMP-1).
+ *
+ * Not an artifact: the change itself is the commit, and git already holds it
+ * (ADR-3). This is what the kernel needs in order to decide what happens next
+ * — which commit to check, what to put in the merge message, and whether the
+ * task is actually done.
+ */
+export const changeSchema = z
+  .object({
+    /** The commit the work ended at. */
+    ref: z.string().min(1),
+    /** Why the change is what it is; becomes the merge commit's body. */
+    summary: z.string().min(1),
+    files: z.array(z.string().min(1)),
+    /** Tests added or changed. Empty is legitimate; unremarked is not. */
+    tests: z.array(z.string().min(1)),
+    /** Whether the completion criteria are met. */
+    complete: z.boolean(),
+    /** What is left. */
+    remaining: z.string(),
+  })
+  .refine((change) => change.complete || change.remaining.trim() !== '', {
+    error: 'an incomplete change must say what remains',
+    path: ['remaining'],
+  });
+
+/**
+ * An independent agent's review of a change (IMP-3).
+ *
+ * Two things the schema refuses, rather than leaving to a gate criterion:
+ *
+ * - an approval that also lists a blocker. The reviewer would be saying the
+ *   change must not merge and may merge in the same breath, and something
+ *   downstream would have to pick one;
+ * - a request for changes with nothing above `minor`. "Change it" with only
+ *   nits attached gives the author nothing to act on, and the repair loop
+ *   would burn an attempt guessing.
+ */
+export const codeReviewSchema = z
+  .object({
+    /**
+     * The commit reviewed. Required: approval is of a state, and a review
+     * that does not say which state it approved cannot be checked for
+     * staleness when the change moves on.
+     */
+    ref: z.string().min(1),
+    verdict: z.enum(['approve', 'request-changes']),
+    summary: z.string().min(1),
+    findings: z.array(
+      z.object({
+        file: z.string().min(1),
+        /** Where in the file, when the reviewer can say. */
+        line: z.number().int().positive().optional(),
+        concern: z.string().min(1),
+        /** What would resolve it. A finding without one is an observation. */
+        remedy: z.string().min(1),
+        severity: z.enum(['blocker', 'major', 'minor']),
+      }),
+    ),
+  })
+  .refine(
+    (review) =>
+      review.verdict !== 'approve' ||
+      !review.findings.some((finding) => finding.severity === 'blocker'),
+    { error: 'an approval cannot carry a blocking finding', path: ['verdict'] },
+  )
+  .refine(
+    (review) =>
+      review.verdict !== 'request-changes' ||
+      review.findings.some((finding) => finding.severity !== 'minor'),
+    {
+      error: 'requesting changes needs at least one finding above `minor`',
+      path: ['findings'],
+    },
+  );
+
 /** The elicitation record: conclusions plus the dialogue that produced them. */
 export const elicitationSchema = z.object({
   conclusions: conclusionsSchema,
@@ -491,6 +568,8 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
     'design-verdict': designVerdictSchema,
     design: designSchema,
     'elicitation.turn': elicitationOutputSchema,
+    change: changeSchema,
+    'code-review': codeReviewSchema,
   });
 }
 

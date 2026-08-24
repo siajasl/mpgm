@@ -273,6 +273,46 @@ export const checksReported = defineEvent(
   }),
 );
 
+/**
+ * An agent reviewed a change it did not write (IMP-3).
+ *
+ * The reviewer's role is in the payload because independence is a property of
+ * the review, and it has to be checkable afterwards from the log alone — not
+ * re-derived by looking up which role happened to be configured for a task id
+ * whose playbook may since have changed.
+ *
+ * `ref` is the commit reviewed. Approval is of a state, not of a branch: a
+ * change that moves on after its review has not been reviewed.
+ */
+export const changeReviewed = defineEvent(
+  'ChangeReviewed',
+  z.object({
+    /** The task whose change was reviewed. */
+    taskId: nonEmpty,
+    /** The task that did the reviewing. */
+    reviewTaskId: nonEmpty,
+    reviewerRole: nonEmpty,
+    ref: nonEmpty,
+    approved: z.boolean(),
+    summary: nonEmpty,
+    findings: z.number().int().nonnegative().default(0),
+  }),
+);
+
+/** A change reached the trunk, and what authorised it (IMP-1, IMP-3). */
+export const changeMerged = defineEvent(
+  'ChangeMerged',
+  z.object({
+    taskId: nonEmpty,
+    branch: nonEmpty,
+    into: nonEmpty,
+    /** The merge commit. */
+    commit: nonEmpty,
+    /** Empty only for a merge no review authorised, which the kernel refuses. */
+    reviewTaskId: z.string().default(''),
+  }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -281,6 +321,8 @@ export const operatorIntervened = defineEvent(
 /** Every kernel event type currently defined. */
 export const kernelEvents = [
   budgetExceeded,
+  changeMerged,
+  changeReviewed,
   checksReported,
   effectCompleted,
   effectEscalated,

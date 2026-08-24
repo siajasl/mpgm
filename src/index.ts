@@ -262,6 +262,8 @@ export { demoTimestamp, syntheticRun } from './demo/workload.js';
 export { demoSchemaRegistry, toySummarySchema } from './demo/schemas.js';
 export {
   adrSchema,
+  changeSchema,
+  codeReviewSchema,
   kbCurationSchema,
   milestoneSchema,
   planPhaseSchema,
@@ -434,3 +436,22 @@ export {
   repairUntilGreen,
   tail,
 } from './implement/repair.js';
+export type { MergeState, ReviewState } from './state/kernel-state.js';
+export type {
+  MergeChangeOptions,
+  MergeDecision,
+  MergeDecisionRequest,
+  MergeRefusal,
+  MergeResult,
+  ReviewRecord,
+} from './implement/merge.js';
+export {
+  changeReviewed,
+  decideMerge,
+  GIT_MERGE_CONTRACT,
+  GIT_MERGE_OPERATION,
+  gitMergeContract,
+  mergeChange,
+  MergeError,
+  mergeMessage,
+} from './implement/merge.js';

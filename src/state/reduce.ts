@@ -3,6 +3,8 @@ import { EventLogError } from '../event/errors.js';
 import type { EventDefinition } from '../event/registry.js';
 import type {
   budgetExceeded,
+  changeMerged,
+  changeReviewed,
   checksReported,
   effectCompleted,
   effectEscalated,
@@ -30,6 +32,8 @@ import {
   zeroUsage,
   type ChecksState,
   type EffectState,
+  type MergeState,
+  type ReviewState,
   type RunControl,
   type GateState,
   type KernelState,
@@ -47,7 +51,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 8;
+export const REDUCER_VERSION = 9;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -201,6 +205,8 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         toolCalls: 0,
         deniedToolCalls: 0,
         checks: null,
+        review: null,
+        merged: null,
         usage: zeroUsage,
       };
       return withRun(state, withTask(run, task), seq);
@@ -388,6 +394,33 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         blocking: payload.blocking,
       };
       return withRun(state, withTask(run, { ...task, checks }), seq);
+    }
+
+    case 'ChangeReviewed': {
+      const payload = event.payload as PayloadOf<typeof changeReviewed>;
+      const run = requireRun(state, event.runId, type);
+      const task = requireTask(run, payload.taskId, type);
+      const review: ReviewState = {
+        reviewTaskId: payload.reviewTaskId,
+        reviewerRole: payload.reviewerRole,
+        ref: payload.ref,
+        approved: payload.approved,
+        summary: payload.summary,
+      };
+      return withRun(state, withTask(run, { ...task, review }), seq);
+    }
+
+    case 'ChangeMerged': {
+      const payload = event.payload as PayloadOf<typeof changeMerged>;
+      const run = requireRun(state, event.runId, type);
+      const task = requireTask(run, payload.taskId, type);
+      const merged: MergeState = {
+        branch: payload.branch,
+        into: payload.into,
+        commit: payload.commit,
+        reviewTaskId: payload.reviewTaskId,
+      };
+      return withRun(state, withTask(run, { ...task, merged }), seq);
     }
 
     case 'KnowledgeBaseUpdated': {
