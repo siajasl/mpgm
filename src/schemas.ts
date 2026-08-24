@@ -301,6 +301,158 @@ export const priorArtSchema = z.object({
   gaps: z.array(z.string().min(1)).min(1),
 });
 
+/**
+ * One plan task (PLN-1).
+ *
+ * A task is a unit of work sized for one agent session, so it carries what a
+ * session needs to know it is finished: criteria that decide the question, and
+ * the dependencies that must land first.
+ */
+export const planTaskSchema = z.object({
+  id: z.string().regex(/^T[0-9]+(?:\.[0-9]+)+$/, 'e.g. T2.1.3'),
+  title: z.string().min(1),
+  /**
+   * How to tell it is done. At least one: a task whose completion is a matter
+   * of opinion cannot close, and cannot be reported as closed either.
+   */
+  completionCriteria: z.array(z.string().min(1)).min(1),
+  dependsOn: z.array(z.string().min(1)),
+  /** Design elements or requirement ids this task advances (ART-2). */
+  tracesTo: z.array(z.string().min(1)).min(1),
+});
+
+/** One milestone: a group of tasks with something demonstrable at the end. */
+export const milestoneSchema = z.object({
+  id: z.string().regex(/^M[0-9]+(?:\.[0-9]+)*$/, 'e.g. M2.1'),
+  title: z.string().min(1),
+  /**
+   * What must demonstrably work when the milestone closes (PLN-3).
+   * Deliberately not a date: an estimate is not a verification.
+   */
+  verification: z.string().min(1),
+  /** The risk id this milestone attacks, if it exists to attack one (PLN-2). */
+  validatesRisk: z.string().nullable(),
+  tasks: z.array(planTaskSchema).min(1),
+});
+
+/** A grouping of milestones within the plan (PLN-1). */
+export const planPhaseSchema = z.object({
+  id: z.string().regex(/^P[0-9]+$/, 'e.g. P3'),
+  title: z.string().min(1),
+  intent: z.string().min(1),
+  milestones: z.array(milestoneSchema).min(1),
+});
+
+const riskSchema = z.object({
+  id: z.string().regex(/^R[0-9]+$/, 'e.g. R4'),
+  assumption: z.string().min(1),
+  /** Milestone ids that settle it. PLN-2 wants these early, not eventually. */
+  validatedBy: z.array(z.string().min(1)).min(1),
+});
+
+interface PlanShape {
+  readonly risks: readonly { id: string; validatedBy: readonly string[] }[];
+  readonly phases: readonly {
+    readonly milestones: readonly {
+      readonly id: string;
+      readonly validatesRisk: string | null;
+      readonly tasks: readonly { id: string; dependsOn: readonly string[] }[];
+    }[];
+  }[];
+}
+
+const allTasks = (
+  plan: PlanShape,
+): readonly { id: string; dependsOn: readonly string[] }[] =>
+  plan.phases.flatMap((phase) =>
+    phase.milestones.flatMap((milestone) => milestone.tasks),
+  );
+
+const allMilestones = (
+  plan: PlanShape,
+): readonly { id: string; validatesRisk: string | null }[] =>
+  plan.phases.flatMap((phase) => phase.milestones);
+
+/**
+ * Kahn's algorithm, kept here rather than imported from the playbook loader:
+ * that one throws a load error naming a YAML file, and this is a validation
+ * failure the producing agent has to be told about and given a retry for.
+ */
+function isAcyclic(
+  tasks: readonly { id: string; dependsOn: readonly string[] }[],
+): boolean {
+  if (tasks.some((task) => task.dependsOn.includes(task.id))) {
+    return false;
+  }
+  const remaining = new Map(tasks.map((task) => [task.id, new Set(task.dependsOn)]));
+
+  while (remaining.size > 0) {
+    const ready = [...remaining.entries()]
+      .filter(([, deps]) => deps.size === 0)
+      .map(([id]) => id);
+    if (ready.length === 0) {
+      return false;
+    }
+    for (const id of ready) {
+      remaining.delete(id);
+    }
+    for (const deps of remaining.values()) {
+      for (const id of ready) {
+        deps.delete(id);
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * The Plan artifact (PLN-1..3).
+ *
+ * The structural obligations are refinements rather than gate criteria
+ * because a plan that fails them cannot be scheduled at all: a cycle means no
+ * task ever becomes ready, and the phase would present as one that silently
+ * does nothing. Unrepresentable beats checked.
+ */
+export const planSchema = z
+  .object({
+    summary: z.string().min(1),
+    risks: z.array(riskSchema).min(1),
+    phases: z.array(planPhaseSchema).min(1),
+  })
+  .refine(
+    (plan) =>
+      new Set(allTasks(plan).map((task) => task.id)).size === allTasks(plan).length,
+    'task ids must be unique across the whole plan — a duplicate makes every ' +
+      'dependency on it ambiguous',
+  )
+  .refine(
+    (plan) =>
+      new Set(allMilestones(plan).map((entry) => entry.id)).size ===
+      allMilestones(plan).length,
+    'milestone ids must be unique across the whole plan',
+  )
+  .refine((plan) => {
+    const known = new Set(allTasks(plan).map((task) => task.id));
+    return allTasks(plan).every((task) =>
+      task.dependsOn.every((dependency) => known.has(dependency)),
+    );
+  }, 'every dependency must name a task the plan declares')
+  .refine((plan) => {
+    const known = new Set(allMilestones(plan).map((entry) => entry.id));
+    return plan.risks.every((risk) => risk.validatedBy.every((id) => known.has(id)));
+  }, 'every risk must be validated by a milestone the plan declares (PLN-2)')
+  .refine((plan) => {
+    // PLN-2 asks for the riskiest assumptions to be front-loaded, and the
+    // cheapest structural half of that is: no milestone claims to attack a
+    // risk nobody wrote down.
+    const declared = new Set(plan.risks.map((risk) => risk.id));
+    return allMilestones(plan).every(
+      (milestone) =>
+        milestone.validatesRisk === null || declared.has(milestone.validatesRisk),
+    );
+  }, 'a milestone may only claim to validate a risk the plan declares (PLN-2)')
+  .refine((plan) => isAcyclic(allTasks(plan)), 'task dependencies form a cycle');
+
 /** The elicitation record: conclusions plus the dialogue that produced them. */
 export const elicitationSchema = z.object({
   conclusions: conclusionsSchema,
@@ -314,6 +466,7 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
     findings: findingsSchema,
     scope: scopeSchema,
     'prior-art': priorArtSchema,
+    plan: planSchema,
     'design-candidate': designCandidateSchema,
     'design-candidates': designCandidatesSchema,
     'design-verdict': designVerdictSchema,
@@ -329,6 +482,7 @@ export function projectArtifactSchemas(): ArtifactSchemaRegistry {
     defineArtifactSchema('findings', findingsSchema),
     defineArtifactSchema('scope', scopeSchema),
     defineArtifactSchema('prior-art', priorArtSchema),
+    defineArtifactSchema('plan', planSchema),
     defineArtifactSchema('design-candidates', designCandidatesSchema),
     defineArtifactSchema('design', designSchema),
     defineArtifactSchema('elicitation', elicitationSchema),

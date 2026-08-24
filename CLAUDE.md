@@ -8,7 +8,7 @@ mpgm is an agentic harness driving the full SDLC via Claude Agent SDK sessions u
 
 `npm run check` runs the whole CI pipeline locally — format, lint, typecheck, build, test, milestone demo — and is what `main` must pass. Individually: `npm run lint`, `npm run typecheck`, `npm test` (`npm run test:watch` while iterating, `npm run test:coverage` for coverage), `npm run build`, `npm run demo:crash`. A single test file: `npx vitest run src/path/to/file.test.ts`.
 
-Build precedes test: crash fixtures run as subprocesses against `dist/`, because Node strips TS types but will not resolve a `.js` specifier to a `.ts` file. Milestone verification demos live in `scripts/demo/`. `demo:crash` (M1.1) and `demo:cli` (T1.3.6) are offline and run in CI; `demo:agent` (M1.2), `demo:definition` (M1.3), `demo:scope` (T2.1.2) and `demo:design` (T2.1.3) make real model calls, so they are operator-run and need credentials — it is deliberately not in CI, since a verification that silently skipped itself would be worse than none.
+Build precedes test: crash fixtures run as subprocesses against `dist/`, because Node strips TS types but will not resolve a `.js` specifier to a `.ts` file. Milestone verification demos live in `scripts/demo/`. `demo:crash` (M1.1) and `demo:cli` (T1.3.6) are offline and run in CI; `demo:agent` (M1.2), `demo:definition` (M1.3), `demo:scope` (T2.1.2), `demo:design` (T2.1.3) and `demo:plan` (T2.2.3) make real model calls, so they are operator-run and need credentials — it is deliberately not in CI, since a verification that silently skipped itself would be worse than none.
 
 SDK wiring worth not relearning:
 - Policy is enforced in a **`PreToolUse` hook**, not `canUseTool`. `canUseTool` only runs when the CLI decides a permission *prompt* is warranted, and read-only tools never prompt — so a `Read` executes ungated and unlogged. `PreToolUse` fires for every tool call.
@@ -40,6 +40,7 @@ When changing them:
 - Artifacts (versioned markdown + frontmatter in git) are the only interface between phases — never transcripts. Gate truth lives in the event log; git tags are derived markers.
 - Trace links: frontmatter + commit trailers are source of truth; the SQLite index is derived, rebuildable.
 - Policy enforced outside the model (`canUseTool` allowlists); secrets injected at tool boundary, never session env; redaction/egress filtering at log-write and context-assembly (ships in P1, not later).
+- The trace index (`src/trace/`) is derived and rebuildable from artifact frontmatter, artifact data and commit trailers — never a second source of truth. Rows are keyed by the source they were read from, which is what makes an incremental update equal a full rebuild.
 - ORC-4 pattern nodes (`fan-out`, `pipeline`, `critic-of`, `panel`) are expanded into an ordinary task graph **at load time**, so nothing downstream of the loader knows a task came from a pattern. A panel's ballots are counted by the kernel and logged (`VoteTallied`); exactly one task writes each artifact.
 - Side effects: `EffectIntended` event first; resume resolves pending intents via per-contract effect checks.
 - Integrations only via MCP capability contracts (`ci.checks`, `pm.github`, …) in `contracts/`; the GitHub PM board is a derived, event-driven projection — inbound GitHub activity becomes triaged signals, never direct mutations.

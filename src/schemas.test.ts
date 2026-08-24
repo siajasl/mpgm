@@ -4,6 +4,7 @@ import {
   designCandidatesSchema,
   designSchema,
   designVerdictSchema,
+  planSchema,
   projectArtifactSchemas,
   projectOutputSchemas,
   requirementSchema,
@@ -281,6 +282,125 @@ describe('the design schemas (DSG-1, DSG-2, DSG-4)', () => {
         reasoning: 'x',
         reservations: [],
       }).success,
+    ).toBe(false);
+  });
+});
+
+const taskA = {
+  id: 'T1.1.1',
+  title: 'Loan store',
+  completionCriteria: ['A recorded loan is readable after restart.'],
+  dependsOn: [] as string[],
+  tracesTo: ['LOAN-1'],
+};
+
+const taskB = {
+  id: 'T1.1.2',
+  title: 'Loan API',
+  completionCriteria: ['POST /loans returns the stored record.'],
+  dependsOn: ['T1.1.1'],
+  tracesTo: ['LOAN-1'],
+};
+
+const milestone = {
+  id: 'M1.1',
+  title: 'Loan recording',
+  verification: 'A loan recorded through the API survives a kill -9.',
+  validatesRisk: 'R1' as string | null,
+  tasks: [taskA, taskB],
+};
+
+const risk = {
+  id: 'R1',
+  assumption: 'A single SQLite writer keeps up with the issue desk.',
+  validatedBy: ['M1.1'],
+};
+
+const planPhase = {
+  id: 'P1',
+  title: 'Walking skeleton',
+  intent: 'Prove the risky parts end to end before building breadth.',
+  milestones: [milestone],
+};
+
+const plan = {
+  summary: 'Walking skeleton first, then breadth.',
+  risks: [risk],
+  phases: [planPhase],
+};
+
+/** The same plan with a different task list, so each case states one change. */
+const withTasks = (tasks: (typeof milestone)['tasks']): typeof plan => ({
+  ...plan,
+  phases: [{ ...planPhase, milestones: [{ ...milestone, tasks }] }],
+});
+
+/** The same plan with a different milestone. */
+const withMilestone = (replacement: typeof milestone): typeof plan => ({
+  ...plan,
+  phases: [{ ...planPhase, milestones: [replacement] }],
+});
+
+describe('the plan schema (PLN-1..3)', () => {
+  it('accepts a three-level plan', () => {
+    expect(planSchema.safeParse(plan).success).toBe(true);
+  });
+
+  it('refuses a plan that could never be scheduled', () => {
+    // A cycle means no task ever becomes ready, and the phase would present
+    // as one that silently does nothing.
+    const cyclic = withTasks([
+      { ...taskA, dependsOn: ['T1.1.2'] },
+      { ...taskB, dependsOn: ['T1.1.1'] },
+    ]);
+    const result = planSchema.safeParse(cyclic);
+
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain('cycle');
+  });
+
+  it('refuses a task that depends on itself', () => {
+    const selfish = withTasks([{ ...taskA, dependsOn: ['T1.1.1'] }]);
+
+    expect(planSchema.safeParse(selfish).success).toBe(false);
+  });
+
+  it('refuses a dependency on a task nobody declared', () => {
+    const ghost = withTasks([{ ...taskA, dependsOn: ['T9.9.9'] }]);
+
+    expect(planSchema.safeParse(ghost).success).toBe(false);
+  });
+
+  it('refuses duplicate task ids', () => {
+    // A duplicate makes every dependency on it ambiguous.
+    const clashing = withTasks([taskA, { ...taskB, id: 'T1.1.1', dependsOn: [] }]);
+
+    expect(planSchema.safeParse(clashing).success).toBe(false);
+  });
+
+  it('refuses a task with no way to tell it is finished', () => {
+    const vague = withTasks([{ ...taskA, completionCriteria: [] }]);
+
+    expect(planSchema.safeParse(vague).success).toBe(false);
+  });
+
+  it('refuses a task the project never agreed to do', () => {
+    const untraced = withTasks([{ ...taskA, tracesTo: [] }]);
+
+    expect(planSchema.safeParse(untraced).success).toBe(false);
+  });
+
+  it('holds risks and milestones to each other (PLN-2)', () => {
+    const orphanRisk = { ...plan, risks: [{ ...risk, validatedBy: ['M9.9'] }] };
+    expect(planSchema.safeParse(orphanRisk).success).toBe(false);
+
+    const inventedRisk = withMilestone({ ...milestone, validatesRisk: 'R9' });
+    expect(planSchema.safeParse(inventedRisk).success).toBe(false);
+  });
+
+  it('requires a milestone to say what must demonstrably work (PLN-3)', () => {
+    expect(
+      planSchema.safeParse(withMilestone({ ...milestone, verification: '' })).success,
     ).toBe(false);
   });
 });

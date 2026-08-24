@@ -35,6 +35,7 @@
     "demo:definition": "node scripts/demo/definition-phase.mjs",
     "demo:scope": "node scripts/demo/scope-phase.mjs",
     "demo:design": "node scripts/demo/design-phase.mjs",
+    "demo:plan": "node scripts/demo/plan-phase.mjs",
     "probe:sdk": "node scripts/demo/probe-sdk.mjs"
   },
   "devDependencies": {

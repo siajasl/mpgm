@@ -1,0 +1,140 @@
+phase: plan
+description: >
+  Turn the gated design into an executable plan: plan phases grouping
+  milestones, milestones grouping single-session tasks, ordered so the
+  riskiest assumptions are settled first and each milestone ends with
+  something that demonstrably works (PLN-1, PLN-2, PLN-3).
+
+inputs:
+  requirement-set:
+    schema: scope
+    path: artifacts/scope/requirements.md
+    description: >
+      The gated requirement set. Tasks trace to its ids, and coverage of it is
+      what the plan is for.
+    optional: false
+  design:
+    schema: design
+    path: artifacts/design/design.md
+    description: >
+      The gated design of record. A plan decomposed from nothing is a wish
+      list; this is what supplies the components, interfaces and ADRs that
+      tasks are cut along.
+    optional: false
+
+artifacts:
+  plan:
+    schema: plan
+    path: artifacts/plan/plan.md
+    description: >
+      The gated plan. From the Implement phase onward this artifact supplies
+      the kernel's task graph (DESIGN §2), so its structure is executable
+      rather than descriptive.
+  plan-findings:
+    schema: findings
+    path: artifacts/plan/findings.md
+    description: >
+      The adversarial review of the plan, each finding resolved, knowingly
+      accepted, or left open for the gate to decide.
+
+tasks:
+  - id: decompose
+    role: planner
+    description: >
+      Decompose the design into plan phases, milestones and tasks.
+    prompt: >
+      From the gated design and the requirement set it implements, produce the
+      plan.
+
+      Group milestones into plan phases; group single-session tasks into
+      milestones. Give every task completion criteria that decide whether it is
+      done, its dependencies, and the design or requirement ids it advances.
+
+      Name the assumptions that would invalidate the design if they turned out
+      false, and order the plan so the milestones that settle them come first.
+      Give every milestone what must demonstrably work when it closes — not how
+      long it will take.
+    consumes: [requirement-set, design]
+    produces: plan
+
+  # The kernel has already refused a plan that is cyclic, has duplicate ids or
+  # depends on tasks it never declared — the schema cannot express those. What
+  # it cannot check is whether the decomposition is any good, which is what
+  # these three lenses are for.
+  - kind: critic-of
+    id: review-plan
+    description: >
+      Adversarially review the plan along the three ways a well-formed plan
+      still fails.
+    target: decompose
+    role: plan-critic
+    prompt: >
+      Attack the plan along your assigned lens, judging it against the design
+      and requirement set it claims to implement.
+
+      Name plan elements by id, and say what goes wrong and when.
+    consumes: [requirement-set, design]
+    lenses:
+      - >
+        Decomposition: tasks too large for one agent session, tasks whose
+        completion criteria do not actually decide the question, and
+        milestones that are a list of work rather than a coherent step.
+      - >
+        Risk ordering (PLN-2): assumptions that would invalidate the design and
+        are settled late or not at all; milestones claiming to validate a risk
+        that would not actually settle it; comfortable work scheduled ahead of
+        the work that could sink the project.
+      - >
+        Coverage and verification (PLN-3): requirements no task advances,
+        milestone verifications that verify nothing more than that the tasks
+        ran, and design elements the plan silently drops.
+    collect:
+      role: plan-critic
+      prompt: >
+        Merge the three lens reviews into one finding set for the gate.
+
+        Report a problem two lenses found once. Where they disagree — the
+        decomposition and risk lenses will, over whether a big early task
+        should be split — report the disagreement rather than settling it.
+
+        Set `allResolved` to true only if no finding is left open.
+      produces: plan-findings
+
+gate:
+  id: plan-gate
+  description: >
+    The plan is executable: acyclic, traced, front-loaded on risk, and with
+    each milestone ending in something that can be demonstrated.
+
+    Acyclicity, unique ids and resolvable dependencies are not criteria here
+    because they are not optional — the plan schema rejects a plan without
+    them, so one that exists at all is schedulable. Whether its citations point
+    at requirements and design elements that *exist* is a fact about other
+    artifacts, so that one is checked here.
+  autoApprove: false
+  criteria:
+    - id: plan-present
+      kind: artifact-exists
+      description: A plan exists and validates against its schema (PLN-1).
+      artifact: plan
+
+    - id: plan-traced
+      kind: traces-resolve
+      description: >
+        Every requirement and design element the plan cites exists (ART-2). A
+        task tracing to an id nobody declared is work the project never agreed
+        to.
+      artifact: plan
+
+    - id: review-recorded
+      kind: artifact-exists
+      description: The adversarial review of the plan is recorded.
+      artifact: plan-findings
+
+    - id: findings-resolved
+      kind: agent-assertion
+      description: >
+        Every finding is resolved or knowingly accepted; none is left open
+        without a decision.
+      fromTask: review-plan
+      field: allResolved

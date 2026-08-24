@@ -488,3 +488,44 @@ describe('the design playbook', () => {
     expect(architect?.dependsOn).toStrictEqual(['select-candidate-tally']);
   });
 });
+
+describe('the plan playbook', () => {
+  const playbook = (): Playbook => loadPlaybookFile(join(phasesDir, 'plan.yaml'));
+
+  it('decomposes, then reviews along three lenses', () => {
+    const { graph } = playbook();
+
+    expect(graph.steps.map((step) => step.id)).toStrictEqual([
+      'decompose',
+      'review-plan-lens-1',
+      'review-plan-lens-2',
+      'review-plan-lens-3',
+      'review-plan-collect',
+    ]);
+  });
+
+  it('checks at the gate only what the schema cannot (PLN-1)', () => {
+    const kinds = playbook().gate.criteria.map((criterion) => criterion.kind);
+
+    // Acyclicity, unique ids and resolvable dependencies are schema
+    // refinements: a plan failing them cannot be scheduled at all, so it must
+    // not be storable. Whether its citations point at things that *exist* is
+    // a fact about other artifacts, so it is checked here.
+    expect(kinds).toStrictEqual([
+      'artifact-exists',
+      'traces-resolve',
+      'artifact-exists',
+      'agent-assertion',
+    ]);
+    expect(
+      playbook().gate.criteria.find((criterion) => criterion.kind === 'traces-resolve'),
+    ).toMatchObject({ artifact: 'plan' });
+  });
+
+  it('cannot run without both gated upstream artifacts', () => {
+    const inputs = playbook().inputs;
+
+    expect(Object.keys(inputs)).toStrictEqual(['requirement-set', 'design']);
+    expect(Object.values(inputs).every((input) => !input.optional)).toBe(true);
+  });
+});

@@ -85,6 +85,7 @@ export async function run(
       });
     }
 
+    const traces = TraceIndex.attach(db);
     const playbook = PlaybookRegistry.fromDirectory(join(context.root, 'phases')).get(
       phase,
     );
@@ -106,14 +107,15 @@ export async function run(
         schemas: context.outputSchemas,
         policyRoot: context.root,
       }),
-      gates: new GateManager({ log, projector }),
+      gates: new GateManager({ log, projector, traces }),
       log,
       projector,
       kb: knowledgeBase(context),
       policy: context.policy ?? DEFAULT_EGRESS_POLICY,
-      // Kept current as artifacts are written, so `trace` and gate
-      // invalidation see the phase's output without waiting for a commit.
-      traces: TraceIndex.attach(db),
+      // Kept current as artifacts are written, so `trace`, gate invalidation
+      // and `traces-resolve` see the phase's output without waiting for a
+      // commit.
+      traces,
     });
 
     if (result.outcome.status === 'stopped') {

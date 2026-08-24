@@ -244,6 +244,52 @@ describe('the index', () => {
   });
 });
 
+describe('dangling citations from one artifact', () => {
+  it('covers what the artifact and its elements cite, and nothing else', () => {
+    const { db, index } = indexed();
+    try {
+      index.indexArtifactAs(
+        artifact({ id: 'scope', schema: 'scope', data: SCOPE }),
+        'artifacts/scope/requirements.v1.md',
+      );
+      index.indexArtifactAs(artifact(), 'artifacts/design/design.v1.md');
+
+      // ADR-1 is declared by design@1, so its dangling citation of LOAN-9 is
+      // the design's problem — which is what a gate criterion on the design
+      // has to be able to see.
+      expect(index.danglingFrom('design@1').map((entry) => entry.dst)).toStrictEqual([
+        'LOAN-9',
+      ]);
+      // The scope artifact cites only prose, which was never going to resolve.
+      expect(index.danglingFrom('scope@1')).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is keyed on nodes, so it does not care how the source was spelled', () => {
+    const { db, index } = indexed();
+    try {
+      // Indexed under absolute paths rather than repo-relative ones.
+      index.indexArtifact(
+        artifact({
+          id: 'scope',
+          schema: 'scope',
+          data: SCOPE,
+          path: '/abs/artifacts/scope/requirements.v1.md',
+        }),
+      );
+      index.indexArtifact(artifact());
+
+      expect(index.danglingFrom('design@1').map((entry) => entry.dst)).toStrictEqual([
+        'LOAN-9',
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 /** A project with artifacts and commits, to compare rebuild against update. */
 function repository(): {
   root: string;

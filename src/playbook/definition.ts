@@ -282,6 +282,21 @@ export const gateCriterionSchema = z.discriminatedUnion('kind', [
       panel: identifier,
     })
     .strict(),
+  z
+    .object({
+      id: identifier,
+      kind: z.literal('traces-resolve'),
+      description: nonEmpty,
+      /**
+       * Artifact whose citations must all resolve.
+       *
+       * Checked against the derived trace index (ADR-4) rather than by the
+       * schema, because whether `LOAN-9` exists is a fact about other
+       * artifacts — the citing one is well-formed either way (DSG-4, ART-2).
+       */
+      artifact: identifier,
+    })
+    .strict(),
 ]);
 
 export const gateSchema = z
