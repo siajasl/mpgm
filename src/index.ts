@@ -498,3 +498,33 @@ export {
   fingerprint,
   stateLedger,
 } from './policy/destructive.js';
+export type {
+  DesiredIssue,
+  DesiredLabel,
+  DesiredMilestone,
+  DesiredProjection,
+  ProjectionOptions,
+  TaskColumn,
+} from './pm/projection.js';
+export {
+  columnFor,
+  desiredProjection,
+  TASK_COLUMNS,
+  taskIdFromBody,
+  taskMarker,
+} from './pm/projection.js';
+export type { ObservedIssue, ObservedProjection, PmOperation } from './pm/reconcile.js';
+export {
+  applyOperations,
+  EMPTY_PROJECTION,
+  pmGithubContract,
+  reconcile,
+} from './pm/reconcile.js';
+export type { PmProjectorOptions, SyncReport } from './pm/projector.js';
+export { PmProjector } from './pm/projector.js';
+export type { GitHubPmOptions } from './pm/github-provider.js';
+export {
+  BOARD_TITLE_MARKER,
+  githubPmProvider,
+  observeBoard,
+} from './pm/github-provider.js';
