@@ -139,6 +139,22 @@ describe('extracting links from a commit', () => {
     expect(links.map((link) => link.dst)).toStrictEqual(['LOAN-1', 'NFR-1', 'LOAN-1']);
   });
 
+  it('separates verification from citation (TST-2)', () => {
+    const { links } = extractCommitLinks({
+      sha: 'abc123',
+      subject: 'Add the ledger',
+      body: 'Implements: LOAN-1\nVerifies: LOAN-1, NFR-1\n',
+    });
+
+    // A commit that *implements* a requirement is not evidence that anything
+    // checks it, which is the distinction a coverage report exists to make.
+    expect(links).toStrictEqual([
+      { src: 'abc123', dst: 'LOAN-1', relation: 'traces-to', source: 'abc123' },
+      { src: 'abc123', dst: 'LOAN-1', relation: 'verifies', source: 'abc123' },
+      { src: 'abc123', dst: 'NFR-1', relation: 'verifies', source: 'abc123' },
+    ]);
+  });
+
   it('ignores an id merely mentioned in prose', () => {
     // A body that names LOAN-1 in a sentence has not declared a link, and
     // treating it as one puts entries in the graph no author can see they
@@ -284,6 +300,62 @@ describe('dangling citations from one artifact', () => {
       expect(index.danglingFrom('design@1').map((entry) => entry.dst)).toStrictEqual([
         'LOAN-9',
       ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('coverage (TST-2)', () => {
+  it('counts only what claims to verify, and says what merely cites', () => {
+    const { db, index } = indexed();
+    try {
+      index.indexArtifactAs(
+        artifact({ id: 'scope', schema: 'scope', data: SCOPE }),
+        'artifacts/scope/requirements.v1.md',
+      );
+      index.indexArtifactAs(artifact(), 'artifacts/design/design.v1.md');
+      index.indexCommit({
+        sha: 'commit-1',
+        subject: 'Add the ledger',
+        body: 'Verifies: LOAN-1\n',
+      });
+
+      const rows = index.coverage(['LOAN-1', 'NFR-1']);
+
+      expect(rows[0]).toStrictEqual({
+        id: 'LOAN-1',
+        verifiedBy: ['commit-1'],
+        tracedBy: ['design@1'],
+        verified: true,
+      });
+      // Cited by ADR-1 and nothing else. Designed for is not checked.
+      expect(rows[1]).toStrictEqual({
+        id: 'NFR-1',
+        verifiedBy: [],
+        tracedBy: ['ADR-1'],
+        verified: false,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('lists the elements artifacts declare, with what declared them', () => {
+    const { db, index } = indexed();
+    try {
+      index.indexArtifactAs(
+        artifact({ id: 'scope', schema: 'scope', data: SCOPE }),
+        'artifacts/scope/requirements.v1.md',
+      );
+      index.indexArtifactAs(artifact(), 'artifacts/design/design.v1.md');
+
+      expect(index.declaredElements().map((entry) => entry.id)).toStrictEqual([
+        'ADR-1',
+        'LOAN-1',
+        'NFR-1',
+      ]);
+      expect(index.declaredElements()[0]?.source).toBe('artifacts/design/design.v1.md');
     } finally {
       db.close();
     }

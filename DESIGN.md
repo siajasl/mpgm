@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.8 — trace index, reopen cascade and the `reopen` verb (§4.1, §4.4) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.9 — trace index, reopen cascade, `reopen` and `trace` verbs (§4.1, §4.4) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -99,7 +99,7 @@ A deterministic state machine, no LLM calls. Owns:
 - **Context assembler:** builds each task's prompt from (a) the task spec, (b) upstream artifacts it traces to, (c) KB digest, (d) relevant prior decisions found via the trace index (CTX-3). Transcripts of other agents are never included (CTX-2). Egress filter applied last (SAF-6).
 
 ### 4.4 Operator Console (HIL-*, OBS-3)
-`mpgm` CLI: `run`, `status`, `approve <gate>`, `pause|resume|kill <task|run>`, `redirect <task>` (revise a task's instructions/context and requeue), `rollback <release|artifact>`, `chat <phase|gate>` (§4.2), `reopen <phase>` (ORC-6, with `--dry-run` — the cascade is shown before it is caused, and the gates it *retains* are printed alongside the ones it invalidates), `trace <id>`, `replay <run>` — covering all HIL-3 verbs. A read-only local web dashboard — deferred to the first Implement milestone (§9) — renders live run state, pending approvals, spend, and the traceability graph from the event stream; until then `mpgm status` serves OBS-3. Interventions are events like any other (HIL-5).
+`mpgm` CLI: `run`, `status`, `approve <gate>`, `pause|resume|kill <task|run>`, `redirect <task>` (revise a task's instructions/context and requeue), `rollback <release|artifact>`, `chat <phase|gate>` (§4.2), `reopen <phase>` (ORC-6, with `--dry-run` — the cascade is shown before it is caused, and the gates it *retains* are printed alongside the ones it invalidates), `trace <id>` (also `--coverage` for requirement-level TST-2 coverage and `--dangling` for citations that resolve to nothing), `replay <run>` — covering all HIL-3 verbs. A read-only local web dashboard — deferred to the first Implement milestone (§9) — renders live run state, pending approvals, spend, and the traceability graph from the event stream; until then `mpgm status` serves OBS-3. Interventions are events like any other (HIL-5).
 
 ### 4.5 Observability (OBS-*)
 The event log **is** the telemetry source: a projection layer derives per-phase/per-role cost, latency, retry, and success metrics (OBS-2) and longitudinal quality metrics — gate rejection rate, rework rate, escaped defects (OBS-4) — which feed AGT-7. Export via an OTLP MCP tool is optional, not required (NFR-5).

@@ -286,7 +286,16 @@ export {
 export type { PhaseOutcome, PhaseResult, PhaseRunOptions } from './phase/runner.js';
 export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
 export type { CliContext, CommandResult } from './cli/commands.js';
-export { approve, chat, intervene, reopen, replay, run, status } from './cli/commands.js';
+export {
+  approve,
+  chat,
+  intervene,
+  reopen,
+  replay,
+  run,
+  status,
+  trace,
+} from './cli/commands.js';
 export type { Verb } from './cli/main.js';
 export { parseArgs, runCli, USAGE, VERBS } from './cli/main.js';
 export type {
@@ -304,7 +313,7 @@ export {
   looksLikeId,
   TRACE_ID_PATTERN,
 } from './trace/links.js';
-export type { Declaration, DanglingReference } from './trace/index-store.js';
+export type { CoverageRow, Declaration, DanglingReference } from './trace/index-store.js';
 export { TraceIndex } from './trace/index-store.js';
 export { TRACE_DDL } from './trace/ddl.js';
 export type { IndexerOptions, IndexReport } from './trace/indexer.js';

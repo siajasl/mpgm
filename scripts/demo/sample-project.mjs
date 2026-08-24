@@ -296,3 +296,119 @@ export const DESIGN = {
     },
   ],
 };
+
+/**
+ * A plan for the design above.
+ *
+ * Hand-written so the offline trace demo has a third layer to walk — and so
+ * the demo knows which requirement each task claims to advance.
+ */
+export const PLAN = {
+  summary: 'Ledger first, because losing a loan record is the one failure that matters.',
+  risks: [
+    {
+      id: 'R1',
+      assumption: 'One SQLite writer keeps up with the issue desk inside NFR-2 latency.',
+      validatedBy: ['M1.1'],
+    },
+    {
+      id: 'R2',
+      assumption: 'The school directory can be read live without a local copy.',
+      validatedBy: ['M1.2'],
+    },
+  ],
+  phases: [
+    {
+      id: 'P1',
+      title: 'Walking skeleton',
+      intent: 'Settle both assumptions before building anything on top of them.',
+      milestones: [
+        {
+          id: 'M1.1',
+          title: 'Crash-safe loan ledger',
+          verification:
+            'A loan recorded under load survives kill -9, and p95 recording ' +
+            'latency stays inside NFR-2 at 20 loans/minute.',
+          validatesRisk: 'R1',
+          tasks: [
+            {
+              id: 'T1.1.1',
+              title: 'Loan ledger with WAL',
+              completionCriteria: [
+                'A recorded loan is readable after an unclean shutdown.',
+                'Concurrent writes serialise rather than failing.',
+              ],
+              dependsOn: [],
+              tracesTo: ['LOAN-1', 'NFR-1', 'ADR-1'],
+            },
+            {
+              id: 'T1.1.2',
+              title: 'Loan and return endpoints',
+              completionCriteria: [
+                'POST /loans returns the stored record.',
+                'Returning an already-returned loan is a no-op, not an error.',
+              ],
+              dependsOn: ['T1.1.1'],
+              tracesTo: ['LOAN-1', 'LOAN-2'],
+            },
+            {
+              id: 'T1.1.3',
+              title: 'Desk-load latency harness',
+              completionCriteria: ['p95 recording latency is reported against NFR-2.'],
+              dependsOn: ['T1.1.2'],
+              tracesTo: ['NFR-2'],
+            },
+          ],
+        },
+        {
+          id: 'M1.2',
+          title: 'Directory-backed identity',
+          verification:
+            'A loan cannot be recorded against an unknown member, and no member ' +
+            'row is written locally.',
+          validatesRisk: 'R2',
+          tasks: [
+            {
+              id: 'T1.2.1',
+              title: 'Directory reader',
+              completionCriteria: ['Member lookup resolves live, cached in memory only.'],
+              dependsOn: [],
+              tracesTo: ['LOAN-5', 'ADR-2'],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'P2',
+      title: 'Member view',
+      intent: 'Give members the view the Definition asked for, within the constraint.',
+      milestones: [
+        {
+          id: 'M2.1',
+          title: 'Member loan view',
+          verification: 'A member sees their open loans with an overdue flag.',
+          validatesRisk: null,
+          tasks: [
+            {
+              id: 'T2.1.1',
+              title: 'Member loan view',
+              completionCriteria: ['Open loans and due dates render for a member.'],
+              dependsOn: [],
+              tracesTo: ['LOAN-3', 'LOAN-4'],
+            },
+            {
+              id: 'T2.1.2',
+              title: 'Unauthenticated access boundary',
+              completionCriteria: [
+                'The view is reachable without sign-in and every access is logged.',
+              ],
+              dependsOn: ['T2.1.1'],
+              tracesTo: ['LOAN-6', 'ADR-3'],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
