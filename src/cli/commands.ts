@@ -14,6 +14,7 @@ import { GateManager, gateOracleFromState } from '../gate/manager.js';
 import { isGitRepository, tagGate } from '../git/tag.js';
 import { runPhase } from '../phase/runner.js';
 import { TraceIndex } from '../trace/index-store.js';
+import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
 import { RoleRegistry } from '../role/loader.js';
 import { Projector } from '../state/projector.js';
@@ -221,6 +222,70 @@ export function intervene(
 }
 
 /** `mpgm approve <gate>` — record a gate decision (HIL-5). */
+/**
+ * Withdraw a phase's approval and cascade to what traced to it (ORC-6).
+ *
+ * `--dry-run` shows the plan without recording it. Reopening a Design gate can
+ * cost a whole phase to redo, and an append-only log is not where to discover
+ * that.
+ */
+export function reopen(
+  context: CliContext,
+  runId: string,
+  phase: string,
+  reason: string,
+  changed: readonly string[],
+  dryRun = false,
+): CommandResult {
+  const { db, log, projector } = open(context);
+  try {
+    const index = TraceIndex.attach(db);
+    const request = {
+      runId,
+      phase,
+      reason,
+      ...(changed.length === 0 ? {} : { changed }),
+    };
+
+    let plan;
+    try {
+      plan = dryRun
+        ? planReopen(projector.project(), index, request)
+        : reopenPhase({ log, projector, index, request });
+    } catch (cause) {
+      context.write(cause instanceof Error ? cause.message : String(cause));
+      return { ok: false, detail: 'reopen refused' };
+    }
+
+    context.write(
+      `${dryRun ? 'Would reopen' : 'Reopened'} phase ${plan.phase} of run ${runId}`,
+    );
+    context.write(`Changed: ${plan.changed.join(', ')}`);
+
+    context.write('\nInvalidated');
+    for (const gate of plan.invalidated) {
+      context.write(`  ${gate.gateId} (${gate.phase}) — ${gate.because}`);
+    }
+    if (plan.invalidated.length === 0) {
+      context.write('  (none)');
+    }
+
+    // Printed, not merely omitted: ORC-6's second half is that unaffected
+    // approvals survive, and an operator has to be able to see that it held.
+    context.write('\nRetained');
+    for (const gate of plan.retained) {
+      context.write(`  ${gate.gateId} (${gate.phase}) — ${gate.because}`);
+    }
+    if (plan.retained.length === 0) {
+      context.write('  (none)');
+    }
+
+    return { ok: true, detail: dryRun ? 'planned' : 'reopened' };
+  } finally {
+    db.close();
+  }
+}
+
 export function approve(
   context: CliContext,
   runId: string,
