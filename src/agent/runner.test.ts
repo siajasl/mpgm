@@ -374,6 +374,65 @@ describe('non-completing sessions', () => {
   });
 });
 
+describe('a session that overran its budget but finished', () => {
+  // The Definition demo: the researcher's session completed and returned a
+  // valid survey, and was then thrown away because the SDK's own turn count
+  // came back above the role's step budget. The money was already spent, so
+  // discarding the work lost the work as well.
+  const overrun = () =>
+    scriptedSuccess(validOutput, {
+      usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.01 },
+      turns: role.budgets.steps + 7,
+    });
+
+  it('keeps the output it paid for, and records the overrun', async () => {
+    const { db, log, projector, runner } = harness([overrun()]);
+    try {
+      const outcome = await runner.runTask(task);
+
+      expect(outcome.status).toBe('completed');
+      const breach = log.read().find((event) => event.type === 'BudgetExceeded');
+      expect((breach?.payload as { kind: string }).kind).toBe('steps');
+      // Recorded and then completed, in that order: the task succeeded, and
+      // the overrun is still on the record for whoever sizes the budget.
+      expect(projector.project().runs['run-1']?.tasks.T1?.status).toBe('completed');
+      expect(projector.project().runs['run-1']?.tasks.T1?.budgetBreaches).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses the next attempt, so the overrun bounds what follows', async () => {
+    // Same overrun, but the output does not validate. There is nothing to
+    // keep, and nothing left to spend on another try.
+    const { db, log, provider, runner } = harness([
+      scriptedSuccess(
+        { summary: '' },
+        {
+          usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.01 },
+          turns: role.budgets.steps + 7,
+        },
+      ),
+      scriptedSuccess(validOutput),
+    ]);
+    try {
+      const outcome = await runner.runTask(task);
+
+      expect(outcome.status).toBe('blocked');
+      expect(provider.requests).toHaveLength(1);
+      if (outcome.status === 'blocked') {
+        expect(outcome.reason).toContain('budget exhausted');
+      }
+      // One event, not two: the breach is reported where it stopped the work.
+      expect(log.read().filter((event) => event.type === 'BudgetExceeded')).toHaveLength(
+        1,
+      );
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('OutputSchemaRegistry', () => {
   it('derives the JSON Schema from the zod schema', () => {
     const json = schemas.jsonSchema(role.output.schema);

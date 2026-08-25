@@ -36,6 +36,23 @@ import {
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const failures = [];
 
+/**
+ * Read a file the phase was meant to write, or report that it is not there.
+ *
+ * A blocked task leaves its artifact unwritten. Letting the read throw turns
+ * one failed task into a stack trace that hides every check after it —
+ * including the ones that would have said how much of the phase did work,
+ * which is the whole of what a failed run has left to tell.
+ */
+function readOrReport(path, label) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (error) {
+    check(label, false, error instanceof Error ? error.message : String(error));
+    return '';
+  }
+}
+
 function check(label, condition, detail = '') {
   process.stdout.write(
     `  ${condition ? 'ok  ' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}\n`,
@@ -161,7 +178,7 @@ try {
 
   process.stdout.write('\n4. Prior art (DEF-3)\n');
   const priorArtPath = join(workspace, 'artifacts', 'definition', 'prior-art.v1.md');
-  const priorArt = readFileSync(priorArtPath, 'utf8');
+  const priorArt = readOrReport(priorArtPath, 'the prior-art survey was written');
   process.stdout.write(`${priorArt.split('\n').slice(0, 30).join('\n')}\n`);
   check(
     'the survey attributes its claims to sources (DEF-3)',
@@ -171,7 +188,7 @@ try {
 
   process.stdout.write('\n5. The artifact\n');
   const briefPath = join(workspace, 'artifacts', 'definition', 'brief.v1.md');
-  const brief = readFileSync(briefPath, 'utf8');
+  const brief = readOrReport(briefPath, 'the Definition artifact was written');
   process.stdout.write(`${brief.split('\n').slice(0, 40).join('\n')}\n`);
   check(
     'the Definition artifact exists and is attributable (ART-1)',

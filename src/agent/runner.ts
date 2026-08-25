@@ -270,25 +270,19 @@ export class SessionRunner {
         };
       }
 
+      // A session that has already ended cannot be terminated, and the spend
+      // has already happened. Discarding output the session did produce buys
+      // nothing back and loses the work as well as the money — so a breach
+      // observed after the fact bounds what comes *next* rather than voiding
+      // what came before. The loop's own guard refuses the following attempt,
+      // and the event is written either way so the overrun is visible (AGT-4,
+      // OBS-2).
+      //
+      // The per-session bound is the SDK's: `maxTurns` and `maxBudgetUsd` are
+      // passed from what the ledger has left, so a session cannot run away
+      // between checks. What the ledger adds is the total across attempts,
+      // which is the part only the kernel can see.
       const breach = ledger.breach();
-      if (breach !== null) {
-        this.#log.append({
-          runId,
-          type: 'BudgetExceeded',
-          payload: {
-            taskId,
-            kind: breach.kind,
-            limit: breach.limit,
-            observed: breach.observed,
-          },
-        });
-        return {
-          status: 'blocked',
-          reason: `budget exceeded: ${breach.kind} (limit ${String(breach.limit)}, used ${String(breach.observed)})`,
-          attempts: attempt,
-          lastIssues,
-        };
-      }
 
       const parsed = schema.safeParse(result.structuredOutput);
       if (parsed.success) {
@@ -299,6 +293,18 @@ export class SessionRunner {
         // to the agent they are the same kind of mistake (AGT-3).
         const extra = request.validate?.(parsed.data) ?? [];
         if (extra.length === 0) {
+          if (breach !== null) {
+            this.#log.append({
+              runId,
+              type: 'BudgetExceeded',
+              payload: {
+                taskId,
+                kind: breach.kind,
+                limit: breach.limit,
+                observed: breach.observed,
+              },
+            });
+          }
           this.#log.append({
             runId,
             type: 'TaskCompleted',

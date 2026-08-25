@@ -22,7 +22,7 @@ network:
 budgets:
   tokens: 150000
   costUsd: 3
-  steps: 16
+  steps: 30
   wallClockSeconds: 900
 output:
   schema: prior-art
