@@ -198,8 +198,12 @@ describe('budget enforcement in the runner', () => {
       });
 
       expect(outcome.status).toBe('blocked');
+      // Reported where the budget actually stopped the work: at the attempt
+      // that could not be dispatched. The second session had already ended by
+      // the time the ledger was over, and stopping something that finished is
+      // not what the limit is for.
       expect(outcome.status === 'blocked' && outcome.reason).toMatch(
-        /budget exceeded: cost/,
+        /budget exhausted before attempt 3: cost/,
       );
 
       const breaches = log.read().filter((event) => event.type === 'BudgetExceeded');
