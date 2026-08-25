@@ -212,7 +212,7 @@ export {
   elicitationTurnSchema,
   exchangeSchema,
 } from './elicit/session.js';
-export { ScriptedIo, TerminalIo } from './elicit/io.js';
+export { ScriptedIo, TerminalIo, type ScriptedIoOptions } from './elicit/io.js';
 export type {
   ApprovalPacket,
   CriterionResult,

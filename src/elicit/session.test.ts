@@ -89,6 +89,41 @@ describe('elicitation dialogue', () => {
     ]);
   });
 
+  it('answers past the end of the script when a fallback is given', async () => {
+    // How many questions the analyst asks is its own decision, so a fixture
+    // cannot know how many answers to hold. Throwing mid-dialogue makes the
+    // fixture's length a property of the phase, which it is not.
+    const provider = new TurnProvider([
+      { kind: 'question', question: 'What problem?', rationale: '' },
+      { kind: 'question', question: 'Do members log in?', rationale: '' },
+      { kind: 'conclusions', conclusions },
+    ]);
+    const io = new ScriptedIo(['Loans get lost.'], { whenExhausted: 'Unknown.' });
+
+    const result = await elicit({ provider, role, io });
+
+    expect(result.transcript[1]).toStrictEqual({
+      question: 'Do members log in?',
+      answer: 'Unknown.',
+    });
+    // Recorded, so a run the fallback carried is visible rather than silent.
+    expect(io.unscripted).toStrictEqual(['Do members log in?']);
+  });
+
+  it('still throws when the script runs out and no fallback was given', async () => {
+    // The default a test wants: an assertion about how many questions were
+    // asked stops being able to fail if the script answers forever.
+    const provider = new TurnProvider([
+      { kind: 'question', question: 'What problem?', rationale: '' },
+      { kind: 'question', question: 'Who uses it?', rationale: '' },
+      { kind: 'conclusions', conclusions },
+    ]);
+
+    await expect(
+      elicit({ provider, role, io: new ScriptedIo(['Loans get lost.']) }),
+    ).rejects.toThrow('ran out of answers');
+  });
+
   it('feeds the dialogue so far into each turn', async () => {
     const provider = new TurnProvider([
       { kind: 'question', question: 'What problem?', rationale: '' },
