@@ -11,9 +11,10 @@
  * be worse than none. Run with `npm run demo:plan`.
  *
  * Both upstream artifacts are seeded, so this spends on the Plan phase alone —
- * and so the demo knows every requirement, component, interface and ADR id
- * that a plan may legitimately cite. That is what lets it check the thing the
- * schema cannot: a task tracing to an id nobody declared (ART-2).
+ * and so the demo knows every requirement, component, interface, technology,
+ * entity, concern and ADR a plan may legitimately cite. That is what lets it
+ * check the thing neither the schema nor the kernel can: a task tracing to
+ * something nobody declared (ART-2).
  */
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -47,10 +48,30 @@ function check(label, condition, detail = '') {
   }
 }
 
-/** Every id a plan may legitimately trace to. */
+/**
+ * Everything a plan may legitimately trace to.
+ *
+ * Only ADRs carry an `id`. A component is identified by its `name`, an
+ * interface by its `name`, a technology by the `choice`, an entity by the
+ * `entity`, a cross-cutting concern by the `concern` — so a plan citing the
+ * design cites those strings, and a set built from requirement ids and ADR
+ * ids alone calls every one of them invented.
+ *
+ * The kernel does not catch that either, in the other direction: its dangling
+ * check filters citations to the ones that look like ids, so `POST /loans`
+ * resolving to nothing is indistinguishable from prose it was never going to
+ * resolve. Seeding both upstream artifacts is what lets this demo hold the
+ * plan to the stronger rule the kernel cannot — every citation names
+ * something that was actually declared (ART-2).
+ */
 const declaredIds = new Set([
   ...SCOPE.requirements.map((entry) => entry.id),
   ...DESIGN.adrs.map((entry) => entry.id),
+  ...DESIGN.components.map((entry) => entry.name),
+  ...DESIGN.interfaces.map((entry) => entry.name),
+  ...DESIGN.technologies.map((entry) => entry.choice),
+  ...DESIGN.crossCutting.map((entry) => entry.concern),
+  ...DESIGN.dataModel.map((entry) => entry.entity),
 ]);
 
 const workspace = mkdtempSync(join(tmpdir(), 'mpgm-t223-'));
@@ -177,7 +198,7 @@ try {
 
   process.stdout.write('\n4. Traceability (ART-2)\n');
   const cited = [...new Set(tasks.flatMap((task) => task.tracesTo))];
-  const invented = cited.filter((id) => !declaredIds.has(id) && /^[A-Z]/.test(id));
+  const invented = cited.filter((id) => !declaredIds.has(id));
 
   const tracedLine =
     ran.output.split('\n').find((line) => line.includes('plan-traced')) ?? '';
@@ -187,12 +208,13 @@ try {
     tracedLine.trim().startsWith('met'),
     'the traces-resolve criterion is the T2.2.3 gate check, and it can genuinely fail',
   );
-  // Checked independently of the kernel, against the ids this demo seeded.
+  // Checked independently of the kernel, and more strictly: every citation
+  // must name something the seeded artifacts declare, id-shaped or not.
   check(
-    'no task traces to an id nobody declared',
+    'no task traces to anything nobody declared',
     invented.length === 0,
     invented.length === 0
-      ? `${String(cited.length)} distinct ids cited`
+      ? `${String(cited.length)} distinct citation(s), all declared`
       : `invented: ${invented.join(', ')}`,
   );
 
