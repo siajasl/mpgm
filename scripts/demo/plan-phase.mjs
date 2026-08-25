@@ -11,10 +11,9 @@
  * be worse than none. Run with `npm run demo:plan`.
  *
  * Both upstream artifacts are seeded, so this spends on the Plan phase alone —
- * and so the demo knows every requirement, component, interface, technology,
- * entity, concern and ADR a plan may legitimately cite. That is what lets it
- * check the thing neither the schema nor the kernel can: a task tracing to
- * something nobody declared (ART-2).
+ * and so the demo knows every requirement and design element id a plan may
+ * legitimately cite. That is what lets it check the thing the schema cannot:
+ * a task tracing to an id nobody declared (ART-2).
  */
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -30,6 +29,7 @@ import {
   Projector,
   SnapshotStore,
   TraceIndex,
+  designElementIds,
   projectArtifactSchemas,
   projectOutputSchemas,
   runCli,
@@ -49,29 +49,16 @@ function check(label, condition, detail = '') {
 }
 
 /**
- * Everything a plan may legitimately trace to.
+ * Every id a plan may legitimately cite.
  *
- * Only ADRs carry an `id`. A component is identified by its `name`, an
- * interface by its `name`, a technology by the `choice`, an entity by the
- * `entity`, a cross-cutting concern by the `concern` — so a plan citing the
- * design cites those strings, and a set built from requirement ids and ADR
- * ids alone calls every one of them invented.
- *
- * The kernel does not catch that either, in the other direction: its dangling
- * check filters citations to the ones that look like ids, so `POST /loans`
- * resolving to nothing is indistinguishable from prose it was never going to
- * resolve. Seeding both upstream artifacts is what lets this demo hold the
- * plan to the stronger rule the kernel cannot — every citation names
- * something that was actually declared (ART-2).
+ * Both upstream artifacts are seeded, so this is exact rather than a
+ * heuristic. That matters because the kernel's own dangling check cannot be:
+ * it filters citations to the ones that look like ids, which is what makes an
+ * id worth having and what makes a citation of prose invisible to it.
  */
 const declaredIds = new Set([
   ...SCOPE.requirements.map((entry) => entry.id),
-  ...DESIGN.adrs.map((entry) => entry.id),
-  ...DESIGN.components.map((entry) => entry.name),
-  ...DESIGN.interfaces.map((entry) => entry.name),
-  ...DESIGN.technologies.map((entry) => entry.choice),
-  ...DESIGN.crossCutting.map((entry) => entry.concern),
-  ...DESIGN.dataModel.map((entry) => entry.entity),
+  ...designElementIds(DESIGN),
 ]);
 
 const workspace = mkdtempSync(join(tmpdir(), 'mpgm-t223-'));

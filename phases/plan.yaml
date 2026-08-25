@@ -50,6 +50,12 @@ tasks:
       milestones. Give every task completion criteria that decide whether it is
       done, its dependencies, and the design or requirement ids it advances.
 
+      Cite ids, exactly as the upstream artifact writes them — `LOAN-1`, `C-2`,
+      `I-1`, `ADR-3`. Not the element's name, not the name with its kind in
+      front of it: those are prose to everything downstream, so a citation
+      written that way joins no trace graph and nothing can tell it apart from
+      a component that does not exist (ART-2).
+
       Name the assumptions that would invalidate the design if they turned out
       false, and order the plan so the milestones that settle them come first.
       Give every milestone what must demonstrably work when it closes — not how
