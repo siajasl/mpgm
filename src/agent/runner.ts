@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import type { EventLog } from '../event/store.js';
 import type { Role } from '../role/definition.js';
 import { RolePolicy } from '../policy/role-policy.js';
@@ -92,6 +93,48 @@ export interface SessionRunnerOptions {
 
 export const DEFAULT_MAX_VALIDATION_ATTEMPTS = 3;
 
+/** The CLI's own tool for returning a session's final structured output. */
+const STRUCTURED_OUTPUT_TOOL = 'StructuredOutput';
+
+/**
+ * What was wrong with the output the CLI gave up on.
+ *
+ * The result message reports how many attempts failed and nothing about why,
+ * which leaves an operator with a count and a guess. The gate saw every
+ * attempt on its way past, so the last one can be checked here against the
+ * same schema and the real issues fed back (CONV-3, AGT-3).
+ *
+ * The case worth naming separately is output the kernel would have accepted:
+ * that is not a model that cannot follow a schema, it is the JSON Schema sent
+ * to the CLI disagreeing with the zod schema it was derived from, and no
+ * amount of retrying fixes it.
+ */
+export function abandonedOutputIssues(
+  schema: { safeParse: (value: unknown) => { success: boolean; error?: z.ZodError } },
+  attempted: unknown,
+  errorMessage: string,
+): readonly string[] {
+  const said = errorMessage === '' ? '' : ` (${errorMessage})`;
+  if (attempted === undefined) {
+    return [`the session ended without output satisfying the schema${said}`];
+  }
+
+  const parsed = schema.safeParse(attempted);
+  if (parsed.success) {
+    return [
+      "the CLI rejected output that satisfies this task's schema, so the JSON " +
+        `Schema it was given does not match the schema the kernel validates against${said}`,
+    ];
+  }
+
+  const issues = (parsed.error?.issues ?? []).map(
+    (issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`,
+  );
+  return issues.length === 0
+    ? [`the session ended without output satisfying the schema${said}`]
+    : issues;
+}
+
 export class SessionRunner {
   readonly #log: EventLog;
   readonly #provider: AgentSessionProvider;
@@ -129,7 +172,7 @@ export class SessionRunner {
     runId: string,
     taskId: string,
     policy: RolePolicy,
-    seen: (tool: string) => void,
+    seen: (tool: string, input: Record<string, unknown>) => void,
   ): ToolGate {
     const inner = policy.gate();
     // Destructive first, then policy, then the broker: a destructive call is
@@ -142,7 +185,7 @@ export class SessionRunner {
 
     return async (tool: string, input: Record<string, unknown>) => {
       const decision = await gate(tool, input);
-      seen(tool);
+      seen(tool, input);
       this.#log.append({
         runId,
         type: 'ToolCallLogged',
@@ -175,6 +218,11 @@ export class SessionRunner {
     // Tools the gate ruled on during this session, so a denial the SDK also
     // reports is not written to the audit trail twice.
     let gatedTools = new Set<string>();
+    // The last structured output the session tried to return, whether or not
+    // the CLI accepted it. When the CLI gives up, this is the only evidence of
+    // *what* it kept rejecting: the result message says how many attempts
+    // failed and nothing about why (CONV-3).
+    let lastStructured: unknown;
 
     let lastIssues: readonly string[] = [];
     // One ledger per task: retries share the budget, because three sessions
@@ -230,10 +278,16 @@ export class SessionRunner {
         ...(this.#secrets === undefined
           ? {}
           : { env: this.#secrets.environment(process.env) }),
-        canUseTool: this.#gate(runId, taskId, policy, (tool) => gatedTools.add(tool)),
+        canUseTool: this.#gate(runId, taskId, policy, (tool, input) => {
+          gatedTools.add(tool);
+          if (tool === STRUCTURED_OUTPUT_TOOL) {
+            lastStructured = input;
+          }
+        }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       };
       gatedTools = new Set<string>();
+      lastStructured = undefined;
 
       const result = await runWithWallClock(
         (signal) => this.#provider.run({ ...sessionRequest, signal }),
@@ -248,11 +302,7 @@ export class SessionRunner {
       // against one context; a fresh session is a fresh sample, and the
       // shared ledger stops this costing more than any other retry would.
       if (result.termination === 'invalid_output') {
-        lastIssues = [
-          result.errorMessage === ''
-            ? 'the session ended without output satisfying the schema'
-            : `the session ended without output satisfying the schema (${result.errorMessage})`,
-        ];
+        lastIssues = abandonedOutputIssues(schema, lastStructured, result.errorMessage);
         this.#log.append({
           runId,
           type: 'ValidationFailed',
