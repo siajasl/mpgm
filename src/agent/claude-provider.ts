@@ -94,7 +94,7 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
           usage: usageOf(message.total_cost_usd, message.usage),
           turns: message.num_turns,
           denials,
-          errorMessage: message.subtype,
+          errorMessage: errorDetailOf(message.subtype, message.errors),
         };
       }
 
@@ -189,12 +189,29 @@ function gateOption(gate: ToolGate | undefined): {
   };
 }
 
-function terminationFor(subtype: string): SessionTermination {
+/**
+ * What to report about a session that ended on an error subtype.
+ *
+ * The subtype alone names the class of failure and nothing about the cause:
+ * `error_max_structured_output_retries` says the CLI gave up, not what it kept
+ * receiving. The SDK carries the detail in `errors`, and dropping it leaves an
+ * operator with a diagnosis they can only reach by reading this file
+ * (CONV-3). The subtype is the fallback rather than the message, because a
+ * result with no errors still has to say something.
+ */
+export function errorDetailOf(subtype: string, errors: readonly string[]): string {
+  const detail = errors.filter((entry) => entry.trim() !== '').join('; ');
+  return detail === '' ? subtype : `${subtype}: ${detail}`;
+}
+
+export function terminationFor(subtype: string): SessionTermination {
   switch (subtype) {
     case 'error_max_turns':
       return 'max_turns';
     case 'error_max_budget_usd':
       return 'budget_exceeded';
+    case 'error_max_structured_output_retries':
+      return 'invalid_output';
     default:
       return 'error';
   }

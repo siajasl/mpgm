@@ -194,6 +194,53 @@ describe('validation and bounded retry', () => {
     }
   });
 
+  it('retries a session the CLI abandoned for failing its schema', async () => {
+    // `error_max_structured_output_retries`: the CLI asked for structured
+    // output, kept getting output that did not satisfy the schema, and gave
+    // up. Those retries were all against one context; a fresh session is a
+    // fresh sample, so this is a validation failure and retries like one.
+    const { db, log, provider, runner } = harness([
+      scriptedSuccess(undefined, {
+        termination: 'invalid_output',
+        errorMessage: 'error_max_structured_output_retries: unterminated JSON',
+      }),
+      scriptedSuccess(validOutput),
+    ]);
+    try {
+      const outcome = await runner.runTask(task);
+
+      expect(outcome.status).toBe('completed');
+      expect(outcome.attempts).toBe(2);
+      // The detail the SDK reported reaches the agent, rather than the bare
+      // subtype it cannot act on.
+      expect(provider.requests[1]?.prompt).toContain('unterminated JSON');
+      expect(log.read().map((event) => event.type)).toContain('ValidationFailed');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks after the bounded retries when the schema is never satisfied', async () => {
+    const abandoned = scriptedSuccess(undefined, {
+      termination: 'invalid_output',
+      errorMessage: 'error_max_structured_output_retries',
+    });
+    const { db, log, runner } = harness([abandoned, abandoned, abandoned]);
+    try {
+      const outcome = await runner.runTask(task);
+
+      expect(outcome.status).toBe('blocked');
+      expect(outcome.attempts).toBe(3);
+      expect(log.read().map((event) => event.type)).not.toContain('TaskCompleted');
+      // Not recorded as a budget breach: nothing was exhausted, the output was
+      // wrong, and an operator reading BudgetExceeded here would raise limits
+      // that were never the problem.
+      expect(log.read().map((event) => event.type)).not.toContain('BudgetExceeded');
+    } finally {
+      db.close();
+    }
+  });
+
   it('blocks rather than retrying forever', async () => {
     const bad = scriptedSuccess({ summary: '' });
     const { db, log, projector, runner } = harness([bad, bad, bad]);
@@ -281,6 +328,30 @@ describe('non-completing sessions', () => {
       }
     });
   }
+
+  it('does not retry an error termination, which would only spend more', async () => {
+    // The distinction the retry rests on: `invalid_output` is a fresh sample
+    // worth taking, an `error` is a session that failed for a reason a second
+    // attempt does not change.
+    const { db, provider, runner } = harness([
+      scriptedSuccess(undefined, {
+        termination: 'error',
+        errorMessage: 'error_during_execution: the process died',
+      }),
+    ]);
+    try {
+      const outcome = await runner.runTask(task);
+
+      expect(outcome.status).toBe('blocked');
+      expect(outcome.attempts).toBe(1);
+      expect(provider.requests).toHaveLength(1);
+      if (outcome.status === 'blocked') {
+        expect(outcome.reason).toContain('the process died');
+      }
+    } finally {
+      db.close();
+    }
+  });
 
   it('logs every tool denial the session reported', async () => {
     const { db, log, projector, runner } = harness([

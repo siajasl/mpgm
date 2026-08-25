@@ -242,6 +242,25 @@ export class SessionRunner {
       ledger.record(result.usage, result.turns);
       this.#recordSession(runId, taskId, role, result, gatedTools);
 
+      // A session the CLI abandoned for repeatedly failing its schema is a
+      // validation failure that happened to be detected one layer down, so it
+      // retries like one (AGT-3). Those retries were all inside one session,
+      // against one context; a fresh session is a fresh sample, and the
+      // shared ledger stops this costing more than any other retry would.
+      if (result.termination === 'invalid_output') {
+        lastIssues = [
+          result.errorMessage === ''
+            ? 'the session ended without output satisfying the schema'
+            : `the session ended without output satisfying the schema (${result.errorMessage})`,
+        ];
+        this.#log.append({
+          runId,
+          type: 'ValidationFailed',
+          payload: { taskId, attempt, issues: [...lastIssues] },
+        });
+        continue;
+      }
+
       if (result.termination !== 'completed') {
         return {
           status: 'blocked',

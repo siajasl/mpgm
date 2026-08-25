@@ -62,6 +62,24 @@ function check(label, condition, detail = '') {
   }
 }
 
+/**
+ * Read an artifact the phase was meant to produce, or report that it is not
+ * there.
+ *
+ * A blocked task leaves its artifact unwritten. Letting the read throw turns
+ * one failed task into a stack trace that hides every check after it —
+ * including the ones that would have said how much of the phase did work,
+ * which is the whole of what a failed run has left to tell.
+ */
+function readArtifact(store, path, label) {
+  try {
+    return store.read(path).data;
+  } catch (error) {
+    check(label, false, error instanceof Error ? error.message : String(error));
+    return {};
+  }
+}
+
 const requirementIds = new Set(SCOPE.requirements.map((entry) => entry.id));
 const workspace = mkdtempSync(join(tmpdir(), 'mpgm-t213a-'));
 
@@ -118,7 +136,11 @@ try {
   const store = new ArtifactStore({ root: workspace, schemas: projectArtifactSchemas() });
 
   process.stdout.write('\n2. Candidates (DSG-1)\n');
-  const candidateSet = store.read('artifacts/design/candidates.md').data;
+  const candidateSet = readArtifact(
+    store,
+    'artifacts/design/candidates.md',
+    'the candidate set was written',
+  );
   const candidates = candidateSet.candidates ?? [];
   for (const candidate of candidates) {
     process.stdout.write(`  [${candidate.stance}] ${candidate.name}\n`);
@@ -190,8 +212,14 @@ try {
   );
 
   process.stdout.write('\n4. The design of record (DSG-1, DSG-2, DSG-4)\n');
-  const design = store.read('artifacts/design/design.md').data;
-  process.stdout.write(`  chosen: ${design.chosen}\n`);
+  const design = readArtifact(
+    store,
+    'artifacts/design/design.md',
+    'the design of record was written',
+  );
+  process.stdout.write(
+    `  chosen: ${design.chosen ?? '(nothing — no design was written)'}\n`,
+  );
   for (const adr of design.adrs ?? []) {
     process.stdout.write(`  ${adr.id}: ${adr.title}\n`);
   }
@@ -218,7 +246,7 @@ try {
   check(
     'ADRs were produced with the alternatives that lost',
     (design.adrs ?? []).length > 0 &&
-      design.adrs.every((adr) => adr.alternatives.length > 0),
+      (design.adrs ?? []).every((adr) => adr.alternatives.length > 0),
     `${String((design.adrs ?? []).length)} ADR(s)`,
   );
 
@@ -226,11 +254,11 @@ try {
   // knows which requirement ids actually exist, so only the demo can catch a
   // trace to a plausible-looking id that was never in the Scope artifact.
   const traced = [
-    ...design.components,
-    ...design.interfaces,
-    ...design.technologies,
-    ...design.crossCutting,
-    ...design.adrs,
+    ...(design.components ?? []),
+    ...(design.interfaces ?? []),
+    ...(design.technologies ?? []),
+    ...(design.crossCutting ?? []),
+    ...(design.adrs ?? []),
   ].flatMap((element) => element.tracesTo);
   const invented = [...new Set(traced.filter((id) => !requirementIds.has(id)))];
 
@@ -244,13 +272,17 @@ try {
   check(
     'the design addresses every cross-cutting concern DSG-2 names',
     ['authn', 'authz', 'observability', 'failure-modes'].every((needed) =>
-      design.crossCutting.some((entry) => entry.concern === needed),
+      (design.crossCutting ?? []).some((entry) => entry.concern === needed),
     ),
-    design.crossCutting.map((entry) => entry.concern).join(', '),
+    (design.crossCutting ?? []).map((entry) => entry.concern).join(', '),
   );
 
   process.stdout.write('\n5. Adversarial review (DSG-3)\n');
-  const findings = store.read('artifacts/design/findings.md').data;
+  const findings = readArtifact(
+    store,
+    'artifacts/design/findings.md',
+    'the review findings were written',
+  );
   for (const finding of findings.findings ?? []) {
     process.stdout.write(`  [${finding.status}] ${finding.about}: ${finding.issue}\n`);
   }

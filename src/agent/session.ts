@@ -18,9 +18,23 @@ export interface ToolDenial {
   readonly reason: string;
 }
 
-/** Why a session stopped. */
+/**
+ * Why a session stopped.
+ *
+ * `invalid_output` is a validation failure, not a broken session: the CLI
+ * asked for structured output, kept getting output that did not satisfy the
+ * schema, and gave up. It is distinguished from `error` because the two want
+ * opposite treatment — a fresh session is a fresh sample and may well satisfy
+ * the schema, whereas retrying an exhausted budget or a crashed process only
+ * spends more to reach the same place.
+ */
 export type SessionTermination =
-  'completed' | 'max_turns' | 'budget_exceeded' | 'wall_clock' | 'error';
+  | 'completed'
+  | 'invalid_output'
+  | 'max_turns'
+  | 'budget_exceeded'
+  | 'wall_clock'
+  | 'error';
 
 export interface SessionRequest {
   readonly model: string;
