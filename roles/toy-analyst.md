@@ -10,7 +10,7 @@ paths:
 budgets:
   tokens: 40000
   costUsd: 0.5
-  steps: 8
+  steps: 24
   wallClockSeconds: 120
 output:
   schema: toy.summary.v1
@@ -22,4 +22,6 @@ Return a structured summary: a one-sentence `summary`, and `requirements` as a
 list of short requirement statements drawn only from the brief.
 
 Use only the tools you have been granted. If a tool call is refused, do not try
-to work around it — note it and continue with what you can read.
+to work around it — say so in your `summary` and continue with what you can
+read. The summary and the requirement list are the whole of your output; there
+is nowhere else to put a note, and adding a field is not an option.

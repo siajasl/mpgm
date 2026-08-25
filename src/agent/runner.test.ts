@@ -10,7 +10,7 @@ import { Projector } from '../state/projector.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
 import { OutputSchemaRegistry } from './output-registry.js';
 import { ScriptedProvider, scriptedSuccess } from './scripted-provider.js';
-import { SessionRunner } from './runner.js';
+import { abandonedOutputIssues, SessionRunner } from './runner.js';
 import type { SessionResult } from './session.js';
 
 const fixtures = join(
@@ -371,6 +371,39 @@ describe('non-completing sessions', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe('abandonedOutputIssues', () => {
+  // The M1.2 demo failed with `Failed to provide valid structured output after
+  // 5 attempts` and nothing about what was wrong with those five. The gate saw
+  // every one of them go past, so the last is checked here rather than guessed
+  // at (CONV-3).
+  it('reports what was actually wrong with the output the CLI rejected', () => {
+    const issues = abandonedOutputIssues(
+      definitionSchema,
+      { summary: 'a summary', requirements: [], note: 'the Read was refused' },
+      'error_max_structured_output_retries',
+    );
+
+    expect(issues.join(' ')).toContain('requirements');
+  });
+
+  it('names a schema mismatch rather than blaming the model', () => {
+    // Output the kernel accepts and the CLI refused is not a model that cannot
+    // follow a schema: it is the JSON Schema sent to the CLI disagreeing with
+    // the zod it came from, and retrying cannot fix it.
+    const issues = abandonedOutputIssues(definitionSchema, validOutput, 'gave up');
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('does not match the schema the kernel validates');
+    expect(issues[0]).toContain('gave up');
+  });
+
+  it('falls back to what the SDK said when no attempt reached the gate', () => {
+    expect(abandonedOutputIssues(definitionSchema, undefined, 'gave up')).toStrictEqual([
+      'the session ended without output satisfying the schema (gave up)',
+    ]);
   });
 });
 
