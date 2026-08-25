@@ -280,6 +280,7 @@ export {
   definitionSchema,
   designCandidateSchema,
   designCandidatesSchema,
+  designElementIds,
   designSchema,
   designStances,
   designVerdictSchema,

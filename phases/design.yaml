@@ -117,6 +117,12 @@ tasks:
       authorisation, observability and failure modes at minimum. Trace every
       element to at least one requirement id.
 
+      Give every element an id: `C-1` for components, `I-1` for interfaces,
+      `D-1` for data-model entities, `T-1` for technologies, `X-1` for
+      cross-cutting concerns, numbering each kind from 1. The Plan cites these
+      to say what it is implementing, so an element with no id is an element
+      no downstream artifact can name.
+
       Record the significant decisions as ADRs, each with the alternatives that
       were considered — the other candidates are the obvious ones — and why
       they lost, and the consequences being accepted. Carry the judges'

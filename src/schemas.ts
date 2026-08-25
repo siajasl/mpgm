@@ -177,6 +177,24 @@ export const designVerdictSchema = z.object({
   reservations: z.array(z.string().min(1)),
 });
 
+/**
+ * An id a downstream artifact can cite, prefixed by what kind of element it is.
+ *
+ * Matched against the same pattern the trace index uses to tell an id from
+ * prose, so a design element joins the trace graph on the strength of being
+ * well-formed rather than by anything downstream remembering to register it.
+ * The prefix carries the kind because a plan citing `C-3` should not have to
+ * open the design to learn it is a component.
+ */
+function elementId(prefix: 'C' | 'I' | 'D' | 'T' | 'X'): z.ZodString {
+  return z
+    .string()
+    .regex(
+      new RegExp(`^${prefix}-[0-9]+$`),
+      `must be '${prefix}-<n>', e.g. '${prefix}-1'`,
+    );
+}
+
 /** One architecture decision record (DSG-1). */
 export const adrSchema = z.object({
   id: z.string().regex(/^ADR-[0-9]+$/, 'e.g. ADR-1'),
@@ -207,6 +225,15 @@ const concern = z.enum([...requiredConcerns, 'security', 'other']);
  * Every element carries `tracesTo`, so an element that traces to no
  * requirement is unrepresentable rather than merely discouraged — DSG-4 calls
  * that gold-plating, and the cheapest place to catch it is the schema.
+ *
+ * Every element also carries an `id`, for the same reason in the other
+ * direction. A downstream artifact has to name what it implements, and a
+ * design element identified only by its prose gives it nothing stable to name:
+ * two Plan runs against the same design cited `POST /loans` and
+ * `interface: POST /loans`, because there was no canonical form to use. Worse,
+ * neither is id-shaped, so the trace index treats both as prose and cannot
+ * report a citation of a component that does not exist — leaving ART-2's
+ * requirement ↔ design ↔ plan chain enforced only at its ends.
  */
 export const designSchema = z
   .object({
@@ -215,6 +242,7 @@ export const designSchema = z
     components: z
       .array(
         z.object({
+          id: elementId('C'),
           name: z.string().min(1),
           responsibility: z.string().min(1),
           tracesTo: z.array(z.string().min(1)).min(1),
@@ -224,6 +252,7 @@ export const designSchema = z
     interfaces: z
       .array(
         z.object({
+          id: elementId('I'),
           name: z.string().min(1),
           kind: z.enum(['api', 'schema', 'event']),
           contract: z.string().min(1),
@@ -234,6 +263,7 @@ export const designSchema = z
     dataModel: z
       .array(
         z.object({
+          id: elementId('D'),
           entity: z.string().min(1),
           fields: z.array(z.string().min(1)).min(1),
           notes: z.string(),
@@ -243,6 +273,7 @@ export const designSchema = z
     technologies: z
       .array(
         z.object({
+          id: elementId('T'),
           choice: z.string().min(1),
           why: z.string().min(1),
           tracesTo: z.array(z.string().min(1)).min(1),
@@ -252,6 +283,7 @@ export const designSchema = z
     crossCutting: z
       .array(
         z.object({
+          id: elementId('X'),
           concern,
           approach: z.string().min(1),
           tracesTo: z.array(z.string().min(1)).min(1),
@@ -267,10 +299,35 @@ export const designSchema = z
       ),
     `the design must address every cross-cutting concern DSG-2 names: ${requiredConcerns.join(', ')}`,
   )
-  .refine(
-    (design) => new Set(design.adrs.map((adr) => adr.id)).size === design.adrs.length,
-    'ADR ids must be unique',
-  );
+  .refine((design) => {
+    const ids = designElementIds(design);
+    return new Set(ids).size === ids.length;
+  }, 'design element ids must be unique across the whole design');
+
+/**
+ * Every id the design declares, in the order they appear.
+ *
+ * Downstream artifacts cite these, so they are the design's public surface
+ * (ART-2). Exported because the Plan phase and the trace index both need the
+ * same list and neither should re-derive which fields count.
+ */
+export function designElementIds(design: {
+  components: readonly { id: string }[];
+  interfaces: readonly { id: string }[];
+  dataModel: readonly { id: string }[];
+  technologies: readonly { id: string }[];
+  crossCutting: readonly { id: string }[];
+  adrs: readonly { id: string }[];
+}): string[] {
+  return [
+    ...design.components.map((entry) => entry.id),
+    ...design.interfaces.map((entry) => entry.id),
+    ...design.dataModel.map((entry) => entry.id),
+    ...design.technologies.map((entry) => entry.id),
+    ...design.crossCutting.map((entry) => entry.id),
+    ...design.adrs.map((entry) => entry.id),
+  ];
+}
 
 /**
  * Prior-art survey (DEF-3).

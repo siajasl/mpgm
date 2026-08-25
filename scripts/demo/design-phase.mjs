@@ -269,6 +269,21 @@ try {
       ? `${String(traced.length)} traces`
       : `invented: ${invented.join(', ')}`,
   );
+  const elementIds = [
+    ...(design.components ?? []),
+    ...(design.interfaces ?? []),
+    ...(design.dataModel ?? []),
+    ...(design.technologies ?? []),
+    ...(design.crossCutting ?? []),
+    ...(design.adrs ?? []),
+  ].map((element) => element.id);
+  check(
+    'every element carries an id the Plan can cite (ART-2)',
+    elementIds.length > 0 &&
+      elementIds.every((id) => typeof id === 'string' && id !== '') &&
+      new Set(elementIds).size === elementIds.length,
+    `${String(elementIds.length)} element(s): ${elementIds.join(', ')}`,
+  );
   check(
     'the design addresses every cross-cutting concern DSG-2 names',
     ['authn', 'authz', 'observability', 'failure-modes'].every((needed) =>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   designCandidateSchema,
   designCandidatesSchema,
+  designElementIds,
   designSchema,
   designVerdictSchema,
   planSchema,
@@ -131,6 +132,7 @@ const design = {
   summary: 'The single-process ledger, as chosen by the panel.',
   components: [
     {
+      id: 'C-1',
       name: 'loan-service',
       responsibility: 'Records loans and returns.',
       tracesTo: ['FUN-1'],
@@ -138,6 +140,7 @@ const design = {
   ],
   interfaces: [
     {
+      id: 'I-1',
       name: 'POST /loans',
       kind: 'api' as const,
       contract: 'Accepts a member id and a book id; returns the loan record.',
@@ -145,28 +148,42 @@ const design = {
     },
   ],
   dataModel: [
-    { entity: 'Loan', fields: ['id', 'memberId', 'bookId', 'dueAt'], notes: '' },
+    {
+      id: 'D-1',
+      entity: 'Loan',
+      fields: ['id', 'memberId', 'bookId', 'dueAt'],
+      notes: '',
+    },
   ],
   technologies: [
     {
+      id: 'T-1',
       choice: 'SQLite',
       why: 'No service to operate on the intranet box.',
       tracesTo: ['NFR-1'],
     },
   ],
   crossCutting: [
-    { concern: 'authn' as const, approach: 'School directory SSO.', tracesTo: ['FUN-1'] },
     {
+      id: 'X-1',
+      concern: 'authn' as const,
+      approach: 'School directory SSO.',
+      tracesTo: ['FUN-1'],
+    },
+    {
+      id: 'X-2',
       concern: 'authz' as const,
       approach: 'Librarian and member roles.',
       tracesTo: ['FUN-1'],
     },
     {
+      id: 'X-3',
       concern: 'observability' as const,
       approach: 'Structured logs on disk.',
       tracesTo: ['NFR-1'],
     },
     {
+      id: 'X-4',
       concern: 'failure-modes' as const,
       approach: 'Write-ahead log; restart replays it.',
       tracesTo: ['NFR-1'],
@@ -241,6 +258,55 @@ describe('the design schemas (DSG-1, DSG-2, DSG-4)', () => {
     };
 
     expect(designSchema.safeParse(goldPlated).success).toBe(false);
+  });
+
+  it('makes a design element with no id unrepresentable (ART-2)', () => {
+    // The Plan cites these to say what it implements. An element with no id
+    // has nothing stable to be cited by, and two Plan runs against the same
+    // design invented two different ways to name it.
+    const anonymous = {
+      ...design,
+      components: design.components.map(({ id: _dropped, ...rest }) => rest),
+    };
+
+    expect(designSchema.safeParse(anonymous).success).toBe(false);
+  });
+
+  it('refuses an id shaped so the trace index would read it as prose', () => {
+    const prose = {
+      ...design,
+      components: [{ ...design.components[0], id: 'loan-service' }],
+    };
+
+    expect(designSchema.safeParse(prose).success).toBe(false);
+  });
+
+  it('refuses the same id on two elements', () => {
+    // Two components rather than a component and an interface: a clash across
+    // kinds is already refused by the prefix, so testing it there would pass
+    // without the uniqueness rule ever running (CONV-6).
+    const clashing = {
+      ...design,
+      components: [design.components[0], { ...design.components[0], name: 'other' }],
+    };
+    const result = designSchema.safeParse(clashing);
+
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain('unique');
+  });
+
+  it('lists every id the design declares, for downstream artifacts to cite', () => {
+    expect(designElementIds(design)).toStrictEqual([
+      'C-1',
+      'I-1',
+      'D-1',
+      'T-1',
+      'X-1',
+      'X-2',
+      'X-3',
+      'X-4',
+      'ADR-1',
+    ]);
   });
 
   it('requires every cross-cutting concern DSG-2 names', () => {

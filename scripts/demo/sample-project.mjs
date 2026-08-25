@@ -155,16 +155,19 @@ export const DESIGN = {
     'authenticated one, which ADR-3 records as a knowing trade-off.',
   components: [
     {
+      id: 'C-1',
       name: 'loan-service',
       responsibility: 'Records loans and returns; owns the loan ledger.',
       tracesTo: ['LOAN-1', 'LOAN-2', 'NFR-1'],
     },
     {
+      id: 'C-2',
       name: 'member-view',
       responsibility: 'Renders a member their open loans and due dates.',
       tracesTo: ['LOAN-3', 'LOAN-4', 'LOAN-6'],
     },
     {
+      id: 'C-3',
       name: 'directory-reader',
       responsibility: 'Resolves member identity against the school directory.',
       tracesTo: ['LOAN-5'],
@@ -172,18 +175,21 @@ export const DESIGN = {
   ],
   interfaces: [
     {
+      id: 'I-1',
       name: 'POST /loans',
       kind: 'api',
       contract: 'memberId + bookId -> loan record with dueAt; 404 on unknown member.',
       tracesTo: ['LOAN-1', 'LOAN-5'],
     },
     {
+      id: 'I-2',
       name: 'POST /loans/{id}/return',
       kind: 'api',
       contract: 'Marks a loan returned; idempotent on an already-returned loan.',
       tracesTo: ['LOAN-2'],
     },
     {
+      id: 'I-3',
       name: 'GET /members/{id}/loans',
       kind: 'api',
       contract: 'Open loans with due dates and an overdue flag.',
@@ -192,11 +198,13 @@ export const DESIGN = {
   ],
   dataModel: [
     {
+      id: 'D-1',
       entity: 'Loan',
       fields: ['id', 'memberId', 'bookId', 'lentAt', 'dueAt', 'returnedAt'],
       notes: 'Append-only writes; a return sets returnedAt rather than deleting.',
     },
     {
+      id: 'D-2',
       entity: 'Member',
       fields: ['id', 'displayName'],
       notes: 'Projected from the school directory; never written here (LOAN-5).',
@@ -204,11 +212,13 @@ export const DESIGN = {
   ],
   technologies: [
     {
+      id: 'T-1',
       choice: 'SQLite in WAL mode',
       why: 'No service to operate on a single unattended intranet machine.',
       tracesTo: ['NFR-1', 'NFR-3'],
     },
     {
+      id: 'T-2',
       choice: 'Server-rendered HTML',
       why: 'Keeps the member view usable on old shared classroom machines.',
       tracesTo: ['LOAN-3', 'NFR-3'],
@@ -216,6 +226,7 @@ export const DESIGN = {
   ],
   crossCutting: [
     {
+      id: 'X-1',
       concern: 'authn',
       approach:
         'Librarian actions require directory sign-in; the member view is ' +
@@ -223,16 +234,19 @@ export const DESIGN = {
       tracesTo: ['LOAN-5', 'LOAN-6'],
     },
     {
+      id: 'X-2',
       concern: 'authz',
       approach: 'Only librarian sessions may write; every other route is read-only.',
       tracesTo: ['LOAN-1', 'LOAN-2'],
     },
     {
+      id: 'X-3',
       concern: 'observability',
       approach: 'Structured request log on disk plus a daily ledger-integrity check.',
       tracesTo: ['NFR-1', 'NFR-2'],
     },
     {
+      id: 'X-4',
       concern: 'failure-modes',
       approach:
         'WAL replay on restart; a failed write is surfaced at the desk rather ' +
