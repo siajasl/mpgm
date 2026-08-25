@@ -54,6 +54,18 @@ const ANSWERS = [
   'Assume member records already exist in the school directory.',
 ];
 
+/**
+ * What the scripted operator says once the script is spent.
+ *
+ * How many questions the analyst asks is its own decision, so the fixture
+ * cannot know how many answers to hold. A real operator who is asked
+ * something the brief does not cover says they do not know, and the dialogue
+ * records it as an open assumption (DEF-1) — which is a better sample of the
+ * phase than a run that only ever asks what somebody pre-answered.
+ */
+const WHEN_ASKED_SOMETHING_ELSE =
+  'Unknown — record it as an open assumption rather than asking again.';
+
 const workspace = mkdtempSync(join(tmpdir(), 'mpgm-m13-'));
 
 try {
@@ -69,7 +81,7 @@ try {
   execFileSync('git', ['commit', '--quiet', '-m', 'Sample project'], { cwd: workspace });
 
   const lines = [];
-  const io = new ScriptedIo(ANSWERS);
+  const io = new ScriptedIo(ANSWERS, { whenExhausted: WHEN_ASKED_SOMETHING_ELSE });
   const context = {
     root: workspace,
     provider: new ClaudeAgentProvider(),
@@ -105,9 +117,15 @@ try {
     process.stdout.write(`${chat.output}\n`);
   }
   for (const asked of io.asked) {
-    process.stdout.write(`  Q: ${asked.question}\n`);
+    const unscripted = io.unscripted.includes(asked.question) ? ' [unscripted]' : '';
+    process.stdout.write(`  Q:${unscripted} ${asked.question}\n`);
   }
   check('elicitation produced an artifact', chat.result.ok, chat.output);
+  check(
+    'the dialogue was driven by the scripted project, not by the fallback',
+    io.asked.length > io.unscripted.length,
+    `${String(io.asked.length - io.unscripted.length)} of ${String(io.asked.length)} question(s) answered from the script`,
+  );
 
   process.stdout.write('\n2. Definition phase\n');
   const ran = await call(['run', 'definition', '--run', 'r1']);
