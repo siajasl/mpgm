@@ -151,13 +151,17 @@ try {
     plan.phases.length > 0 && milestones.length > 0 && tasks.length > 0,
     `${String(plan.phases.length)} phases, ${String(milestones.length)} milestones, ${String(tasks.length)} tasks`,
   );
+  // `every` over an empty list is true, so each of these says "and there was
+  // something to check" — otherwise a phase that produced no plan reports them
+  // as passing, which is a check that cannot fail (CONV-6).
   check(
     'every task declares how to tell it is finished (PLN-1)',
-    tasks.every((task) => task.completionCriteria.length > 0),
+    tasks.length > 0 && tasks.every((task) => task.completionCriteria.length > 0),
   );
   check(
     'every milestone says what must demonstrably work (PLN-3)',
-    milestones.every((milestone) => milestone.verification.trim() !== ''),
+    milestones.length > 0 &&
+      milestones.every((milestone) => milestone.verification.trim() !== ''),
   );
 
   process.stdout.write('\n3. Risk ordering (PLN-2)\n');
@@ -199,7 +203,7 @@ try {
   // must name something the seeded artifacts declare, id-shaped or not.
   check(
     'no task traces to anything nobody declared',
-    invented.length === 0,
+    cited.length > 0 && invented.length === 0,
     invented.length === 0
       ? `${String(cited.length)} distinct citation(s), all declared`
       : `invented: ${invented.join(', ')}`,
