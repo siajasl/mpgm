@@ -152,13 +152,17 @@ try {
     candidates.length >= 2,
     `${String(candidates.length)} candidates`,
   );
+  // `every` over an empty list is true, so each of these says "and there was
+  // something to check". Without that a phase that produced no candidates at
+  // all reports these as passing, which is a check that cannot fail (CONV-6).
   check(
     'they are genuinely different, not one idea described three times',
-    new Set(candidates.map((entry) => entry.stance)).size === candidates.length,
+    candidates.length > 0 &&
+      new Set(candidates.map((entry) => entry.stance)).size === candidates.length,
   );
   check(
     'every candidate states what it costs, not only what it buys',
-    candidates.every((entry) => entry.tradeOffs.length > 0),
+    candidates.length > 0 && candidates.every((entry) => entry.tradeOffs.length > 0),
   );
 
   process.stdout.write('\n3. The panel (ORC-4)\n');
@@ -194,7 +198,7 @@ try {
   );
   check(
     'the tally cost no model call',
-    !dispatched.includes('select-candidate-tally'),
+    tallies.length > 0 && !dispatched.includes('select-candidate-tally'),
     'a tally is arithmetic; a dispatched task would mean an agent counted the votes',
   );
   check(
@@ -264,7 +268,7 @@ try {
 
   check(
     'every design element traces to a requirement that exists (DSG-4)',
-    invented.length === 0,
+    traced.length > 0 && invented.length === 0,
     invented.length === 0
       ? `${String(traced.length)} traces`
       : `invented: ${invented.join(', ')}`,
@@ -350,9 +354,13 @@ try {
     dispatched.includes('record-conventions'),
     'CTX-4: the knowledge base has to stay current as decisions land',
   );
+  // The one place an empty set is genuinely a pass: the curator returning no
+  // updates is a legitimate answer, so this is conditioned on the task having
+  // run rather than on there being writes.
   check(
     'every knowledge-base write is attributable (CTX-4)',
-    kbWrites.every((event) => event.payload.taskId === 'record-conventions'),
+    dispatched.includes('record-conventions') &&
+      kbWrites.every((event) => event.payload.taskId === 'record-conventions'),
     kbWrites.map((event) => `${event.payload.path}: ${event.payload.title}`).join('; ') ||
       'the curator returned no updates, which is a legitimate answer',
   );
