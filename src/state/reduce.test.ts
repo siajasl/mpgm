@@ -44,6 +44,17 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        // A different task: an attestation cannot land on one the run ran.
+        type: 'TaskAttested',
+        payload: {
+          taskId: 'T0',
+          by: 'operator',
+          evidence: 'merged as abc1234',
+          note: 'built before the harness could run it',
+        },
+      },
+      {
+        runId: RUN,
         type: 'SessionUsage',
         payload: { taskId: 'T1', inputTokens: 1, outputTokens: 1, costUsd: 0.01 },
       },
@@ -210,6 +221,54 @@ describe('reduce', () => {
 
     expect([...covered].sort()).toStrictEqual([...catalogued].sort());
     expect(() => fold(logWith(everyEvent))).not.toThrow();
+  });
+
+  it('records an attested task as done without a session behind it', () => {
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskAttested',
+          payload: {
+            taskId: 'T3.1.1',
+            by: 'macg',
+            evidence: 'merged as 48a885f',
+            note: 'bootstrap',
+          },
+        },
+      ]),
+    );
+
+    const task = state.runs[RUN]?.tasks['T3.1.1'];
+    expect(task?.status).toBe('attested');
+    // Distinguishable from a task the harness ran: nothing executed it, so it
+    // claims no role, no model and no spend.
+    expect(task?.role).toBe('');
+    expect(task?.usage.costUsd).toBe(0);
+  });
+
+  it('refuses to attest a task the run already ran', () => {
+    // Otherwise a blocked run could be reported as done by asserting it.
+    const attest = {
+      runId: RUN,
+      type: 'TaskAttested',
+      payload: { taskId: 'T1', by: 'macg', evidence: 'trust me', note: '' },
+    };
+
+    expect(() =>
+      fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'TaskDispatched',
+            payload: { taskId: 'T1', role: 'implementer', model: 'claude-opus-5' },
+          },
+          attest,
+        ]),
+      ),
+    ).toThrow(/already ran it/);
   });
 
   it('throws on an event type it does not handle', () => {

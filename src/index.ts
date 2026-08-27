@@ -300,6 +300,7 @@ export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
 export type { CliContext, CommandResult } from './cli/commands.js';
 export {
   approve,
+  attest,
   confirm,
   chat,
   intervene,

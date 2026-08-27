@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  ArtifactStore,
   EventLog,
   fingerprint,
   kernelRegistry,
@@ -25,6 +26,46 @@ import {
 } from '../../dist/index.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * A minimal plan for the attest checks: one phase, one milestone, one task.
+ * Small on purpose — what is being demonstrated is that an attestation is a
+ * claim about a task some gated plan declares, not the plan itself.
+ */
+const SAMPLE_PLAN = {
+  summary: 'A one-task plan, so an attestation has something to be about.',
+  risks: [
+    {
+      id: 'R9',
+      assumption: 'A one-task plan is enough to demonstrate an attestation.',
+      validatedBy: ['M9.1'],
+    },
+  ],
+  phases: [
+    {
+      id: 'P9',
+      title: 'Sample',
+      intent: 'Stand in for a real plan.',
+      milestones: [
+        {
+          id: 'M9.1',
+          title: 'Sample milestone',
+          verification: 'The sample task is done.',
+          validatesRisk: 'R9',
+          tasks: [
+            {
+              id: 'T9.1.1',
+              title: 'Sample task',
+              completionCriteria: ['It is done.'],
+              dependsOn: [],
+              tracesTo: ['ORC-1'],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
 
 const failures = [];
 const exercised = new Set();
@@ -457,6 +498,131 @@ try {
     'implement refuses without a gated Plan artifact',
     !noPlan.result.ok && noPlan.output.includes('could not read the gated Plan'),
     noPlan.output.split('\n')[0] ?? '',
+  );
+
+  // attest — record work the harness never ran (the bootstrap)
+  const noPlanAttest = await call([
+    'attest',
+    'T1.1.1',
+    '--by',
+    'macg',
+    '--evidence',
+    'merged as abc1234',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'attest refuses without a gated Plan artifact',
+    !noPlanAttest.result.ok &&
+      noPlanAttest.output.includes('could not read the gated Plan'),
+    noPlanAttest.output.split('\n')[0] ?? '',
+  );
+
+  // Now with one. An attestation is a claim about a task the plan declares,
+  // so there has to be a plan for it to be a claim about.
+  new ArtifactStore({ root: workspace, schemas: projectArtifactSchemas() }).write({
+    id: 'sample-plan',
+    basePath: 'artifacts/plan/plan.md',
+    schema: 'plan',
+    data: SAMPLE_PLAN,
+    producedBy: {
+      task: 'seeded',
+      role: 'operator',
+      model: '(hand-authored)',
+      runId: 'r1',
+    },
+  });
+
+  // What the attestation is *for*: the scheduler gates each milestone behind
+  // the previous one's tasks, so unrecorded bootstrap work leaves the plan
+  // offering to build what already exists. Bracketing the attestation is the
+  // only way to show it moved the scheduler rather than just the log.
+  const beforeAttesting = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/sample',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'the sample task is dispatchable before it is attested',
+    beforeAttesting.output.includes('Ready now: T9.1.1'),
+    beforeAttesting.output.split('\n')[0] ?? '',
+  );
+
+  const invented = await call([
+    'attest',
+    'T9.9.9',
+    '--by',
+    'macg',
+    '--evidence',
+    'merged as abc1234',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'attest refuses a task the plan does not declare',
+    !invented.result.ok && invented.output.includes('no task'),
+    invented.output.split('\n')[0] ?? '',
+  );
+
+  const attested = await call([
+    'attest',
+    'T9.1.1',
+    '--by',
+    'macg',
+    '--evidence',
+    'merged as abc1234',
+    '--note',
+    'built before the harness could run it',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'attest records work done outside the harness',
+    attested.result.ok,
+    attested.output,
+  );
+
+  const withAttested = await call(['status', '--run', 'r1']);
+  check(
+    'status reports it as attested, not as a task the harness ran',
+    withAttested.output.includes('attested outside the harness: 1 — T9.1.1'),
+    withAttested.output.split('\n').find((line) => line.includes('attested')) ??
+      '(no such line)',
+  );
+
+  const afterAttesting = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/sample',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'and is not dispatchable after, because attested work counts as done',
+    afterAttesting.output.includes('Ready now: (none)'),
+    afterAttesting.output.split('\n')[0] ?? '',
+  );
+
+  // The claim cannot be made twice, and cannot cover a task this run ran:
+  // otherwise a blocked task could be reported as done by asserting it.
+  const twice = await call([
+    'attest',
+    'T9.1.1',
+    '--by',
+    'macg',
+    '--evidence',
+    'merged as abc1234',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'attest refuses a task this run already has',
+    !twice.result.ok && twice.output.includes('already ran it'),
+    twice.output.split('\n')[0] ?? '',
   );
 
   // kill — terminal, and resume does not undo it
