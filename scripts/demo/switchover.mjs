@@ -153,6 +153,20 @@ let secondRef;
 const checks = (ref) =>
   Promise.resolve(mergeVerdict({ ref, runs: ref === firstRef ? RED : GREEN }));
 
+// Every branch the loop asks about, and how many times it asked. A repository
+// whose CI runs on pull requests reports nothing at all for a bare pushed
+// branch, so opening the PR is what makes the checks the loop waits for exist.
+const pullRequests = [];
+const openPullRequest = ({ branch, into, task: planTask }) => {
+  const existing = pullRequests.find((entry) => entry.branch === branch);
+  if (existing !== undefined) {
+    return Promise.resolve(existing.number);
+  }
+  const opened = { branch, into, task: planTask.id, number: 100 + pullRequests.length };
+  pullRequests.push(opened);
+  return Promise.resolve(opened.number);
+};
+
 const provider = new ScriptedProvider([
   // The first attempt.
   scriptedSuccess({
@@ -213,6 +227,7 @@ const result = await implementTask({
   kb: loadKnowledgeBase(join(projectRoot, 'kb')),
   policy: DEFAULT_EGRESS_POLICY,
   checks,
+  openPullRequest,
 });
 
 check(
@@ -229,6 +244,20 @@ check(
   'the review was by a role other than the author',
   result.review?.reviewerRole === 'code-reviewer',
   result.review?.summary ?? '',
+);
+check(
+  'a pull request was opened for the task, targeting the trunk',
+  pullRequests.length === 1 &&
+    pullRequests[0]?.branch === `mpgm/${task.id}` &&
+    pullRequests[0]?.into === 'main',
+  pullRequests.length === 0
+    ? 'none was opened'
+    : `#${String(pullRequests[0]?.number)} ${String(pullRequests[0]?.branch)} -> ${String(pullRequests[0]?.into)}`,
+);
+check(
+  'and only one, though the repair pushed the branch a second time',
+  result.pullRequest === pullRequests[0]?.number,
+  `result reports #${String(result.pullRequest)}`,
 );
 
 process.stdout.write('\n4. The trunk and the log say what happened\n');

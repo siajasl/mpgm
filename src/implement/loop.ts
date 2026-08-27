@@ -52,6 +52,19 @@ export interface ImplementOptions {
    * credential the broker holds rather than whatever the shell has.
    */
   readonly publish?: (branch: string, ref: string) => Promise<void>;
+  /**
+   * Open the task's pull request, or find the one already open for its branch.
+   *
+   * CI is usually configured for the trunk and for pull requests targeting it,
+   * so a pushed branch nothing has opened a PR for is a branch no workflow
+   * watches — and the loop then waits for checks that will never run. Opening
+   * the PR is also what puts the task's journey on the board (PMG-2), which is
+   * the visible half of what the Implement milestone asks for.
+   *
+   * Must be idempotent: a task re-run after an interruption has to find its
+   * existing pull request rather than open a second one for the same branch.
+   */
+  readonly openPullRequest?: (request: PullRequestRequest) => Promise<number>;
   /** Settled merge verdict for a ref — see `awaitChecks`. */
   readonly checks: (ref: string) => Promise<MergeVerdict>;
   readonly logsFor?: (check: string, ref: string) => Promise<string>;
@@ -61,6 +74,12 @@ export interface ImplementOptions {
   readonly into?: string;
   /** Remove the worktree once the change has merged. Off while debugging. */
   readonly cleanUp?: boolean;
+}
+
+export interface PullRequestRequest {
+  readonly branch: string;
+  readonly into: string;
+  readonly task: ImplementTask;
 }
 
 export type ImplementStatus = 'merged' | 'blocked';
@@ -74,6 +93,8 @@ export interface ImplementResult {
   readonly commit?: string;
   readonly review?: ReviewRecord;
   readonly repair?: RepairReport;
+  /** The pull request the change was published on, when one was opened. */
+  readonly pullRequest?: number;
   /** Why it stopped, when it did not merge. */
   readonly reason?: string;
 }
@@ -189,6 +210,29 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
 
   await options.publish?.(worktree.branch, change.data.ref);
 
+  // The pull request comes before the wait for checks, not after the merge: on
+  // a repository whose CI runs on pull requests, it is the thing that causes
+  // the checks to exist at all.
+  let pullRequest: number | undefined;
+  if (options.openPullRequest !== undefined) {
+    try {
+      pullRequest = await options.openPullRequest({
+        branch: worktree.branch,
+        into,
+        task,
+      });
+    } catch (cause) {
+      // Blocked rather than pressed on with. Continuing would wait out the
+      // checks grace period and report "no checks" — true, but it would hide
+      // the reason, which is right here.
+      return stop(
+        `could not open a pull request for ${worktree.branch}: ` +
+          (cause instanceof Error ? cause.message : String(cause)),
+        { ref: change.data.ref },
+      );
+    }
+  }
+
   // CI before review, and repair before review: an agent asked to read a
   // change that does not build is spending an expensive session on something
   // the build already said (IMP-2).
@@ -228,7 +272,11 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   });
 
   if (repair.status !== 'green') {
-    return stop(`CI did not go green: ${repair.reason}`, { ref: repair.ref, repair });
+    return stop(`CI did not go green: ${repair.reason}`, {
+      ref: repair.ref,
+      repair,
+      ...(pullRequest === undefined ? {} : { pullRequest }),
+    });
   }
 
   const reviewed = await options.sessions.runTask({
@@ -319,6 +367,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     worktree: worktree.path,
     ref: repair.ref,
     ...(merged.commit === undefined ? {} : { commit: merged.commit }),
+    ...(pullRequest === undefined ? {} : { pullRequest }),
     review,
     repair,
   };

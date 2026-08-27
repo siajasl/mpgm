@@ -14,7 +14,11 @@ import {
   REQUIRED_CHECK_KINDS,
   type CheckRun,
 } from './checks.js';
-import { fetchCheckRuns, githubChecksProvider } from './github-checks.js';
+import {
+  fetchCheckRuns,
+  githubChecksProvider,
+  openPullRequest,
+} from './github-checks.js';
 
 function run(name: string, conclusion: CheckRun['conclusion'] = 'success'): CheckRun {
   return { name, status: 'completed', conclusion, url: '' };
@@ -225,6 +229,61 @@ describe('github check runs', () => {
 
     expect(runs[0]?.conclusion).toBe('failure');
     expect(mergeVerdict({ ref: 'abc', runs }).mergeable).toBe(false);
+  });
+});
+
+describe('opening a task pull request', () => {
+  const request = { branch: 'mpgm/T1', into: 'main', title: 'T1', body: 'why' };
+
+  it('returns the pull request already open for the branch', async () => {
+    // A task re-run after an interruption must find its own PR. A second one
+    // for the same branch would split the task's checks and its review across
+    // two places, and the merge gate reads one of them.
+    const calls: string[][] = [];
+
+    const number = await openPullRequest('o/r', request, {
+      api: (args) => {
+        calls.push([...args]);
+        return Promise.resolve(JSON.stringify([{ number: 42 }]));
+      },
+    });
+
+    expect(number).toBe(42);
+    // Looked, and did not create.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.includes('POST')).toBe(false);
+  });
+
+  it('opens one when the branch has none, sending the body over stdin', async () => {
+    const bodies: (string | undefined)[] = [];
+
+    const number = await openPullRequest('o/r', request, {
+      api: (args, stdin) => {
+        bodies.push(stdin);
+        return Promise.resolve(
+          args.includes('POST') ? JSON.stringify({ number: 7 }) : '[]',
+        );
+      },
+    });
+
+    expect(number).toBe(7);
+    // The look carries no body; the create carries it off the command line,
+    // because a process table is the wrong place for anything a task wrote.
+    expect(bodies[0]).toBeUndefined();
+    expect(JSON.parse(bodies[1] ?? '{}')).toMatchObject({
+      head: 'mpgm/T1',
+      base: 'main',
+      body: 'why',
+    });
+  });
+
+  it('refuses to report a pull request number it was never given', async () => {
+    await expect(
+      openPullRequest('o/r', request, {
+        api: (args) =>
+          Promise.resolve(args.includes('POST') ? '{"message":"nope"}' : '[]'),
+      }),
+    ).rejects.toThrow(/returned no number/);
   });
 });
 

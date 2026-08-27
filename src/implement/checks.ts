@@ -261,20 +261,45 @@ export interface AwaitChecksOptions {
   readonly poll: () => Promise<MergeVerdict>;
   readonly timeoutMs?: number;
   readonly intervalMs?: number;
+  /**
+   * How long to allow before deciding that nothing is going to report at all
+   * (see {@link DEFAULT_CHECKS_GRACE_MS}).
+   */
+  readonly graceMs?: number;
   /** Injectable so tests need no real time. */
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
 }
 
+/**
+ * Why a wait ended.
+ *
+ * `no-checks` is not `timed-out` with a shorter fuse. A ref with checks still
+ * running is a ref CI is working on; a ref that has reported nothing at all
+ * after the grace period is one CI was never asked about — a branch outside
+ * the workflow's triggers, a pull request never opened, a disabled workflow.
+ * Waiting the full timeout on that spends half an hour to learn something the
+ * first minute already knew, and reports it as if CI had been slow.
+ */
+export type ChecksOutcome = 'settled' | 'timed-out' | 'no-checks';
+
 export interface SettledChecks {
   readonly verdict: MergeVerdict;
-  /** False when the wait timed out with checks still running. */
+  /** False when the wait ended with no usable answer. */
   readonly settled: boolean;
   readonly polls: number;
+  readonly outcome: ChecksOutcome;
 }
 
 export const DEFAULT_CHECKS_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEFAULT_CHECKS_INTERVAL_MS = 15 * 1000;
+/**
+ * Long enough for a queued workflow to register a check run, short enough
+ * that a ref nothing watches is reported in minutes rather than in half an
+ * hour. GitHub creates check runs when a workflow starts, not when the push
+ * lands, so a busy runner queue is exactly what this grace is for.
+ */
+export const DEFAULT_CHECKS_GRACE_MS = 3 * 60 * 1000;
 
 export async function awaitChecks(options: AwaitChecksOptions): Promise<SettledChecks> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_CHECKS_TIMEOUT_MS;
@@ -287,7 +312,9 @@ export async function awaitChecks(options: AwaitChecksOptions): Promise<SettledC
         setTimeout(resolve, ms);
       }));
 
-  const deadline = now() + timeoutMs;
+  const started = now();
+  const deadline = started + timeoutMs;
+  const graceEnds = started + (options.graceMs ?? DEFAULT_CHECKS_GRACE_MS);
   let polls = 0;
   for (;;) {
     const verdict = await options.poll();
@@ -295,10 +322,15 @@ export async function awaitChecks(options: AwaitChecksOptions): Promise<SettledC
     const reported = verdict.kinds.some((kind) => kind.runs.length > 0);
     const stillRunning = verdict.kinds.some((kind) => kind.problem === 'pending');
     if (reported && !stillRunning) {
-      return { verdict, settled: true, polls };
+      return { verdict, settled: true, polls, outcome: 'settled' };
+    }
+    // Nothing has reported, and the grace period is over: CI is not slow, it
+    // was never asked. Said now rather than in twenty-seven minutes' time.
+    if (!reported && now() >= graceEnds) {
+      return { verdict, settled: false, polls, outcome: 'no-checks' };
     }
     if (now() >= deadline) {
-      return { verdict, settled: false, polls };
+      return { verdict, settled: false, polls, outcome: 'timed-out' };
     }
     await sleep(intervalMs);
   }

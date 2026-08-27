@@ -157,6 +157,63 @@ export async function fetchCheckRuns(
   return result.flatMap((page) => page.check_runs.map(toCheckRun));
 }
 
+const pullRequestSchema = z.object({ number: z.number().int().positive() });
+
+/**
+ * Open the pull request for a branch, or return the one already open for it.
+ *
+ * Idempotent by looking first: a task re-run after an interruption has to find
+ * its existing pull request, and a second PR for the same branch would split
+ * the task's checks and its review across two places.
+ *
+ * The body is written for whoever opens the PR rather than for the kernel —
+ * the plan task, what it must satisfy, and the fact that a reviewing agent and
+ * the merge gate stand between this branch and the trunk.
+ */
+export async function openPullRequest(
+  repo: string,
+  request: {
+    readonly branch: string;
+    readonly into: string;
+    readonly title: string;
+    readonly body: string;
+  },
+  options: GitHubChecksOptions = {},
+): Promise<number> {
+  const api = options.api ?? ghCli;
+  const owner = repo.split('/')[0] ?? '';
+  const existing = await api([
+    'api',
+    `repos/${repo}/pulls?head=${owner}:${request.branch}&base=${request.into}&state=open`,
+  ]);
+
+  const open = z.array(pullRequestSchema).safeParse(JSON.parse(existing));
+  const first = open.success ? open.data[0] : undefined;
+  if (first !== undefined) {
+    return first.number;
+  }
+
+  // The body goes over stdin, not the command line: a process table is the
+  // wrong place for anything a task wrote.
+  const created = await api(
+    ['api', '--method', 'POST', `repos/${repo}/pulls`, '--input', '-'],
+    JSON.stringify({
+      title: request.title,
+      body: request.body,
+      head: request.branch,
+      base: request.into,
+    }),
+  );
+
+  const parsed = pullRequestSchema.safeParse(JSON.parse(created));
+  if (!parsed.success) {
+    throw new GitHubChecksError(
+      `opening a pull request for ${request.branch} returned no number: ${created.slice(0, 200)}`,
+    );
+  }
+  return parsed.data.number;
+}
+
 /**
  * The Actions job behind a check run.
  *

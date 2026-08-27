@@ -21,7 +21,11 @@ import { PlaybookRegistry } from '../playbook/loader.js';
 import { RoleRegistry } from '../role/loader.js';
 import { assertRolesFrozen, loadRoleFreeze } from '../role/freeze.js';
 import { awaitChecks, mergeVerdict } from '../implement/checks.js';
-import { fetchCheckLog, fetchCheckRuns } from '../implement/github-checks.js';
+import {
+  fetchCheckLog,
+  fetchCheckRuns,
+  openPullRequest,
+} from '../implement/github-checks.js';
 import { implementTask } from '../implement/loop.js';
 import { WorktreeManager } from '../implement/worktree.js';
 import { ingestPlan, readyTasks } from '../plan/ingest.js';
@@ -333,10 +337,40 @@ export async function implement(
           }),
         );
       },
+      // The pull request is what makes the checks exist: a repository whose CI
+      // runs on `pull_request` sees nothing at all from a pushed branch, and
+      // the loop would then wait out its grace period for checks nobody asked
+      // for. It is also what puts the task on the board (PMG-2).
+      openPullRequest: async ({ branch, into, task: planTask }) =>
+        openPullRequest(repo, {
+          branch,
+          into,
+          title: `${planTask.id} — ${planTask.title}`,
+          body: [
+            `Implements ${planTask.id} (${planTask.milestone}).`,
+            '',
+            'Done when:',
+            ...planTask.completionCriteria.map((criterion) => `- ${criterion}`),
+            '',
+            `Advances: ${planTask.tracesTo.join(', ')}.`,
+            '',
+            'Opened by mpgm. An independent reviewing agent and the merge gate',
+            'stand between this branch and the trunk.',
+          ].join('\n'),
+        }),
       checks: async (ref) => {
         const settled = await awaitChecks({
           poll: async () => mergeVerdict({ ref, runs: await fetchCheckRuns(repo, ref) }),
         });
+        if (settled.outcome === 'no-checks') {
+          // Said plainly, because the cause is configuration rather than a red
+          // build: the ref is one no workflow watches. Without this an
+          // operator reads "checks did not report" as a flaky CI.
+          context.write(
+            `no CI check ever reported for ${ref}. Nothing is watching that ref — ` +
+              `check the workflow's triggers cover pull requests into the trunk.`,
+          );
+        }
         return settled.verdict;
       },
       logsFor: (check, ref) => fetchCheckLog(repo, ref, check),
@@ -347,12 +381,18 @@ export async function implement(
         `${result.taskId} merged as ${String(result.commit)} ` +
           `(reviewed by ${result.review?.reviewerRole ?? 'nobody'})`,
       );
+      if (result.pullRequest !== undefined) {
+        context.write(`Its pull request was #${String(result.pullRequest)}.`);
+      }
       return { ok: true, detail: 'merged' };
     }
 
     context.write(
       `${result.taskId} did not merge: ${result.reason ?? 'no reason given'}`,
     );
+    if (result.pullRequest !== undefined) {
+      context.write(`Its pull request is #${String(result.pullRequest)}.`);
+    }
     context.write(`Its worktree is left at ${result.worktree} on ${result.branch}.`);
     return { ok: false, detail: 'blocked' };
   } finally {
