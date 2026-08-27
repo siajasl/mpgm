@@ -372,6 +372,7 @@ export type {
   ImplementResult,
   ImplementStatus,
   ImplementTask,
+  PullRequestRequest,
 } from './implement/loop.js';
 export { implementTask } from './implement/loop.js';
 export type { ApplyReplanOptions, ReplanOutcome } from './plan/apply.js';
@@ -441,12 +442,18 @@ export {
   ghCli,
   GitHubChecksError,
   githubChecksProvider,
+  openPullRequest,
 } from './implement/github-checks.js';
 export type { ModelTier } from './agent/models.js';
 export { canEscalate, escalateModel, MODEL_TIERS, tierOf } from './agent/models.js';
-export type { AwaitChecksOptions, SettledChecks } from './implement/checks.js';
+export type {
+  AwaitChecksOptions,
+  ChecksOutcome,
+  SettledChecks,
+} from './implement/checks.js';
 export {
   awaitChecks,
+  DEFAULT_CHECKS_GRACE_MS,
   DEFAULT_CHECKS_INTERVAL_MS,
   DEFAULT_CHECKS_TIMEOUT_MS,
 } from './implement/checks.js';

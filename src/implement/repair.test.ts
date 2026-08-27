@@ -335,6 +335,61 @@ describe('awaitChecks', () => {
     expect(settled.verdict.mergeable).toBe(false);
   });
 
+  it('stops early when nothing is ever going to report', async () => {
+    // The T3.2.1 run: the branch was pushed, but the workflow only triggers on
+    // the trunk and on pull requests into it, so no check run existed for that
+    // ref at all. Waiting the full timeout spends half an hour to learn what
+    // the first minute knew.
+    let clock = 0;
+    let polls = 0;
+
+    const settled = await awaitChecks({
+      poll: () => {
+        polls += 1;
+        return Promise.resolve(verdictFor('c0', []));
+      },
+      intervalMs: 10,
+      graceMs: 25,
+      timeoutMs: 10_000,
+      now: () => clock,
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+    });
+
+    expect(settled.outcome).toBe('no-checks');
+    expect(settled.settled).toBe(false);
+    // Gave up on the grace period, nowhere near the timeout.
+    expect(clock).toBeLessThan(100);
+    expect(polls).toBeLessThan(10);
+  });
+
+  it('distinguishes a slow start from a ref nothing watches', async () => {
+    // A queued workflow has not reported a conclusion, but it has reported a
+    // run — so this waits, where the case above does not.
+    let clock = 0;
+
+    const settled = await awaitChecks({
+      poll: () =>
+        Promise.resolve(
+          verdictFor('c0', [
+            { name: 'build', status: 'queued', conclusion: null, url: '' },
+          ]),
+        ),
+      intervalMs: 10,
+      graceMs: 5,
+      timeoutMs: 40,
+      now: () => clock,
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+    });
+
+    expect(settled.outcome).toBe('timed-out');
+  });
+
   it('does not mistake an empty report for a clean one', async () => {
     // Right after a push CI has created nothing yet; that is not "no failures".
     let polls = 0;
