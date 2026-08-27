@@ -234,23 +234,19 @@ export class SessionRunner {
 
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
       // Never dispatch a session that has nothing left to spend. A retry with
-      // maxTurns 0 cannot succeed and would report max_turns as though the
-      // agent had misbehaved.
+      // no budget cannot succeed and would report a breach as though the agent
+      // had misbehaved.
       const exhausted = ledger.breach();
-      if (
-        exhausted !== null ||
-        ledger.remainingSteps < 1 ||
-        ledger.remainingCostUsd <= 0
-      ) {
-        const kind = exhausted?.kind ?? (ledger.remainingSteps < 1 ? 'steps' : 'cost');
+      if (exhausted !== null || ledger.remainingCostUsd <= 0) {
+        const kind = exhausted?.kind ?? 'cost';
         this.#log.append({
           runId,
           type: 'BudgetExceeded',
           payload: {
             taskId,
             kind,
-            limit: exhausted?.limit ?? role.budgets.steps,
-            observed: exhausted?.observed ?? role.budgets.steps,
+            limit: exhausted?.limit ?? role.budgets.costUsd,
+            observed: exhausted?.observed ?? role.budgets.costUsd,
           },
         });
         return {
@@ -268,8 +264,14 @@ export class SessionRunner {
         // information needed to do better than repeat itself (AGT-3).
         prompt: this.#promptFor(request.prompt, lastIssues),
         allowedTools: role.tools.allow,
-        // What is left of the task's budget, not the whole of it.
-        maxTurns: ledger.remainingSteps,
+        // Steps bound the session; cost bounds the task. Each attempt gets the
+        // role's whole step allowance because the SDK enforces `maxTurns`
+        // natively and per session, and because the turn count a result
+        // reports is not in the units `maxTurns` sets — a remainder computed
+        // from the two would be a number the kernel could not defend. What
+        // stops a task retrying indefinitely is the cost left, which is
+        // measured in the units it is capped in.
+        maxTurns: role.budgets.steps,
         maxBudgetUsd: ledger.remainingCostUsd,
         outputJsonSchema,
         // The session resolves relative paths against the same root the policy
@@ -293,7 +295,7 @@ export class SessionRunner {
         (signal) => this.#provider.run({ ...sessionRequest, signal }),
         ledger.remainingSeconds,
       );
-      ledger.record(result.usage, result.turns);
+      ledger.record(result.usage);
       this.#recordSession(runId, taskId, role, result, gatedTools);
 
       // A session the CLI abandoned for repeatedly failing its schema is a
@@ -445,7 +447,15 @@ export class SessionRunner {
     }
 
     // Record the limit that was actually in force, not a placeholder: this
-    // event is the audit trail for why a task stopped.
+    // event is the audit trail for why a task stopped. Every session now runs
+    // under the role's own step bound, so that is the number to report — it
+    // used to be dispatched with whatever the ledger had left, and the event
+    // named a limit that was not the one the session hit.
+    //
+    // `observed` is the turn count the SDK reports, which does not count the
+    // same thing the bound sets, so it can exceed the limit without the bound
+    // having failed. It is recorded for what it is worth to whoever sizes the
+    // budget, not as a measurement against the limit beside it.
     if (result.termination === 'budget_exceeded') {
       this.#log.append({
         runId,

@@ -61,36 +61,40 @@ function harness(provider: AgentSessionProvider, now?: () => number) {
 describe('BudgetLedger', () => {
   it('reports no breach while under every bound', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 100, outputTokens: 100, costUsd: 0.5 }, 3);
+    ledger.record({ inputTokens: 100, outputTokens: 100, costUsd: 0.5 });
 
     expect(ledger.breach()).toBeNull();
     expect(ledger.remainingCostUsd).toBeCloseTo(0.5);
-    expect(ledger.remainingSteps).toBe(7);
   });
 
   it('accumulates across sessions, because retries share one task budget', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 }, 1);
+    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 });
     expect(ledger.breach()).toBeNull();
 
     // Neither session alone exceeds $1; together they do.
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 }, 1);
+    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 });
 
     expect(ledger.breach()).toMatchObject({ kind: 'cost', limit: 1 });
   });
 
   it('detects a token breach', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 600, outputTokens: 600, costUsd: 0 }, 1);
+    ledger.record({ inputTokens: 600, outputTokens: 600, costUsd: 0 });
 
     expect(ledger.breach()).toMatchObject({ kind: 'tokens', observed: 1200 });
   });
 
-  it('detects a step breach', () => {
-    const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0 }, 11);
+  it('does not account steps, because it cannot measure them in the units it caps', () => {
+    // The SDK's `maxTurns` and the `num_turns` a result reports count
+    // different things, so a running total of the second is not spend against
+    // the first. Steps are bounded per session by the SDK instead; what the
+    // ledger raises is what it can measure.
+    const ledger = new BudgetLedger({ ...budget, steps: 1 }, () => 0);
+    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
 
-    expect(ledger.breach()).toMatchObject({ kind: 'steps', limit: 10 });
+    expect(ledger.breach()).toBeNull();
   });
 
   it('detects a wall-clock breach from the injected clock', () => {
@@ -103,10 +107,9 @@ describe('BudgetLedger', () => {
 
   it('never reports negative remaining budget', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 5 }, 99);
+    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 5 });
 
     expect(ledger.remainingCostUsd).toBe(0);
-    expect(ledger.remainingSteps).toBe(0);
   });
 });
 
@@ -183,6 +186,50 @@ describe('budget enforcement in the runner', () => {
     }
   }, 10_000);
 
+  it('retries a session that spent its whole step allowance (AGT-3, AGT-4)', async () => {
+    // Steps bound a session, not a task. They used to bound the task, which
+    // made the retry count fiction: a first attempt that used its allowance
+    // left nothing for a second, so any role whose sessions actually work to
+    // their step limit got one attempt however many were configured.
+    const role = roleWith({ steps: 10 });
+    const spent = scriptedSuccess(bad, { turns: 10 });
+    const { db, runner } = harness(
+      new ScriptedProvider([spent, spent, scriptedSuccess(good, { turns: 10 })]),
+    );
+    try {
+      const outcome = await runner.runTask({
+        runId: 'run-1',
+        taskId: 'T1',
+        role,
+        prompt: 'work',
+      });
+
+      expect(outcome).toMatchObject({ status: 'completed', attempts: 3 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("gives every attempt the role's full step allowance", async () => {
+    const role = roleWith({ steps: 10 });
+    const spent = scriptedSuccess(bad, { turns: 10 });
+    const provider = new ScriptedProvider([spent, scriptedSuccess(good, { turns: 4 })]);
+    const { db, runner } = harness(provider);
+    try {
+      await runner.runTask({ runId: 'run-1', taskId: 'T1', role, prompt: 'work' });
+
+      // The SDK enforces maxTurns per session natively, so the kernel hands it
+      // the whole bound each time rather than a remainder it cannot compute:
+      // the turn count a result reports is not in the same units as the limit
+      // the option sets, so subtracting one from the other is meaningless.
+      expect(provider.requests.map((request) => request.maxTurns)).toStrictEqual([
+        10, 10,
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('blocks when retries collectively exhaust the cost budget', async () => {
     const role = roleWith({ costUsd: 1 });
     const expensive = scriptedSuccess(bad, {
@@ -215,7 +262,7 @@ describe('budget enforcement in the runner', () => {
     }
   });
 
-  it('offers each retry only the budget that is left', async () => {
+  it('offers each retry the cost that is left, and the whole step bound', async () => {
     const role = roleWith({ costUsd: 1, steps: 10 });
     const provider = new ScriptedProvider([
       scriptedSuccess(bad, {
@@ -234,21 +281,23 @@ describe('budget enforcement in the runner', () => {
       expect(provider.requests[0]?.maxBudgetUsd).toBeCloseTo(1);
       expect(provider.requests[0]?.maxTurns).toBe(10);
       expect(provider.requests[1]?.maxBudgetUsd).toBeCloseTo(0.7);
-      expect(provider.requests[1]?.maxTurns).toBe(6);
+      // Cost decrements across attempts because the kernel can measure spend
+      // in the units it caps. Steps do not: the bound is the SDK's, per
+      // session, and each attempt gets it whole.
+      expect(provider.requests[1]?.maxTurns).toBe(10);
     } finally {
       db.close();
     }
   });
 
   it('does not dispatch a session with nothing left to spend', async () => {
-    // Two turns of an 8-step budget per attempt would leave the third retry
-    // with maxTurns 0 -- a session that cannot succeed and reports max_turns
-    // as though the agent had misbehaved.
-    const role = roleWith({ steps: 4 });
-    const provider = new ScriptedProvider([
-      scriptedSuccess(bad, { turns: 2 }),
-      scriptedSuccess(bad, { turns: 2 }),
-    ]);
+    // A third attempt would carry maxBudgetUsd 0 -- a session that cannot
+    // succeed and reports a breach as though the agent had misbehaved.
+    const role = roleWith({ costUsd: 1 });
+    const spent = scriptedSuccess(bad, {
+      usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.5 },
+    });
+    const provider = new ScriptedProvider([spent, spent]);
     const { db, log, runner } = harness(provider);
     try {
       const outcome = await runner.runTask({

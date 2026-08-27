@@ -408,24 +408,23 @@ describe('abandonedOutputIssues', () => {
 });
 
 describe('a session that overran its budget but finished', () => {
-  // The Definition demo: the researcher's session completed and returned a
-  // valid survey, and was then thrown away because the SDK's own turn count
-  // came back above the role's step budget. The money was already spent, so
-  // discarding the work lost the work as well.
-  const overrun = () =>
+  // A session cannot be terminated once it has ended, and the money is
+  // already gone. Discarding output the session did produce loses the work as
+  // well as the money, so a breach seen after the fact bounds what comes next
+  // rather than voiding what came before.
+  const overspend = () =>
     scriptedSuccess(validOutput, {
-      usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.01 },
-      turns: role.budgets.steps + 7,
+      usage: { inputTokens: 100, outputTokens: 50, costUsd: role.budgets.costUsd + 1 },
     });
 
   it('keeps the output it paid for, and records the overrun', async () => {
-    const { db, log, projector, runner } = harness([overrun()]);
+    const { db, log, projector, runner } = harness([overspend()]);
     try {
       const outcome = await runner.runTask(task);
 
       expect(outcome.status).toBe('completed');
       const breach = log.read().find((event) => event.type === 'BudgetExceeded');
-      expect((breach?.payload as { kind: string }).kind).toBe('steps');
+      expect((breach?.payload as { kind: string }).kind).toBe('cost');
       // Recorded and then completed, in that order: the task succeeded, and
       // the overrun is still on the record for whoever sizes the budget.
       expect(projector.project().runs['run-1']?.tasks.T1?.status).toBe('completed');
@@ -436,14 +435,17 @@ describe('a session that overran its budget but finished', () => {
   });
 
   it('refuses the next attempt, so the overrun bounds what follows', async () => {
-    // Same overrun, but the output does not validate. There is nothing to
+    // Same overspend, but the output does not validate. There is nothing to
     // keep, and nothing left to spend on another try.
     const { db, log, provider, runner } = harness([
       scriptedSuccess(
         { summary: '' },
         {
-          usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.01 },
-          turns: role.budgets.steps + 7,
+          usage: {
+            inputTokens: 100,
+            outputTokens: 50,
+            costUsd: role.budgets.costUsd + 1,
+          },
         },
       ),
       scriptedSuccess(validOutput),
@@ -460,6 +462,25 @@ describe('a session that overran its budget but finished', () => {
       expect(log.read().filter((event) => event.type === 'BudgetExceeded')).toHaveLength(
         1,
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not call a completed session an overrun for reporting more turns than its step bound', async () => {
+    // The Definition demo's misdiagnosis: a session that finished was thrown
+    // away because the turn count it reported came back above the role's step
+    // number. Those are different counts — the SDK enforced `maxTurns` and
+    // let the session finish — so there was no overrun to report, and saying
+    // there was cost the operator the work and sent them after the wrong bug.
+    const { db, log, runner } = harness([
+      scriptedSuccess(validOutput, { turns: role.budgets.steps + 7 }),
+    ]);
+    try {
+      const outcome = await runner.runTask(task);
+
+      expect(outcome.status).toBe('completed');
+      expect(log.read().some((event) => event.type === 'BudgetExceeded')).toBe(false);
     } finally {
       db.close();
     }
