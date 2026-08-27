@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { BoundContract, CapabilityRegistry, ContractError } from '../contract/capability.js';
+import {
+  BoundContract,
+  CapabilityRegistry,
+  ContractError,
+} from '../contract/capability.js';
 import type { CoverageRow } from '../trace/index-store.js';
 import {
   nfrCoverage,
@@ -27,7 +31,9 @@ const throughput: NfrRequirement = {
   measuredBy: 'load test at steady state for 10 minutes',
 };
 
-function result(overrides: Partial<NfrRunOutput> & { requirementId: string }): NfrRunOutput {
+function result(
+  overrides: Partial<NfrRunOutput> & { requirementId: string },
+): NfrRunOutput {
   return {
     metric: 'x',
     measured: 0,
@@ -42,7 +48,14 @@ describe('nfrCoverage (TST-3)', () => {
   it('verifies a requirement whose reported measurement passed', () => {
     const rows = nfrCoverage(
       [latency],
-      [result({ requirementId: 'NFR-1', measured: 180, passed: true, evidence: 'report:1' })],
+      [
+        result({
+          requirementId: 'NFR-1',
+          measured: 180,
+          passed: true,
+          evidence: 'report:1',
+        }),
+      ],
     );
 
     expect(rows).toEqual([
@@ -57,7 +70,12 @@ describe('nfrCoverage (TST-3)', () => {
       [latency, throughput],
       [
         result({ requirementId: 'NFR-1', measured: 180, passed: true }),
-        result({ requirementId: 'NFR-2', measured: 300, passed: false, evidence: 'report:2' }),
+        result({
+          requirementId: 'NFR-2',
+          measured: 300,
+          passed: false,
+          evidence: 'report:2',
+        }),
       ],
     );
 
@@ -88,7 +106,13 @@ describe('nfrCoverage (TST-3)', () => {
     );
 
     expect(rows).toEqual([
-      { id: 'NFR-1', verified: false, problem: 'below-threshold', measured: 400, evidence: '' },
+      {
+        id: 'NFR-1',
+        verified: false,
+        problem: 'below-threshold',
+        measured: 400,
+        evidence: '',
+      },
     ]);
   });
 });

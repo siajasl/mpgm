@@ -224,7 +224,11 @@ export function requirementCoverageReport(
       id: requirement.id,
       verified,
       verifiedBy: graphRow?.verifiedBy ?? [],
-      ...(verified ? {} : nfrRow?.problem === undefined ? {} : { problem: nfrRow.problem }),
+      ...(verified
+        ? {}
+        : nfrRow?.problem === undefined
+          ? {}
+          : { problem: nfrRow.problem }),
     };
   });
 
