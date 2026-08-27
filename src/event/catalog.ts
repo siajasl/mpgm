@@ -170,12 +170,13 @@ export const budgetExceeded = defineEvent(
   z.object({
     taskId: nonEmpty,
     /**
-     * `repairs` is the CI repair loop's bounded retry budget (T3.1.2b): its
-     * exhaustion blocks the task exactly as any other budget breach does, so
-     * an unrepairable change escalates to the operator rather than being
-     * quietly abandoned (NFR-1).
+     * `repairs` is the CI repair loop's bounded retry budget (T3.1.2b) and
+     * `reviews` the review-rework loop's: exhausting either blocks the task
+     * exactly as any other budget breach does, so a change that cannot be
+     * repaired or cannot satisfy a reviewer escalates to the operator rather
+     * than being quietly abandoned (NFR-1).
      */
-    kind: z.enum(['tokens', 'cost', 'steps', 'wallClock', 'repairs']),
+    kind: z.enum(['tokens', 'cost', 'steps', 'wallClock', 'repairs', 'reviews']),
     limit: z.number().nonnegative(),
     observed: z.number().nonnegative(),
   }),

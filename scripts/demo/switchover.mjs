@@ -150,8 +150,12 @@ const RED = GREEN.map((run) =>
 );
 
 let secondRef;
-const checks = (ref) =>
-  Promise.resolve(mergeVerdict({ ref, runs: ref === firstRef ? RED : GREEN }));
+let thirdRef;
+const checked = [];
+const checks = (ref) => {
+  checked.push(ref);
+  return Promise.resolve(mergeVerdict({ ref, runs: ref === firstRef ? RED : GREEN }));
+};
 
 // Every branch the loop asks about, and how many times it asked. A repository
 // whose CI runs on pull requests reports nothing at all for a bare pushed
@@ -193,15 +197,52 @@ const provider = new ScriptedProvider([
       { convention: 'CONV-1', why: 'two commits, because the first was repaired' },
     ],
   }),
-  // The review.
+  // The first review: a convention the change broke and never declared. The
+  // merge gate refuses on that whatever the verdict says (IMP-4).
   scriptedSuccess({
     get ref() {
       return secondRef;
     },
+    verdict: 'request-changes',
+    summary: 'the new test passes against the unmodified code',
+    findings: [
+      {
+        file: 'second.test.ts',
+        line: 4,
+        concern: 'the assertion holds whether or not the fix is present',
+        remedy: 'assert on the behaviour the fix introduces',
+        severity: 'blocker',
+      },
+    ],
+    deviations: [
+      { convention: 'CONV-1', where: 'two commits on the branch' },
+      { convention: 'CONV-6', where: 'second.test.ts cannot fail' },
+    ],
+  }),
+  // The rework, after the findings went back to the author.
+  scriptedSuccess({
+    get ref() {
+      thirdRef ??= commitWork('third.txt', 'a test that can fail\n');
+      return thirdRef;
+    },
+    summary: 'made the new test able to fail',
+    files: ['first.txt', 'second.txt', 'third.txt'],
+    tests: ['second.test.ts'],
+    complete: true,
+    remaining: '',
+    deviations: [
+      { convention: 'CONV-1', why: 'three commits, because the first was repaired' },
+    ],
+  }),
+  // The second review, of the reworked change.
+  scriptedSuccess({
+    get ref() {
+      return thirdRef;
+    },
     verdict: 'approve',
-    summary: 'reads correctly and the new test can fail',
+    summary: 'the test now fails against the unmodified code',
     findings: [],
-    deviations: [{ convention: 'CONV-1', where: 'two commits on the branch' }],
+    deviations: [{ convention: 'CONV-1', where: 'three commits on the branch' }],
   }),
 ]);
 
@@ -237,8 +278,26 @@ check(
 );
 check(
   'CI was red once and repaired within budget',
-  (result.repair?.attempts.length ?? 0) === 1 && result.repair?.status === 'green',
-  `${String(result.repair?.attempts.length ?? 0)} repair attempt(s)`,
+  (result.rounds?.[0]?.repair.attempts.length ?? 0) === 1 &&
+    result.rounds?.[0]?.repair.status === 'green',
+  `${String(result.rounds?.[0]?.repair.attempts.length ?? 0)} repair attempt(s) in round 1`,
+);
+check(
+  'a refused review went back to its author, and the change merged on the second',
+  result.rounds?.length === 2 &&
+    result.rounds[0]?.review.approved === false &&
+    result.rounds[1]?.review.approved === true,
+  `${String(result.rounds?.length ?? 0)} review round(s)`,
+);
+check(
+  'the rework was reviewed again, by a task of its own',
+  result.rounds?.[0]?.review.reviewTaskId !== result.rounds?.[1]?.review.reviewTaskId,
+  `${String(result.rounds?.[0]?.review.reviewTaskId)} then ${String(result.rounds?.[1]?.review.reviewTaskId)}`,
+);
+check(
+  'and the reworked commit cleared CI in its own right',
+  checked.includes(result.ref) && result.ref === result.rounds?.[1]?.repair.ref,
+  `merged ${String(result.ref).slice(0, 12)}`,
 );
 check(
   'the review was by a role other than the author',
