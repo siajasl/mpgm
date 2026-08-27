@@ -375,6 +375,12 @@ export type {
   PullRequestRequest,
 } from './implement/loop.js';
 export { implementTask } from './implement/loop.js';
+export type { Review } from './implement/rework.js';
+export {
+  DEFAULT_REVIEW_ATTEMPTS,
+  isReworkable,
+  renderReview,
+} from './implement/rework.js';
 export type { ApplyReplanOptions, ReplanOutcome } from './plan/apply.js';
 export { applyReplan, completedTasks } from './plan/apply.js';
 export type { GateTagRequest } from './git/tag.js';

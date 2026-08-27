@@ -6,8 +6,17 @@ import type { EventLog } from '../event/store.js';
 import type { RoleRegistry } from '../role/loader.js';
 import { changeSchema, codeReviewSchema } from '../schemas.js';
 import type { MergeVerdict } from './checks.js';
-import { changeReviewed, decideMerge, mergeChange, type ReviewRecord } from './merge.js';
+import { undeclaredDeviations } from '../context/conventions.js';
+import {
+  changeReviewed,
+  decideMerge,
+  mergeChange,
+  type MergeDecision,
+  type MergeDecisionRequest,
+  type ReviewRecord,
+} from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
+import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
 import type { WorktreeManager } from './worktree.js';
 
 /**
@@ -71,9 +80,32 @@ export interface ImplementOptions {
   readonly implementerRole?: string;
   readonly reviewerRole?: string;
   readonly maxRepairAttempts?: number;
+  /**
+   * How many times a refused review may go back to the author (IMP-3).
+   *
+   * Bounded for the same reason the repair budget is: an agent that cannot
+   * satisfy a reviewer in two goes is a task for an operator, not a loop to
+   * leave running. One attempt means the findings reach the author once,
+   * which is the difference between a review and a report nobody reads.
+   */
+  readonly maxReviewAttempts?: number;
   readonly into?: string;
   /** Remove the worktree once the change has merged. Off while debugging. */
   readonly cleanUp?: boolean;
+}
+
+/**
+ * One trip round the review loop: what CI said, and what the reviewer said.
+ *
+ * Kept per round because `repair` and `review` below are the round that
+ * decided the outcome, and reading those alone would say a task merged with
+ * CI green first time when an earlier round had been red and repaired.
+ */
+export interface ReviewRound {
+  /** 1-based. */
+  readonly round: number;
+  readonly repair: RepairReport;
+  readonly review: ReviewRecord;
 }
 
 export interface PullRequestRequest {
@@ -91,8 +123,12 @@ export interface ImplementResult {
   readonly worktree: string;
   readonly ref?: string;
   readonly commit?: string;
+  /** The review that decided the outcome — the last one taken. */
   readonly review?: ReviewRecord;
+  /** The repair report of the round that decided the outcome. */
   readonly repair?: RepairReport;
+  /** Every round, in order. One per review taken. */
+  readonly rounds?: readonly ReviewRound[];
   /** The pull request the change was published on, when one was opened. */
   readonly pullRequest?: number;
   /** Why it stopped, when it did not merge. */
@@ -153,6 +189,11 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   }
 
   const worktree = await options.worktrees.acquire(task.id);
+  // Rounds are attached by the helper rather than by each caller: a task that
+  // blocked in its second round should say so wherever it stopped, and
+  // thirteen call sites each remembering to pass them is twelve chances not
+  // to.
+  const rounds: ReviewRound[] = [];
   const stop = (
     reason: string,
     extra: Partial<ImplementResult> = {},
@@ -162,6 +203,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     branch: worktree.branch,
     worktree: worktree.path,
     reason,
+    ...(rounds.length === 0 ? {} : { rounds: [...rounds] }),
     ...extra,
   });
 
@@ -233,105 +275,184 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     }
   }
 
-  // CI before review, and repair before review: an agent asked to read a
-  // change that does not build is spending an expensive session on something
-  // the build already said (IMP-2).
-  const repair = await repairUntilGreen({
-    runId,
-    taskId: task.id,
-    ref: change.data.ref,
-    model: implementerRole.model,
-    ...(options.maxRepairAttempts === undefined
-      ? {}
-      : { maxAttempts: options.maxRepairAttempts }),
-    checks: options.checks,
-    ...(options.logsFor === undefined ? {} : { logsFor: options.logsFor }),
-    emit: (event) => {
-      options.log.append(event);
-    },
-    repair: async (request) => {
-      const retry = await options.sessions.runTask({
-        runId,
-        taskId: task.id,
-        role: implementerRole,
-        prompt: `${context.prompt}\n\n## The checks failed\n\n${request.feedback}`,
-        model: request.model,
-        policyRoot: worktree.path,
-      });
-      const fixed =
-        retry.status === 'completed' ? changeSchema.safeParse(retry.output) : undefined;
-      if (fixed?.success === true) {
-        latest = fixed.data;
-        await options.publish?.(worktree.branch, fixed.data.ref);
-      }
-      // A repair session that produced nothing usable leaves the ref where it
-      // was, so the next verdict is the same one and the budget still shrinks
-      // — rather than the loop losing track of which commit it is judging.
-      return { ref: fixed?.success === true ? fixed.data.ref : request.ref };
-    },
-  });
+  const maxReviewAttempts = options.maxReviewAttempts ?? DEFAULT_REVIEW_ATTEMPTS;
+  let review: ReviewRecord | undefined;
+  let repair: RepairReport | undefined;
+  let decision: MergeDecision | undefined;
+  let request: MergeDecisionRequest | undefined;
 
-  if (repair.status !== 'green') {
-    return stop(`CI did not go green: ${repair.reason}`, {
-      ref: repair.ref,
-      repair,
-      ...(pullRequest === undefined ? {} : { pullRequest }),
-    });
-  }
-
-  const reviewed = await options.sessions.runTask({
-    runId,
-    taskId: `${task.id}-review`,
-    role: reviewerRole,
-    prompt: reviewPrompt(task, repair.ref, into),
-    policyRoot: worktree.path,
-  });
-
-  if (reviewed.status !== 'completed') {
-    return stop(`the review session blocked: ${reviewed.reason}`, {
-      ref: repair.ref,
-      repair,
-    });
-  }
-
-  const parsed = codeReviewSchema.safeParse(reviewed.output);
-  if (!parsed.success) {
-    return stop(`the review was not usable: ${parsed.error.message}`, {
-      ref: repair.ref,
-      repair,
-    });
-  }
-
-  const review: ReviewRecord = {
-    reviewTaskId: `${task.id}-review`,
-    reviewerRole: reviewerRole.name,
-    ref: parsed.data.ref,
-    approved: parsed.data.verdict === 'approve',
-    summary: parsed.data.summary,
-    deviations: parsed.data.deviations.map((entry) => entry.convention),
-  };
-  options.log.append(
-    changeReviewed(
+  // One pass per review. CI runs inside it rather than outside, because rework
+  // is a new commit and a new commit has to clear the checks again — a change
+  // that fixed a finding and broke the build is not one to merge on the
+  // strength of the review it just earned.
+  for (let round = 1; round <= maxReviewAttempts; round += 1) {
+    // CI before review, and repair before review: an agent asked to read a
+    // change that does not build is spending an expensive session on something
+    // the build already said (IMP-2).
+    repair = await repairUntilGreen({
       runId,
-      task.id,
+      taskId: task.id,
+      ref: latest.ref,
+      model: implementerRole.model,
+      ...(options.maxRepairAttempts === undefined
+        ? {}
+        : { maxAttempts: options.maxRepairAttempts }),
+      checks: options.checks,
+      ...(options.logsFor === undefined ? {} : { logsFor: options.logsFor }),
+      emit: (event) => {
+        options.log.append(event);
+      },
+      repair: async (request) => {
+        const retry = await options.sessions.runTask({
+          runId,
+          taskId: task.id,
+          role: implementerRole,
+          prompt: `${context.prompt}\n\n## The checks failed\n\n${request.feedback}`,
+          model: request.model,
+          policyRoot: worktree.path,
+        });
+        const fixed =
+          retry.status === 'completed' ? changeSchema.safeParse(retry.output) : undefined;
+        if (fixed?.success === true) {
+          latest = fixed.data;
+          await options.publish?.(worktree.branch, fixed.data.ref);
+        }
+        // A repair session that produced nothing usable leaves the ref where it
+        // was, so the next verdict is the same one and the budget still shrinks
+        // — rather than the loop losing track of which commit it is judging.
+        return { ref: fixed?.success === true ? fixed.data.ref : request.ref };
+      },
+    });
+
+    if (repair.status !== 'green') {
+      return stop(`CI did not go green: ${repair.reason}`, {
+        ref: repair.ref,
+        repair,
+        ...(pullRequest === undefined ? {} : { pullRequest }),
+      });
+    }
+
+    // Each round's review is its own task, so a rework's review does not
+    // overwrite the record of the one that asked for it (OBS-1).
+    const reviewTaskId =
+      round === 1 ? `${task.id}-review` : `${task.id}-review-${String(round)}`;
+    const reviewed = await options.sessions.runTask({
+      runId,
+      taskId: reviewTaskId,
+      role: reviewerRole,
+      prompt: reviewPrompt(task, repair.ref, into),
+      policyRoot: worktree.path,
+    });
+
+    if (reviewed.status !== 'completed') {
+      return stop(`the review session blocked: ${reviewed.reason}`, {
+        ref: repair.ref,
+        repair,
+      });
+    }
+
+    const parsed = codeReviewSchema.safeParse(reviewed.output);
+    if (!parsed.success) {
+      return stop(`the review was not usable: ${parsed.error.message}`, {
+        ref: repair.ref,
+        repair,
+      });
+    }
+
+    const declared = latest.deviations.map((entry) => entry.convention);
+    review = {
+      reviewTaskId,
+      reviewerRole: reviewerRole.name,
+      ref: parsed.data.ref,
+      approved: parsed.data.verdict === 'approve',
+      summary: parsed.data.summary,
+      deviations: parsed.data.deviations.map((entry) => entry.convention),
+    };
+    options.log.append(
+      changeReviewed(runId, task.id, review, parsed.data.findings.length, declared),
+    );
+
+    request = {
+      taskId: task.id,
+      authorRole: implementerRole.name,
+      ref: repair.ref,
+      verdict: repair.verdict,
       review,
-      parsed.data.findings.length,
-      latest.deviations.map((entry) => entry.convention),
-    ),
-  );
+      declaredDeviations: declared,
+    };
 
-  const request = {
-    taskId: task.id,
-    authorRole: implementerRole.name,
-    ref: repair.ref,
-    verdict: repair.verdict,
-    review,
-    declaredDeviations: latest.deviations.map((entry) => entry.convention),
-  };
+    rounds.push({ round, repair, review });
 
-  const decision = decideMerge(request);
-  if (!decision.allowed) {
-    return stop(decision.reasons.join('; '), { ref: repair.ref, review, repair });
+    decision = decideMerge(request);
+    if (decision.allowed) {
+      break;
+    }
+
+    // A refusal the author cannot act on from its worktree — a stale verdict, a
+    // reviewer that shares its role — is not rework. Sending it back would ask
+    // an agent to fix something it cannot see.
+    if (!isReworkable(decision)) {
+      return stop(decision.reasons.join('; '), { ref: repair.ref, review, repair });
+    }
+
+    if (round === maxReviewAttempts) {
+      options.log.append({
+        runId,
+        type: 'BudgetExceeded',
+        payload: {
+          taskId: task.id,
+          kind: 'reviews',
+          limit: maxReviewAttempts,
+          observed: round,
+        },
+      });
+      return stop(
+        `the review still refuses the change after ${String(maxReviewAttempts)} attempt(s): ` +
+          decision.reasons.join('; '),
+        { ref: repair.ref, review, repair },
+      );
+    }
+
+    // Back to the author, with what the reviewer found. Without this the review
+    // is written, recorded and read by nobody, and the next attempt at the task
+    // reproduces the defect because a fresh session knows nothing about it.
+    const reworked = await options.sessions.runTask({
+      runId,
+      taskId: task.id,
+      role: implementerRole,
+      prompt: `${context.prompt}\n\n## The review asked for changes\n\n${renderReview({
+        review: parsed.data,
+        undeclared: undeclaredDeviations(review.deviations ?? [], declared),
+        attempt: round,
+        attemptsRemaining: maxReviewAttempts - round,
+      })}`,
+      policyRoot: worktree.path,
+    });
+
+    if (reworked.status !== 'completed') {
+      return stop(`the rework session blocked: ${reworked.reason}`, {
+        ref: repair.ref,
+        review,
+        repair,
+      });
+    }
+
+    const revised = changeSchema.safeParse(reworked.output);
+    if (!revised.success) {
+      return stop(
+        `the rework session did not report a usable change: ${revised.error.message}`,
+        { ref: repair.ref, review, repair },
+      );
+    }
+
+    latest = revised.data;
+    await options.publish?.(worktree.branch, revised.data.ref);
+  }
+
+  if (repair === undefined || review === undefined || request === undefined) {
+    // Unreachable: the loop runs at least once, and every path out of it
+    // either sets these or returns. Stated rather than asserted with `!`.
+    return stop('the review loop produced no decision');
   }
 
   const merged = await mergeChange({
@@ -370,5 +491,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     ...(pullRequest === undefined ? {} : { pullRequest }),
     review,
     repair,
+    rounds: [...rounds],
   };
 }

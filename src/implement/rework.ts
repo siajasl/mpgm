@@ -1,0 +1,116 @@
+import type { z } from 'zod';
+import type { codeReviewSchema } from '../schemas.js';
+import type { MergeDecision, MergeRefusal } from './merge.js';
+
+/**
+ * Review rework (IMP-3, IMP-4, ORC-1, DESIGN section 4.7).
+ *
+ * A change that fails its merge checks already goes back to its author with
+ * the failure attached (`repair.ts`). A change a reviewer refuses did not: the
+ * review was written, recorded, and then the task stopped with nobody having
+ * read it. An independent review whose findings never reach the author is a
+ * cost with no effect — the defect stays, and the next attempt at the task
+ * reproduces it, because a fresh session knows nothing about it.
+ *
+ * This is the same shape as the CI loop and for the same reasons: bounded,
+ * with exhaustion an event rather than a shrug, and feedback rendered for the
+ * agent that has to act on it.
+ */
+
+export const DEFAULT_REVIEW_ATTEMPTS = 2;
+
+export type Review = z.infer<typeof codeReviewSchema>;
+
+/**
+ * Refusals the author can do something about from its own worktree.
+ *
+ * The others are not the author's to fix and must not spend an attempt:
+ * `reviewer-not-independent` is a dispatch mistake, `review-is-stale` and
+ * `checks-are-stale` mean the change moved under its verdict, `no-review`
+ * means none was written, and `checks-not-green` belongs to the repair loop.
+ * Sending any of those back to the agent asks it to fix something it cannot
+ * see.
+ */
+const REWORKABLE: ReadonlySet<MergeRefusal> = new Set<MergeRefusal>([
+  'changes-requested',
+  'undeclared-deviation',
+]);
+
+export function isReworkable(decision: MergeDecision): boolean {
+  // An allowed decision needs no separate test: it carries no refusals, so
+  // the length check already excludes it. Restating it would be a condition
+  // nothing could ever make false, which reads as a guard and is not one.
+  return (
+    decision.refusals.length > 0 &&
+    decision.refusals.every((refusal) => REWORKABLE.has(refusal))
+  );
+}
+
+/**
+ * What the author is shown.
+ *
+ * Both honest routes are named, and in the order that matters. A deviation is
+ * a decision somebody signs (IMP-4), so declaring one is a legitimate answer —
+ * but it is the answer when the departure is right, not the way past the gate.
+ * Saying only "declare it" would teach an agent to declare everything, since
+ * declaring is cheap and always unblocks the merge; what stops that is the
+ * re-review, and the author is told that it is coming.
+ */
+export function renderReview(request: {
+  readonly review: Review;
+  readonly undeclared: readonly string[];
+  readonly attempt: number;
+  readonly attemptsRemaining: number;
+}): string {
+  const lines = [
+    `Your change was reviewed by another agent and cannot merge as it stands.`,
+    '',
+    `The reviewer's verdict: ${request.review.verdict}.`,
+    '',
+    request.review.summary.trim(),
+  ];
+
+  const blocking = request.review.findings.filter(
+    (finding) => finding.severity !== 'minor',
+  );
+  const shown = blocking.length > 0 ? blocking : request.review.findings;
+  if (shown.length > 0) {
+    lines.push('', 'Findings:');
+    for (const finding of shown) {
+      const where =
+        finding.line === undefined
+          ? finding.file
+          : `${finding.file}:${String(finding.line)}`;
+      lines.push(
+        `- [${finding.severity}] ${where} — ${finding.concern}`,
+        `  Remedy: ${finding.remedy}`,
+      );
+    }
+  }
+
+  if (request.undeclared.length > 0) {
+    lines.push(
+      '',
+      'Conventions the reviewer found this change departing from, which your',
+      'change did not declare:',
+      ...request.undeclared.map((convention) => `- ${convention}`),
+      '',
+      'Fix each of these. If a departure is deliberate and right, declare it in',
+      '`deviations` with the reason instead — a declared deviation is a decision',
+      'on the record for an operator to read, not a formality. Declaring one you',
+      'have not thought about wastes the attempt: the change is reviewed again',
+      'after this, by an agent that is not told what you declared.',
+    );
+  }
+
+  lines.push(
+    '',
+    `This is rework attempt ${String(request.attempt)}; ${String(request.attemptsRemaining)} remain after it.`,
+    '',
+    'Do not delete, skip, weaken or exclude a test to resolve a finding, and do',
+    'not relax a lint or type rule to silence one. Report the commit you end at',
+    'in `ref`.',
+  );
+
+  return lines.join('\n');
+}
