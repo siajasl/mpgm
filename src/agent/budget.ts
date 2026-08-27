@@ -7,8 +7,24 @@ import type { SessionResult, SessionUsageReport } from './session.js';
  * The SDK enforces per-session cost and turn limits of its own, but a task may
  * run several sessions when output fails validation. Only the kernel sees the
  * total, so the kernel is where the task-level bound lives.
+ *
+ * Steps are the exception, and are deliberately absent from this ledger. A
+ * task total only means something if the kernel can measure spend in the same
+ * units it can cap: it can, for cost, tokens and elapsed time, and it cannot
+ * for steps — the SDK's `maxTurns` counts a user message and an assistant
+ * response, the `num_turns` a result reports counts something else, and a
+ * session capped at 16 has been observed reporting 23. Subtracting the second
+ * from the first produces a remainder that means nothing, and the kernel then
+ * refuses a second attempt on the strength of it. So the step bound is
+ * per-session, passed to each session whole and enforced by the SDK, and cost
+ * is what bounds a task that keeps retrying.
  */
 
+/**
+ * `steps` appears here although the ledger never raises it: a session stopped
+ * by the SDK's own turn limit is still a step breach, and it is reported as
+ * one.
+ */
 export type BudgetKind = 'tokens' | 'cost' | 'steps' | 'wallClock';
 
 export interface BudgetBreach {
@@ -27,7 +43,6 @@ export class BudgetLedger {
 
   #tokens = 0;
   #costUsd = 0;
-  #steps = 0;
 
   constructor(budget: Budget, now: Now = () => Date.now()) {
     this.#budget = budget;
@@ -35,10 +50,9 @@ export class BudgetLedger {
     this.#startedAtMs = now();
   }
 
-  record(usage: SessionUsageReport, turns: number): void {
+  record(usage: SessionUsageReport): void {
     this.#tokens += usage.inputTokens + usage.outputTokens;
     this.#costUsd += usage.costUsd;
-    this.#steps += turns;
   }
 
   get elapsedSeconds(): number {
@@ -52,9 +66,6 @@ export class BudgetLedger {
     }
     if (this.#tokens > this.#budget.tokens) {
       return { kind: 'tokens', limit: this.#budget.tokens, observed: this.#tokens };
-    }
-    if (this.#steps > this.#budget.steps) {
-      return { kind: 'steps', limit: this.#budget.steps, observed: this.#steps };
     }
     const elapsed = this.elapsedSeconds;
     if (elapsed > this.#budget.wallClockSeconds) {
@@ -70,10 +81,6 @@ export class BudgetLedger {
   /** Budget left for the next session, never negative. */
   get remainingCostUsd(): number {
     return Math.max(0, this.#budget.costUsd - this.#costUsd);
-  }
-
-  get remainingSteps(): number {
-    return Math.max(0, this.#budget.steps - this.#steps);
   }
 
   get remainingSeconds(): number {

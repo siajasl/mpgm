@@ -15,6 +15,7 @@ SDK wiring worth not relearning:
 - Pass a role's toolset as `tools` (restricts availability), never `allowedTools` (auto-approves, bypassing the callback).
 - Strip `$schema` from `z.toJSONSchema` output; the CLI rejects the dialect URI.
 - A result with `subtype: 'success'` can still carry `is_error` (an auth failure looks exactly like this).
+- `maxTurns` and the `num_turns` a result reports are **different counters** — a session capped at 16 has come back reporting 23. Never subtract one from the other; step budgets are per session and enforced by the SDK for exactly this reason.
 
 `npm run probe:sdk` is the cheap live check for all of this — one minimal session per registered output schema, seconds and cents rather than a whole milestone demo. Run it first when a live demo fails in the SDK layer.
 
