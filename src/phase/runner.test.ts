@@ -169,6 +169,32 @@ gate:
 `;
 
 describe('runPhase over a fan-out', () => {
+  it('writes the artifact with the class the playbook declared', async () => {
+    // The only way a phase can say its output is more sensitive than the
+    // store's default. Without it every artifact the harness produces is
+    // `internal` with no way to say otherwise, and SAF-6's "explicit policy
+    // allowance" has nowhere to be written down.
+    const provider = new ProbeProvider(() => ({ note: 'ok' }), 5);
+    const { db, common } = harness(provider);
+    try {
+      await runPhase({
+        ...common,
+        playbook: parsePlaybook(
+          'scope.yaml',
+          FAN_OUT.replace(
+            'description: the survey',
+            'description: the survey\n    egress: restricted',
+          ),
+        ),
+        concurrency: 2,
+      });
+
+      expect(common.artifacts.read('artifacts/survey.md').egress).toBe('restricted');
+    } finally {
+      db.close();
+    }
+  });
+
   it('runs the workers concurrently, within the configured cap', async () => {
     const provider = new ProbeProvider(() => ({ note: 'ok' }), 5);
     const { db, common } = harness(provider);

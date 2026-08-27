@@ -57,8 +57,10 @@ export const frontmatterSchema = z
     /** Version this one supersedes, if any. */
     supersedes: z.number().int().positive().nullable().default(null),
     /**
-     * Data-egress class (SAF-6). Absent means the project's default applies;
-     * an artifact carrying operator-restricted material must say so.
+     * Data-egress class (SAF-6). Absent means nobody classified this artifact,
+     * which a fail-closed policy withholds — so the store stamps a class on
+     * everything it writes and only artifacts from elsewhere arrive without
+     * one.
      */
     egress: egressClassSchema.optional(),
     data: z.unknown(),
@@ -87,8 +89,24 @@ export interface WriteRequest {
   readonly data: unknown;
   readonly producedBy: Provenance;
   readonly tracesTo?: readonly string[];
+  /**
+   * Data-egress class for the written artifact (SAF-6). Omitted means
+   * {@link DEFAULT_ARTIFACT_EGRESS}: the harness is entitled to say that a
+   * document it produced from material already permitted into a task's
+   * context is project-internal, and saying so is what keeps a fail-closed
+   * policy from withholding the phase's own output from the next phase.
+   */
   readonly egress?: EgressClass;
 }
+
+/**
+ * Class stamped on an artifact whose producer named none.
+ *
+ * Deliberately not the policy's `unlabelled` default: that one answers "what
+ * do we assume about content we know nothing about", and here we do know —
+ * this is the project's own work product.
+ */
+export const DEFAULT_ARTIFACT_EGRESS: EgressClass = 'internal';
 
 /** Whether a given artifact version has been approved at a gate. */
 export interface GateOracle {
@@ -304,6 +322,7 @@ export class ArtifactStore {
     const data = this.#schemas.validate(request.schema, request.data);
     const schemaVersion = this.#schemas.currentVersion(request.schema);
     const path = this.pathFor(request.basePath, version);
+    const egress = request.egress ?? DEFAULT_ARTIFACT_EGRESS;
 
     const frontmatter = {
       id: request.id,
@@ -313,7 +332,7 @@ export class ArtifactStore {
       tracesTo: [...(request.tracesTo ?? [])],
       producedBy: request.producedBy,
       supersedes,
-      ...(request.egress === undefined ? {} : { egress: request.egress }),
+      egress,
       data,
     };
 
@@ -332,7 +351,7 @@ export class ArtifactStore {
       tracesTo: frontmatter.tracesTo,
       producedBy: request.producedBy,
       supersedes,
-      egress: request.egress,
+      egress,
       data,
       path,
     };

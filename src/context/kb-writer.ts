@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 import { z } from 'zod';
 import type { Provenance } from '../artifact/store.js';
-import { egressClassSchema } from './egress.js';
+import { egressClassSchema, type EgressClass } from './egress.js';
 
 /**
  * Updating the knowledge base from a task (CTX-4).
@@ -28,8 +28,23 @@ export const kbUpdateSchema = z.object({
    * can see the reason for is one nobody will dare delete (CTX-3).
    */
   rationale: z.string().min(1),
+  /**
+   * Data-egress class (SAF-6). A curator that knows the entry quotes
+   * restricted material says so; silence means
+   * {@link DEFAULT_KB_EGRESS}, which is written into the document rather
+   * than left for a reader to assume.
+   */
   egress: egressClassSchema.optional(),
 });
+
+/**
+ * Class stamped on a knowledge-base document whose author named none.
+ *
+ * The alternative is leaving it unlabelled, which a fail-closed policy
+ * withholds — so the curator's own output would be invisible to every task
+ * after it, and CTX-4's point is that what one task learned reaches the next.
+ */
+export const DEFAULT_KB_EGRESS: EgressClass = 'internal';
 
 export type KbUpdate = z.infer<typeof kbUpdateSchema>;
 
@@ -91,7 +106,7 @@ export function writeKbDocument(request: KbWriteRequest): string {
 
   const frontmatter = stringifyYaml({
     title: update.title,
-    ...(update.egress === undefined ? {} : { egress: update.egress }),
+    egress: update.egress ?? DEFAULT_KB_EGRESS,
     updatedBy: request.producedBy,
     rationale: update.rationale,
   }).trimEnd();

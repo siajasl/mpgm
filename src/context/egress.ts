@@ -26,18 +26,25 @@ export interface EgressPolicy {
   /**
    * Class assumed for content carrying no label.
    *
-   * Defaults to `internal`: SAF-6 is about data the operator has *classified*
-   * as sensitive, and defaulting to `restricted` would withhold an entire
-   * unlabelled knowledge base, which reads as the harness being broken rather
-   * than as a policy in force. A project that wants fail-closed sets this to
-   * `restricted` and labels deliberately.
+   * Defaults to `restricted`, which withholds it. An unlabelled file is not
+   * one somebody classified as safe; it is one nobody classified at all, and
+   * SAF-6 asks that operator-restricted material not reach a provider without
+   * explicit allowance — which unlabelled material by definition lacks. The
+   * cost of this default is normally paid by content of unknown provenance
+   * only: everything the harness itself writes is labelled at the point of
+   * writing, so an artifact or knowledge-base document reaching this check
+   * unlabelled came from somewhere else.
+   *
+   * A project that would rather send what it has not classified sets this to
+   * `internal`. What is withheld is always reported (see `withheld` in the
+   * context assembler), so the failure mode is visible rather than silent.
    */
   readonly unlabelled: EgressClass;
 }
 
 export const DEFAULT_EGRESS_POLICY: EgressPolicy = {
   maxClass: 'internal',
-  unlabelled: 'internal',
+  unlabelled: 'restricted',
 };
 
 export function classOf(
