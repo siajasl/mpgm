@@ -190,9 +190,20 @@ export function status(context: CliContext, runId?: string): CommandResult {
           `tokens ${String(current.usage.inputTokens + current.usage.outputTokens)}  ` +
           `interventions ${String(current.interventions)}`,
       );
-      for (const task of Object.values(current.tasks)) {
+      const tasks = Object.values(current.tasks);
+      for (const task of tasks.filter((entry) => entry.status !== 'attested')) {
         context.write(
           `  task ${task.taskId} ${task.status} (${task.role} on ${task.model})`,
+        );
+      }
+      // Summarised rather than listed: an attested task has no role, model,
+      // usage or review to report, and a bootstrap can be dozens of them. One
+      // line keeps them visible without burying the run that is happening.
+      const attested = tasks.filter((entry) => entry.status === 'attested');
+      if (attested.length > 0) {
+        context.write(
+          `  attested outside the harness: ${String(attested.length)} — ` +
+            attested.map((entry) => entry.taskId).join(', '),
         );
       }
       for (const gate of Object.values(current.gates)) {
@@ -350,12 +361,22 @@ export async function implement(
 }
 
 /** Task ids a run has completed, for the ready set. */
+/**
+ * Task ids the scheduler should treat as done.
+ *
+ * Attested tasks count. The scheduler's question is whether the work exists,
+ * and for mpgm's own P1-M3.1 it does — built by operator-driven sessions
+ * before the harness could run them. Excluding them would have the plan graph
+ * offer to build the worktree manager from inside the worktree manager. The
+ * two statuses stay separate everywhere the difference matters; here it does
+ * not.
+ */
 function completedTaskIds(
   run: { tasks: Readonly<Record<string, { status: string }>> } | undefined,
 ) {
   return new Set(
     Object.entries(run?.tasks ?? {})
-      .filter(([, task]) => task.status === 'completed')
+      .filter(([, task]) => task.status === 'completed' || task.status === 'attested')
       .map(([id]) => id),
   );
 }
@@ -657,6 +678,86 @@ export function approve(
     }
 
     return { ok: true, detail: status };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `mpgm attest <task> --by <who> --evidence <what>` — record work done
+ * outside the harness.
+ *
+ * For the bootstrap, and for nothing else if a project can help it. mpgm's
+ * own P1-M3.1 were built by operator-driven sessions before the harness could
+ * run them, and the plan graph gates each milestone behind the previous one's
+ * tasks — so with no record of that work the scheduler offers to build what
+ * already exists.
+ *
+ * Refuses anything the plan does not declare, and anything this run already
+ * ran. An attestation is a person's word standing in for a session; it can
+ * cover work the harness never saw, and it must not be able to overwrite work
+ * the harness did see.
+ */
+export function attest(
+  context: CliContext,
+  runId: string,
+  taskId: string,
+  by: string,
+  evidence: string,
+  note = '',
+): CommandResult {
+  const { db, log, projector } = open(context);
+  try {
+    const artifacts = new ArtifactStore({
+      root: context.root,
+      schemas: context.artifactSchemas,
+    });
+    let graph;
+    try {
+      graph = ingestPlan(artifacts.read(PLAN_ARTIFACT).data as never);
+    } catch (error) {
+      context.write(
+        `could not read the gated Plan at ${PLAN_ARTIFACT}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return { ok: false, detail: 'no plan' };
+    }
+
+    // Attesting a task the plan does not have would put a claim in the log
+    // that nothing can ever be checked against.
+    if (!graph.tasks.some((candidate) => candidate.id === taskId)) {
+      context.write(`no task '${taskId}' in the plan at ${PLAN_ARTIFACT}`);
+      return { ok: false, detail: 'unknown task' };
+    }
+
+    // Checked before anything is appended. `append` validates the payload but
+    // does not fold, and the log is append-only — so an event the reducer will
+    // refuse would break every later projection permanently, with no way to
+    // take it back.
+    const ran = projector.project().runs[runId]?.tasks[taskId];
+    if (ran !== undefined) {
+      context.write(
+        `cannot attest ${taskId}: run ${runId} already ran it (status '${ran.status}')`,
+      );
+      return { ok: false, detail: 'already ran' };
+    }
+
+    if (projector.project().runs[runId] === undefined) {
+      log.append({
+        runId,
+        type: 'RunStarted',
+        payload: { project: context.root, operator: by },
+      });
+    }
+
+    log.append({
+      runId,
+      type: 'TaskAttested',
+      payload: { taskId, by, evidence, note },
+    });
+
+    context.write(`${taskId} attested by ${by} — ${evidence}`);
+    return { ok: true, detail: 'attested' };
   } finally {
     db.close();
   }

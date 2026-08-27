@@ -97,6 +97,36 @@ export const taskCompleted = defineEvent(
   z.object({ taskId: nonEmpty, artifactRefs: z.array(artifactRefSchema) }),
 );
 
+/**
+ * A plan task completed outside the harness, attested by an operator.
+ *
+ * mpgm's own P1-M3.1 were built by operator-driven sessions before the
+ * harness could run them, and the scheduler gates each milestone behind the
+ * previous one's tasks — so without a record of that work the plan graph
+ * offers to build what already exists. The log is the authoritative account
+ * of how a project reached its current state (ADR-1), and the bootstrap is
+ * part of that account.
+ *
+ * Distinct from {@link taskCompleted} on purpose. This says a person claims
+ * the work is done and points at what shows it; that is a weaker and
+ * differently-sourced fact than a task the kernel dispatched, validated and
+ * merged, and folding the two together would make the difference
+ * unrecoverable. `evidence` is required because an attestation nobody can
+ * check is an assertion.
+ */
+export const taskAttested = defineEvent(
+  'TaskAttested',
+  z.object({
+    taskId: nonEmpty,
+    /** Who is making the claim. */
+    by: nonEmpty,
+    /** What shows the work was done: a commit, a tag, a demo, a PR. */
+    evidence: nonEmpty,
+    /** Why it was done outside the harness. */
+    note: z.string().default(''),
+  }),
+);
+
 export const validationFailed = defineEvent(
   'ValidationFailed',
   z.object({
@@ -375,6 +405,7 @@ export const kernelEvents = [
   planRevised,
   runStarted,
   sessionUsage,
+  taskAttested,
   taskCompleted,
   taskDispatched,
   toolCallLogged,

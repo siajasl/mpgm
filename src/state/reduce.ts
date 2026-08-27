@@ -23,6 +23,7 @@ import type {
   planRevised,
   runStarted,
   sessionUsage,
+  taskAttested,
   taskCompleted,
   taskDispatched,
   toolCallLogged,
@@ -203,6 +204,38 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         role: payload.role,
         model: payload.model,
         status: 'dispatched',
+        artifactRefs: [],
+        validationFailures: 0,
+        budgetBreaches: 0,
+        toolCalls: 0,
+        deniedToolCalls: 0,
+        checks: null,
+        review: null,
+        merged: null,
+        usage: zeroUsage,
+      };
+      return withRun(state, withTask(run, task), seq);
+    }
+
+    case 'TaskAttested': {
+      const payload = event.payload as PayloadOf<typeof taskAttested>;
+      const run = requireRun(state, event.runId, type);
+      // An attestation cannot overwrite a task the harness actually ran. The
+      // point of the distinction is that one of these is weaker evidence than
+      // the other, and allowing it to land on a dispatched task would let a
+      // blocked run be reported as done by asserting it.
+      const already = run.tasks[payload.taskId];
+      if (already !== undefined) {
+        throw new EventLogError(
+          `cannot attest '${payload.taskId}': this run already ran it ` +
+            `(status '${already.status}')`,
+        );
+      }
+      const task: TaskState = {
+        taskId: payload.taskId,
+        role: '',
+        model: '',
+        status: 'attested',
         artifactRefs: [],
         validationFailures: 0,
         budgetBreaches: 0,

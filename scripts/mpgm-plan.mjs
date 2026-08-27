@@ -136,6 +136,16 @@ export const MPGM_PLAN = {
               ],
               tracesTo: ['IMP-1', 'AGT-6'],
             },
+            {
+              id: 'T3.1.9',
+              title: 'Bootstrap attestation',
+              completionCriteria: [
+                'An attested task counts as done for scheduling.',
+                'An attested task is never reported as a session mpgm ran (test).',
+              ],
+              dependsOn: ['T3.1.8'],
+              tracesTo: ['ORC-3', 'HIL-5'],
+            },
           ],
         },
         {

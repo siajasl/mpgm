@@ -1,7 +1,7 @@
 # PLAN — mpgm Build Plan
 
 **Status:** v0.4 — adds per-task model recommendations · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.25. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.26. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 
@@ -103,6 +103,7 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 | T3.1.6 Destructive-op guard: destructive tools require dry-run support; kernel confirmation events before execution | destructive call without prior dry-run + confirmation event blocked (test) | §7, SAF-4 | Opus 5 |
 | T3.1.7 PM projector + `pm.github` contract: Plan-artifact bootstrap (board, labels, milestones), event-driven task↔issue / milestone / PR-link sync, idempotent reconcile pass | board bootstrapped from gated Plan; task state change reflected on board (test); re-bootstrap converges without duplicates | §4.8, PMG-1/2/4 | Sonnet 5 |
 | **T3.1.8 Switchover:** remaining PLAN tasks loaded as mpgm's own task graph (validated by T2.2.7); role definitions frozen per §1 | mpgm dispatches and merges its first self-task | §1 | Opus 5 |
+| T3.1.9 Bootstrap attestation: `mpgm attest` records plan work completed outside the harness, distinct in the log from work it ran | attested task counts as done for scheduling and is never reported as a session mpgm ran (test) | §1, §4.4, ADR-1 | Sonnet 5 |
 
 **Verification (first Implement milestone):** mpgm implements, reviews, and merges a real task of its own backlog end-to-end with green CI, with the task's journey (issue → in-progress → PR → done) visible live on the scrum board. **Dashboard work starts now** — DESIGN §9's "ships at the first Implement milestone" is interpreted as started here, shipped in M3.2.
 

@@ -14,7 +14,14 @@ export interface Usage {
   readonly costUsd: number;
 }
 
-export type TaskStatus = 'dispatched' | 'completed' | 'blocked';
+/**
+ * `attested` is work an operator vouched for rather than work the harness
+ * ran (see `TaskAttested`). It counts as done for scheduling, and stays
+ * distinguishable everywhere else — a task nobody dispatched has no session,
+ * no usage and no review, and reading it as `completed` would claim
+ * otherwise.
+ */
+export type TaskStatus = 'dispatched' | 'completed' | 'blocked' | 'attested';
 
 /**
  * The last merge verdict CI produced for a task's change (IMP-2).
@@ -67,6 +74,7 @@ export interface MergeState {
 
 export interface TaskState {
   readonly taskId: string;
+  /** Empty for an attested task: nothing ran, so no role executed it. */
   readonly role: string;
   /** Model resolved at dispatch time (DESIGN §4.2). */
   readonly model: string;
