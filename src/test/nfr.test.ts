@@ -246,6 +246,39 @@ describe('requirementCoverageReport (TST-2 + TST-3)', () => {
     ]);
   });
 
+  // A fresh below-threshold measurement must decide on its own, ahead of a
+  // stale commit trailer: a requirement the trace graph still calls verified
+  // from an earlier commit, but that this run just measured outside
+  // threshold, must be reported as failing — not as verified with the
+  // failure's `problem` silently discarded.
+  it('reports a fresh below-threshold measurement even when the graph still claims the requirement verified', () => {
+    const report = requirementCoverageReport({
+      requirements: [{ id: 'NFR-1' }],
+      graph: [graphRow('NFR-1', { verified: true, verifiedBy: ['oldsha'] })],
+      nfr: [
+        {
+          id: 'NFR-1',
+          verified: false,
+          problem: 'below-threshold',
+          measured: 900,
+          evidence: 'report:1',
+          verifiedBy: [],
+        },
+      ],
+    });
+
+    expect(report.rows).toEqual([
+      {
+        id: 'NFR-1',
+        verified: false,
+        verifiedBy: [],
+        problem: 'below-threshold',
+      },
+    ]);
+    expect(report.verified).toBe(0);
+    expect(report.total).toBe(1);
+  });
+
   // And the reverse: a fresh pass counts before anything has been committed —
   // and still names what verified it (TST-2's "by which tests"), even though
   // nothing has been written down about it yet.

@@ -215,11 +215,18 @@ export interface RequirementCoverageInput {
  * requirement, verified or not (TST-2), with a quantified NFR's own fresh run
  * folded in alongside whatever the trace graph already holds.
  *
- * Either source is enough. A quantified NFR this run did not re-measure but a
- * still-current commit already verified is not newly unverified because this
- * run happened to skip it, and a fresh pass counts before anything has been
- * committed to say so — the report is honest about the moment it was taken,
- * not about what has been written down yet.
+ * Either source is enough for the *not-run* case only. A quantified NFR this
+ * run did not re-measure but a still-current commit already verified is not
+ * newly unverified because this run happened to skip it, and a fresh pass
+ * counts before anything has been committed to say so — the report is honest
+ * about the moment it was taken, not about what has been written down yet.
+ *
+ * A fresh *below-threshold* result is different: it is this run's own
+ * evidence that the requirement failed, and it decides regardless of what an
+ * older commit trailer claims. A stale `Verifies:` trailer outvoting a
+ * measurement taken this run would mean the report drops the one thing it
+ * exists to surface — the same way the kernel's merge gate treats a check
+ * that failed as blocking no matter what history says (CONV-4).
  */
 export function requirementCoverageReport(
   input: RequirementCoverageInput,
@@ -230,6 +237,19 @@ export function requirementCoverageReport(
   const rows = input.requirements.map((requirement): RequirementCoverageRow => {
     const graphRow = graphById.get(requirement.id);
     const nfrRow = nfrById.get(requirement.id);
+
+    // A fresh below-threshold measurement decides on its own, ahead of the
+    // OR below: it is evidence this run collected, and no older claim from
+    // the trace graph gets to erase it or the `problem` that explains it.
+    if (nfrRow?.problem === 'below-threshold') {
+      return {
+        id: requirement.id,
+        verified: false,
+        verifiedBy: [],
+        problem: 'below-threshold',
+      };
+    }
+
     const verifiedByGraph = graphRow?.verified ?? false;
     const verifiedByNfr = nfrRow?.verified ?? false;
     const verified = verifiedByGraph || verifiedByNfr;

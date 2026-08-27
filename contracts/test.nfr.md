@@ -84,6 +84,15 @@ still-current commit already verified is not newly unverified because this
 run happened to skip it, and a fresh pass counts — attribution included —
 before anything has been committed to say so.
 
+That OR has one exception: a fresh **below-threshold** result decides on its
+own, ahead of the trace graph. It is this run's own evidence that the
+requirement failed, and an older `Verifies:` trailer — necessarily measured
+before this run, or it would be this run's own result — does not get to
+outvote it. The row reports `verified: false` and keeps `problem:
+'below-threshold'` regardless of what the graph claims; only the *not-run*
+case falls back to the graph's verdict, because there the graph is the only
+source with anything to say.
+
 ## Consumers
 
 - [`src/test/nfr.ts`](../src/test/nfr.ts) — `runNfrSuite` (the orchestration:
