@@ -62,18 +62,26 @@ effect, because there is no state to converge on — only a new reading.
 `nfrCoverage(requirements, results)` is pure — the same requirements and
 reported results always produce the same rows, so it replays from the log
 rather than re-asking a provider whose target may since have changed
-(mirrors `mergeVerdict`). A row is:
+(mirrors `mergeVerdict`). Where `results` holds more than one entry for the
+same requirement — a rerun after a fix, replayed from a log spanning several
+runs — the most recent entry wins; an earlier, superseded measurement never
+outvotes the one that actually ran last. A row is:
 
 - **verified** — a result came back for the requirement and `passed` was true;
 - **not-run** — no result came back for it at all;
 - **below-threshold** — a result came back and `passed` was false.
 
+A verified row's `verifiedBy` names the requirement's own `measuredBy` (SCP-1)
+— the "by which tests" attribution TST-2 asks the general coverage report for.
+It is empty wherever the row is not verified.
+
 `requirementCoverageReport` folds these rows into the general trace-graph
 coverage query (`TraceIndex.coverage`, TST-2) that already answers for
 functional requirements from commit `Verifies:` trailers: a requirement counts
-as verified if *either* source says so. A quantified NFR this run did not
-re-measure but a still-current commit already verified is not newly
-unverified because this run happened to skip it, and a fresh pass counts
+as verified if *either* source says so, and its `verifiedBy` is whichever
+source(s) verified it. A quantified NFR this run did not re-measure but a
+still-current commit already verified is not newly unverified because this
+run happened to skip it, and a fresh pass counts — attribution included —
 before anything has been committed to say so.
 
 ## Consumers

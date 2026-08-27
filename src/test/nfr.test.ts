@@ -12,6 +12,7 @@ import {
   testNfrContract,
   type NfrCoverageRow,
   type NfrRequirement,
+  type NfrRunInput,
   type NfrRunOutput,
 } from './nfr.js';
 
@@ -59,7 +60,13 @@ describe('nfrCoverage (TST-3)', () => {
     );
 
     expect(rows).toEqual([
-      { id: 'NFR-1', verified: true, measured: 180, evidence: 'report:1' },
+      {
+        id: 'NFR-1',
+        verified: true,
+        measured: 180,
+        evidence: 'report:1',
+        verifiedBy: [latency.measuredBy],
+      },
     ]);
   });
 
@@ -96,7 +103,36 @@ describe('nfrCoverage (TST-3)', () => {
       id: 'NFR-2',
       verified: false,
       problem: 'not-run',
+      verifiedBy: [],
     });
+  });
+
+  // A rerun after a fix appends a fresh result rather than replacing the old
+  // one in the log; nfrCoverage must read the log's most recent entry as the
+  // current answer, not whichever one happened to run first.
+  it('reads the most recent result when a requirement was measured more than once', () => {
+    const rows = nfrCoverage(
+      [latency],
+      [
+        result({ requirementId: 'NFR-1', measured: 400, passed: false }),
+        result({
+          requirementId: 'NFR-1',
+          measured: 180,
+          passed: true,
+          evidence: 'report:2',
+        }),
+      ],
+    );
+
+    expect(rows).toEqual([
+      {
+        id: 'NFR-1',
+        verified: true,
+        measured: 180,
+        evidence: 'report:2',
+        verifiedBy: [latency.measuredBy],
+      },
+    ]);
   });
 
   it('marks a failing measurement unverified even with no other requirements', () => {
@@ -112,6 +148,7 @@ describe('nfrCoverage (TST-3)', () => {
         problem: 'below-threshold',
         measured: 400,
         evidence: '',
+        verifiedBy: [],
       },
     ]);
   });
@@ -161,8 +198,14 @@ function graphRow(id: string, overrides: Partial<CoverageRow> = {}): CoverageRow
 describe('requirementCoverageReport (TST-2 + TST-3)', () => {
   it('lists a verified and an unverified requirement together', () => {
     const nfr: readonly NfrCoverageRow[] = [
-      { id: 'NFR-1', verified: true, measured: 180, evidence: 'report:1' },
-      { id: 'NFR-2', verified: false, problem: 'not-run' },
+      {
+        id: 'NFR-1',
+        verified: true,
+        measured: 180,
+        evidence: 'report:1',
+        verifiedBy: ['load test at 100 concurrent submitters'],
+      },
+      { id: 'NFR-2', verified: false, problem: 'not-run', verifiedBy: [] },
     ];
 
     const report = requirementCoverageReport({
@@ -179,7 +222,11 @@ describe('requirementCoverageReport (TST-2 + TST-3)', () => {
     expect(report.verified).toBe(2);
     expect(report.rows).toEqual([
       { id: 'FUN-1', verified: true, verifiedBy: ['abc123'] },
-      { id: 'NFR-1', verified: true, verifiedBy: [] },
+      {
+        id: 'NFR-1',
+        verified: true,
+        verifiedBy: ['load test at 100 concurrent submitters'],
+      },
       { id: 'NFR-2', verified: false, verifiedBy: [], problem: 'not-run' },
     ]);
   });
@@ -199,15 +246,31 @@ describe('requirementCoverageReport (TST-2 + TST-3)', () => {
     ]);
   });
 
-  // And the reverse: a fresh pass counts before anything has been committed.
+  // And the reverse: a fresh pass counts before anything has been committed —
+  // and still names what verified it (TST-2's "by which tests"), even though
+  // nothing has been written down about it yet.
   it('verifies a requirement from a fresh run before the graph has caught up', () => {
     const report = requirementCoverageReport({
       requirements: [{ id: 'NFR-1' }],
       graph: [graphRow('NFR-1')],
-      nfr: [{ id: 'NFR-1', verified: true, measured: 150, evidence: 'report:1' }],
+      nfr: [
+        {
+          id: 'NFR-1',
+          verified: true,
+          measured: 150,
+          evidence: 'report:1',
+          verifiedBy: ['load test at 100 concurrent submitters'],
+        },
+      ],
     });
 
-    expect(report.rows).toEqual([{ id: 'NFR-1', verified: true, verifiedBy: [] }]);
+    expect(report.rows).toEqual([
+      {
+        id: 'NFR-1',
+        verified: true,
+        verifiedBy: ['load test at 100 concurrent submitters'],
+      },
+    ]);
   });
 });
 
@@ -235,8 +298,38 @@ describe('test.nfr contract', () => {
     expect(() => new BoundContract(testNfrContract, {})).toThrow(ContractError);
   });
 
-  it('refuses to guess when no provider is bound', () => {
-    expect(() => new CapabilityRegistry().require('test.nfr')).toThrow(ContractError);
+  // Exercises testNfrContract itself, not just CapabilityRegistry in the
+  // abstract: a registry with nothing bound refuses 'test.nfr' by name, and
+  // binding testNfrContract under that same name is what makes `require`
+  // resolve — this would fail if the contract's own `name` field drifted
+  // from the capability the rest of the kernel asks for.
+  it('resolves by name once testNfrContract is bound, and not before', async () => {
+    const registry = new CapabilityRegistry();
+    expect(() => registry.require('test.nfr')).toThrow(ContractError);
+
+    registry.bind(testNfrContract, {
+      run: (input: NfrRunInput) =>
+        Promise.resolve({
+          requirementId: input.requirementId,
+          metric: input.metric,
+          measured: input.value,
+          unit: input.unit,
+          passed: true,
+          evidence: '',
+        }),
+    });
+
+    const output = await registry.require('test.nfr').invoke('run', {
+      repo: 'o/r',
+      ref: 'abc',
+      requirementId: 'NFR-1',
+      metric: 'p95 latency',
+      value: 200,
+      unit: 'ms',
+      measuredBy: 'load test',
+    });
+
+    expect(output).toMatchObject({ requirementId: 'NFR-1', passed: true });
   });
 
   it('defaults evidence to empty rather than requiring one', () => {

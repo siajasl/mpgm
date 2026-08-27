@@ -87,6 +87,13 @@ export interface NfrCoverageRow {
   readonly problem?: NfrProblem;
   readonly measured?: number;
   readonly evidence?: string;
+  /**
+   * What verified it — the test Scope recorded for this NFR (SCP-1's
+   * `measuredBy`), the same "by which tests" attribution TST-2 asks the
+   * general coverage report for. Empty where nothing verified it, mirroring
+   * `CoverageRow.verifiedBy` (`src/trace/index-store.ts`).
+   */
+  readonly verifiedBy: readonly string[];
 }
 
 /**
@@ -103,14 +110,19 @@ export function nfrCoverage(
   results: readonly NfrRunOutput[],
 ): readonly NfrCoverageRow[] {
   return requirements.map((requirement) => {
-    const result = results.find((entry) => entry.requirementId === requirement.id);
+    // Last match, not first: replaying a log whose `results` span several
+    // runs of the same requirement (a rerun after a fix, say) must read the
+    // most recent measurement as current, the way a later commit supersedes
+    // an earlier one in the trace graph. Taking the first match would let an
+    // earlier, superseded result outvote the one that actually ran last.
+    const result = results.findLast((entry) => entry.requirementId === requirement.id);
 
     if (result === undefined) {
       // SCP-1 binds every quantified NFR to TST-3: a requirement no suite
       // reported on is exactly as unverified as one that failed. Reading the
       // absence as "not applicable" is the dangerous answer — the one this
       // function exists to refuse.
-      return { id: requirement.id, verified: false, problem: 'not-run' };
+      return { id: requirement.id, verified: false, problem: 'not-run', verifiedBy: [] };
     }
 
     if (!result.passed) {
@@ -120,6 +132,7 @@ export function nfrCoverage(
         problem: 'below-threshold',
         measured: result.measured,
         evidence: result.evidence,
+        verifiedBy: [],
       };
     }
 
@@ -128,6 +141,7 @@ export function nfrCoverage(
       verified: true,
       measured: result.measured,
       evidence: result.evidence,
+      verifiedBy: [requirement.measuredBy],
     };
   });
 }
@@ -219,11 +233,19 @@ export function requirementCoverageReport(
     const verifiedByGraph = graphRow?.verified ?? false;
     const verifiedByNfr = nfrRow?.verified ?? false;
     const verified = verifiedByGraph || verifiedByNfr;
+    // Either source's attribution counts, not just the graph's — a
+    // requirement a fresh run just verified has not been committed anywhere
+    // yet, and reporting it verified while erasing what verified it loses
+    // exactly the "by which tests" attribution TST-2 asks for.
+    const verifiedBy = [
+      ...(graphRow?.verifiedBy ?? []),
+      ...(verifiedByNfr ? (nfrRow?.verifiedBy ?? []) : []),
+    ];
 
     return {
       id: requirement.id,
       verified,
-      verifiedBy: graphRow?.verifiedBy ?? [],
+      verifiedBy,
       ...(verified
         ? {}
         : nfrRow?.problem === undefined
