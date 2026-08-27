@@ -115,7 +115,7 @@ describe('assembled context', () => {
     const context = assembleContext({
       task,
       upstream: [writeArtifact(root)],
-      kb: [parseKbDocument('a.md', 'plain')],
+      kb: [parseKbDocument('a.md', '---\negress: internal\n---\n\nplain')],
       policy: DEFAULT_EGRESS_POLICY,
     });
 
@@ -187,6 +187,24 @@ describe('egress filtering (SAF-6)', () => {
     expect(context.withheld).toHaveLength(1);
   });
 
+  it('labels an artifact whose producer named no class, so the next phase can read it', () => {
+    const root = newRoot();
+    // The property that keeps a fail-closed policy from severing the artifact
+    // chain (ART-1): a phase's own output is classified as it is written, so
+    // it is never the unlabelled content the default withholds.
+    const artifact = writeArtifact(root);
+
+    expect(artifact.egress).toBe('internal');
+    expect(
+      assembleContext({
+        task,
+        upstream: [artifact],
+        kb: [],
+        policy: DEFAULT_EGRESS_POLICY,
+      }).includedArtifacts,
+    ).toStrictEqual(['definition-brief']);
+  });
+
   it('round-trips the egress label through the artifact store', () => {
     const root = newRoot();
     writeArtifact(root, 'restricted');
@@ -198,7 +216,24 @@ describe('egress filtering (SAF-6)', () => {
     expect(reread.egress).toBe('restricted');
   });
 
-  it('applies the unlabelled default, and honours a fail-closed policy', () => {
+  it('withholds unlabelled content by default, and says that it did', () => {
+    const unlabelled = parseKbDocument('notes.md', 'Some notes.');
+
+    const context = assembleContext({
+      task,
+      upstream: [],
+      kb: [unlabelled],
+      policy: DEFAULT_EGRESS_POLICY,
+    });
+
+    expect(context.includedKb).toStrictEqual([]);
+    // Withheld, and reported as withheld: a document that vanished without
+    // explanation would read to the operator as a document that was never
+    // there, and they would go looking for the wrong bug.
+    expect(context.withheld).toStrictEqual([{ path: 'notes.md', egress: 'restricted' }]);
+  });
+
+  it('sends unlabelled content when the project asks it to', () => {
     const unlabelled = parseKbDocument('notes.md', 'Some notes.');
 
     expect(
@@ -206,19 +241,9 @@ describe('egress filtering (SAF-6)', () => {
         task,
         upstream: [],
         kb: [unlabelled],
-        policy: DEFAULT_EGRESS_POLICY,
+        policy: { maxClass: 'internal', unlabelled: 'internal' },
       }).includedKb,
     ).toStrictEqual(['notes.md']);
-
-    // A project that wants unlabelled content withheld says so.
-    expect(
-      assembleContext({
-        task,
-        upstream: [],
-        kb: [unlabelled],
-        policy: { maxClass: 'internal', unlabelled: 'restricted' },
-      }).includedKb,
-    ).toStrictEqual([]);
   });
 
   it('ranks classes so a stricter policy excludes more', () => {

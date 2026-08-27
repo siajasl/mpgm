@@ -34,7 +34,14 @@ const CONVENTIONS = parseKbDocument(
 
 const GLOSSARY = parseKbDocument(
   'glossary.md',
-  ['---', 'title: Glossary', '---', '', '- **GLOSS-1** Not a rule.'].join('\n'),
+  [
+    '---',
+    'title: Glossary',
+    'egress: internal',
+    '---',
+    '',
+    '- **GLOSS-1** Not a rule.',
+  ].join('\n'),
 );
 
 const task = { description: 'Implement T1.', prompt: 'Do the thing.' };

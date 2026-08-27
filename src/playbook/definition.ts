@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { egressClassSchema } from '../context/egress.js';
 
 /**
  * Phase playbooks (`phases/<name>.yaml`) — DESIGN §2, EXT-3.
@@ -39,6 +40,13 @@ export const artifactTemplateSchema = z
     /** Repo-relative path, versioned by the artifact store (ART-1). */
     path: nonEmpty,
     description: nonEmpty,
+    /**
+     * Data-egress class the produced artifact carries (SAF-6). Declared per
+     * artifact because sensitivity is a property of what a phase produces,
+     * not of the phase: a threat model and a glossary come out of the same
+     * playbook. Omitted means the artifact store's default.
+     */
+    egress: egressClassSchema.optional(),
   })
   .strict();
 

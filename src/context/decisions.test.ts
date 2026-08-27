@@ -173,6 +173,27 @@ describe('writing the knowledge base (CTX-4)', () => {
     expect(written).toContain('Property tests for anything with an invariant.');
   });
 
+  it('labels a document whose author named no class', () => {
+    const root = newRoot();
+    // Left unlabelled it would be withheld from every task after this one,
+    // and the curator's work would be invisible to exactly the readers CTX-4
+    // exists to serve.
+    const path = writeKbDocument({ root, update, producedBy: provenance });
+
+    expect(readFileSync(join(root, path), 'utf8')).toContain('egress: internal');
+  });
+
+  it('keeps the class the author did name', () => {
+    const root = newRoot();
+    const path = writeKbDocument({
+      root,
+      update: { ...update, egress: 'restricted' },
+      producedBy: provenance,
+    });
+
+    expect(readFileSync(join(root, path), 'utf8')).toContain('egress: restricted');
+  });
+
   it('refuses a path that would escape the knowledge base', () => {
     const root = newRoot();
 

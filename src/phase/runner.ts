@@ -254,6 +254,7 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       schema: template.schema,
       data,
       producedBy: provenance,
+      ...(template.egress === undefined ? {} : { egress: template.egress }),
     });
     produced[step.produces] = artifact;
     options.traces?.indexArtifactAs(
