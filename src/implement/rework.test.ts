@@ -164,6 +164,35 @@ describe('what the author is shown', () => {
     expect(rendered).toMatch(/not told what you declared/);
   });
 
+  it('says why the branch has extra commits, so an attempt is not spent on it', () => {
+    // The loop adds a commit per round, so it creates the departure from a
+    // one-commit-per-change convention that the next review reports. Round 2
+    // of the first real self-hosted task lost part of its attempt to exactly
+    // that.
+    expect(rendered).toMatch(/add a commit to a branch that already carries/);
+    expect(rendered).toMatch(/declare it with that as\n?\s*the reason/);
+  });
+
+  it('names no convention the caller did not give it', () => {
+    // `rework.ts` is harness code and conventions live in a project's
+    // knowledge base, so hardcoding an id here would be wrong for every other
+    // project — whose CONV-1 is something else entirely. Asserted as "every
+    // id in the output was passed in" rather than "CONV-1 is absent", which
+    // this fixture would satisfy however the text were written.
+    const mentioned = new Set(rendered.match(/\bCONV-[0-9]+\b/g) ?? []);
+
+    expect(mentioned.size).toBeGreaterThan(0);
+    expect([...mentioned]).toStrictEqual(['CONV-6']);
+  });
+
+  it('refuses history rewriting, which would discard the review', () => {
+    // A squashed or amended commit is a different commit, and `decideMerge`
+    // refuses a review whose ref no longer matches — so tidying the branch
+    // would silently throw away the approval it is working towards.
+    expect(rendered).toMatch(/Do not rewrite history/);
+    expect(rendered).toMatch(/refuses to merge on a review of a ref/);
+  });
+
   it('says how many attempts are left, and refuses the easy way to pass', () => {
     expect(rendered).toContain('1 remain after it');
     expect(rendered).toMatch(/not delete, skip, weaken or exclude a test/);

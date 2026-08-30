@@ -107,6 +107,24 @@ export function renderReview(request: {
     '',
     `This is rework attempt ${String(request.attempt)}; ${String(request.attemptsRemaining)} remain after it.`,
     '',
+    // The loop adds a commit per round, so it manufactures the very departure
+    // from a one-commit-per-change convention that the next review then
+    // reports. Saying so here costs nothing and stops an attempt being spent
+    // on a finding the process caused. Deliberately phrased about commit
+    // structure rather than naming a convention id: which id that is belongs
+    // to a project's knowledge base, and another project's would be something
+    // else entirely.
+    'Your fix will add a commit to a branch that already carries at least one,',
+    'because this branch has been through a review already. That is how the',
+    'loop works rather than something you did wrong: if a convention about',
+    'commit structure is among the departures above, declare it with that as',
+    'the reason instead of trying to fix it.',
+    '',
+    'Do not rewrite history to tidy the branch. It is already published and',
+    'under review, and an amended or squashed commit is a different commit —',
+    'it discards the approval given to the one it replaced, and the kernel',
+    'refuses to merge on a review of a ref that no longer exists.',
+    '',
     'Do not delete, skip, weaken or exclude a test to resolve a finding, and do',
     'not relax a lint or type rule to silence one. Report the commit you end at',
     'in `ref`.',
