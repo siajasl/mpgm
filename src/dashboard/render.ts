@@ -36,17 +36,75 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
+/**
+ * A string already known to be safe HTML: the escaped-and-assembled output
+ * of `markup` below, and nothing else. The constructor is private, so the
+ * only way to produce one is `markup`, which escapes every interpolation —
+ * there is no way to construct a `SafeHtml` from a plain string without
+ * going through it. That is what makes bypassing escaping a deliberate act
+ * rather than an omission: a new `<td>${task.someNewField}</td>` written as
+ * a plain template literal where a `SafeHtml` is expected is a type error,
+ * not a silent XSS waiting for someone to notice the missing `escapeHtml`
+ * call (CONV-5). A nested `markup` result — including an array of them, as
+ * every row-per-item table below composes — is recognised by `escapeValue`
+ * and spliced in verbatim rather than double-escaped.
+ *
+ * (Named `markup` rather than the more obvious `html`: Prettier treats a
+ * tagged template literal whose tag is literally named `html` as embedded
+ * HTML and reformats its contents on every `format` run, which would rewrite
+ * the whitespace of every page this module renders as a side effect of
+ * running the formatter. `markup` gets the same tagged-template mechanism
+ * without that.)
+ */
+class SafeHtml {
+  private constructor(readonly value: string) {}
+
+  static of(value: string): SafeHtml {
+    return new SafeHtml(value);
+  }
+
+  toString(): string {
+    return this.value;
+  }
+}
+
+function escapeValue(value: unknown): string {
+  if (value instanceof SafeHtml) {
+    return value.value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(escapeValue).join('');
+  }
+  return escapeHtml(String(value));
+}
+
+/**
+ * Tagged template that escapes every interpolated value by default. A
+ * nested `markup` result is recognised as already-safe and spliced in
+ * verbatim rather than double-escaped; a plain string, number or boolean —
+ * including one drawn straight from an event payload — is always escaped.
+ * There is no interpolation path here that skips escaping.
+ */
+function markup(strings: TemplateStringsArray, ...values: readonly unknown[]): SafeHtml {
+  let result = strings[0] ?? '';
+  values.forEach((value, i) => {
+    result += escapeValue(value);
+    result += strings[i + 1] ?? '';
+  });
+  return SafeHtml.of(result);
+}
+
 function money(amount: number): string {
   return `$${amount.toFixed(4)}`;
 }
 
-function page(title: string, body: string): string {
-  return `<!doctype html>
+function page(title: string, body: SafeHtml): SafeHtml {
+  return markup`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="refresh" content="${String(REFRESH_SECONDS)}" />
-<title>${escapeHtml(title)}</title>
+<meta http-equiv="refresh" content="${REFRESH_SECONDS}" />
+<title>${title}</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 2rem; color: #111; }
   h1, h2 { margin-bottom: 0.25rem; }
@@ -70,19 +128,19 @@ ${body}
 export function errorPage(status: number, message: string): string {
   return page(
     `mpgm dashboard — ${String(status)}`,
-    `<h1>${String(status)}</h1><p>${escapeHtml(message)}</p>`,
-  );
+    markup`<h1>${status}</h1><p>${message}</p>`,
+  ).toString();
 }
 
-function summaryRow(summary: DashboardSummary): string {
-  return `<tr>
-<td><a href="/runs/${encodeURIComponent(summary.runId)}">${escapeHtml(summary.runId)}</a></td>
-<td>${escapeHtml(summary.project)}</td>
-<td>${escapeHtml(summary.control)}</td>
-<td>${escapeHtml(summary.currentPhase ?? '-')}</td>
+function summaryRow(summary: DashboardSummary): SafeHtml {
+  return markup`<tr>
+<td><a href="/runs/${encodeURIComponent(summary.runId)}">${summary.runId}</a></td>
+<td>${summary.project}</td>
+<td>${summary.control}</td>
+<td>${summary.currentPhase ?? '-'}</td>
 <td>${money(summary.usage.costUsd)}</td>
-<td class="${summary.blockedTasks > 0 ? 'blocked' : ''}">${String(summary.blockedTasks)}</td>
-<td class="${summary.pendingApprovals > 0 ? 'awaiting' : ''}">${String(summary.pendingApprovals)}</td>
+<td class="${summary.blockedTasks > 0 ? 'blocked' : ''}">${summary.blockedTasks}</td>
+<td class="${summary.pendingApprovals > 0 ? 'awaiting' : ''}">${summary.pendingApprovals}</td>
 </tr>`;
 }
 
@@ -90,36 +148,36 @@ function summaryRow(summary: DashboardSummary): string {
 export function runListPage(summaries: readonly DashboardSummary[]): string {
   const body =
     summaries.length === 0
-      ? '<h1>Runs</h1><p class="muted">no runs in the log</p>'
-      : `<h1>Runs</h1>
+      ? markup`<h1>Runs</h1><p class="muted">no runs in the log</p>`
+      : markup`<h1>Runs</h1>
 <table>
 <thead><tr><th>run</th><th>project</th><th>control</th><th>phase</th><th>spend</th><th>blocked</th><th>pending approvals</th></tr></thead>
 <tbody>
-${summaries.map(summaryRow).join('\n')}
+${summaries.map(summaryRow)}
 </tbody>
 </table>`;
-  return page('mpgm dashboard', body);
+  return page('mpgm dashboard', body).toString();
 }
 
-function taskRow(task: DashboardTask): string {
-  return `<tr class="${task.blocked ? 'blocked' : ''}">
-<td>${escapeHtml(task.taskId)}</td>
-<td>${escapeHtml(task.role)}</td>
-<td>${escapeHtml(task.model)}</td>
-<td>${escapeHtml(task.status)}</td>
+function taskRow(task: DashboardTask): SafeHtml {
+  return markup`<tr class="${task.blocked ? 'blocked' : ''}">
+<td>${task.taskId}</td>
+<td>${task.role}</td>
+<td>${task.model}</td>
+<td>${task.status}</td>
 <td>${task.review === null ? '-' : task.review.approved ? 'approved' : 'not approved'}</td>
-<td>${task.merged === null ? '-' : escapeHtml(task.merged.commit)}</td>
+<td>${task.merged === null ? '-' : task.merged.commit}</td>
 <td>${money(task.usage.costUsd)}</td>
 </tr>`;
 }
 
-function gateRow(gate: DashboardGate): string {
-  return `<tr class="${gate.awaitingApproval ? 'awaiting' : ''}">
-<td>${escapeHtml(gate.gateId)}</td>
-<td>${escapeHtml(gate.phase)}</td>
-<td>${escapeHtml(gate.status)}</td>
-<td>${gate.decidedBy === null ? '-' : escapeHtml(gate.decidedBy)}</td>
-<td>${escapeHtml(gate.reason)}</td>
+function gateRow(gate: DashboardGate): SafeHtml {
+  return markup`<tr class="${gate.awaitingApproval ? 'awaiting' : ''}">
+<td>${gate.gateId}</td>
+<td>${gate.phase}</td>
+<td>${gate.status}</td>
+<td>${gate.decidedBy ?? '-'}</td>
+<td>${gate.reason}</td>
 </tr>`;
 }
 
@@ -127,46 +185,44 @@ function gateRow(gate: DashboardGate): string {
 export function runDetailPage(run: DashboardRun): string {
   const tasks =
     run.tasks.length === 0
-      ? '<p class="muted">no tasks yet</p>'
-      : `<table>
+      ? markup`<p class="muted">no tasks yet</p>`
+      : markup`<table>
 <thead><tr><th>task</th><th>role</th><th>model</th><th>status</th><th>review</th><th>merged</th><th>spend</th></tr></thead>
 <tbody>
-${run.tasks.map(taskRow).join('\n')}
+${run.tasks.map(taskRow)}
 </tbody>
 </table>`;
 
   const gates =
     run.gates.length === 0
-      ? '<p class="muted">no gates yet</p>'
-      : `<table>
+      ? markup`<p class="muted">no gates yet</p>`
+      : markup`<table>
 <thead><tr><th>gate</th><th>phase</th><th>status</th><th>decided by</th><th>reason</th></tr></thead>
 <tbody>
-${run.gates.map(gateRow).join('\n')}
+${run.gates.map(gateRow)}
 </tbody>
 </table>`;
 
   const destructiveCalls =
     run.destructiveCalls.length === 0
-      ? '<p class="muted">none recorded</p>'
-      : `<table>
+      ? markup`<p class="muted">none recorded</p>`
+      : markup`<table>
 <thead><tr><th>tool</th><th>task</th><th>dry run</th><th>confirmed by</th></tr></thead>
 <tbody>
-${run.destructiveCalls
-  .map(
-    (call) => `<tr>
-<td>${escapeHtml(call.tool)}</td>
-<td>${escapeHtml(call.taskId)}</td>
-<td>${String(call.dryRun)}</td>
-<td>${call.confirmedBy === null ? '-' : escapeHtml(call.confirmedBy)}</td>
+${run.destructiveCalls.map(
+  (call) => markup`<tr>
+<td>${call.tool}</td>
+<td>${call.taskId}</td>
+<td>${call.dryRun}</td>
+<td>${call.confirmedBy ?? '-'}</td>
 </tr>`,
-  )
-  .join('\n')}
+)}
 </tbody>
 </table>`;
 
-  const body = `<h1>${escapeHtml(run.runId)}</h1>
-<p>project ${escapeHtml(run.project)} &middot; control ${escapeHtml(run.control)} &middot; phase ${escapeHtml(run.currentPhase ?? '-')}</p>
-<p>spend ${money(run.usage.costUsd)} &middot; tokens ${String(run.usage.inputTokens + run.usage.outputTokens)} &middot; interventions ${String(run.interventions)}</p>
+  const body = markup`<h1>${run.runId}</h1>
+<p>project ${run.project} &middot; control ${run.control} &middot; phase ${run.currentPhase ?? '-'}</p>
+<p>spend ${money(run.usage.costUsd)} &middot; tokens ${run.usage.inputTokens + run.usage.outputTokens} &middot; interventions ${run.interventions}</p>
 <h2>Tasks</h2>
 ${tasks}
 <h2>Approvals</h2>
@@ -174,54 +230,50 @@ ${gates}
 <h2>Destructive calls</h2>
 ${destructiveCalls}
 `;
-  return page(`mpgm dashboard — ${run.runId}`, body);
+  return page(`mpgm dashboard — ${run.runId}`, body).toString();
 }
 
 /** The trace graph the index currently holds (ADR-4). */
 export function traceGraphPage(graph: TraceGraph): string {
   const nodes =
     graph.nodes.length === 0
-      ? '<p class="muted">no declarations indexed</p>'
-      : `<table>
+      ? markup`<p class="muted">no declarations indexed</p>`
+      : markup`<table>
 <thead><tr><th>id</th><th>kind</th><th>label</th><th>source</th></tr></thead>
 <tbody>
-${graph.nodes
-  .map(
-    (node) => `<tr>
-<td>${escapeHtml(node.id)}</td>
-<td>${escapeHtml(node.kind)}</td>
-<td>${escapeHtml(node.label)}</td>
-<td>${escapeHtml(node.source)}</td>
+${graph.nodes.map(
+  (node) => markup`<tr>
+<td>${node.id}</td>
+<td>${node.kind}</td>
+<td>${node.label}</td>
+<td>${node.source}</td>
 </tr>`,
-  )
-  .join('\n')}
+)}
 </tbody>
 </table>`;
 
   const links =
     graph.links.length === 0
-      ? '<p class="muted">no links indexed</p>'
-      : `<table>
+      ? markup`<p class="muted">no links indexed</p>`
+      : markup`<table>
 <thead><tr><th>from</th><th>relation</th><th>to</th><th>source</th></tr></thead>
 <tbody>
-${graph.links
-  .map(
-    (link) => `<tr>
-<td>${escapeHtml(link.src)}</td>
-<td>${escapeHtml(link.relation)}</td>
-<td>${escapeHtml(link.dst)}</td>
-<td>${escapeHtml(link.source)}</td>
+${graph.links.map(
+  (link) => markup`<tr>
+<td>${link.src}</td>
+<td>${link.relation}</td>
+<td>${link.dst}</td>
+<td>${link.source}</td>
 </tr>`,
-  )
-  .join('\n')}
+)}
 </tbody>
 </table>`;
 
-  const body = `<h1>Trace graph</h1>
+  const body = markup`<h1>Trace graph</h1>
 <h2>Nodes</h2>
 ${nodes}
 <h2>Links</h2>
 ${links}
 `;
-  return page('mpgm dashboard — trace', body);
+  return page('mpgm dashboard — trace', body).toString();
 }

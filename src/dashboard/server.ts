@@ -27,9 +27,14 @@ import { errorPage, runDetailPage, runListPage, traceGraphPage } from './render.
  * The dashboard UI (T3.2.5b) is this same JSON surface content-negotiated: a
  * request whose `Accept` header prefers `text/html` gets the panel render
  * from `render.ts` over identical data, rather than a second route tree that
- * could drift from what the API actually returns. `/` exists only as a
- * landing page for a browser — a JSON client has no use for it, and one
- * asking for it gets the same run list `/runs` would give it.
+ * could drift from what the API actually returns. Every error response
+ * negotiates the same way, so a browser that mistypes a URL or hits a
+ * projection failure sees a rendered page rather than a raw JSON body.
+ *
+ * `/` is the one exception: it is a landing page for a browser, not part of
+ * the negotiated API surface, so it renders HTML unconditionally regardless
+ * of `Accept` — a JSON client has no use for a landing page and should ask
+ * `/runs` directly for the same data.
  */
 export interface DashboardServerOptions {
   readonly projector: Projector;
@@ -74,9 +79,8 @@ export class DashboardServer {
 
   #handle(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      this.#json(res, 405, {
-        error: `method ${req.method ?? '?'} not allowed: the projection API is read-only`,
-      });
+      const message = `method ${req.method ?? '?'} not allowed: the projection API is read-only`;
+      this.#respond(req, res, 405, { error: message }, () => errorPage(405, message));
       return;
     }
 
@@ -103,9 +107,8 @@ export class DashboardServer {
         res.destroy();
         return;
       }
-      this.#json(res, 500, {
-        error: `projection failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
+      const message = `projection failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.#respond(req, res, 500, { error: message }, () => errorPage(500, message));
     }
   }
 
@@ -124,9 +127,8 @@ export class DashboardServer {
       try {
         segments.push(decodeURIComponent(segment));
       } catch {
-        this.#json(res, 400, {
-          error: `malformed path segment '${segment}': not a valid percent-encoding`,
-        });
+        const message = `malformed path segment '${segment}': not a valid percent-encoding`;
+        this.#respond(req, res, 400, { error: message }, () => errorPage(400, message));
         return;
       }
     }
@@ -172,19 +174,39 @@ export class DashboardServer {
       return;
     }
 
-    this.#json(res, 404, { error: `no such route: ${url.pathname}` });
+    const message = `no such route: ${url.pathname}`;
+    this.#respond(req, res, 404, { error: message }, () => errorPage(404, message));
   }
 
   /**
    * A browser's default `Accept` header lists `text/html` ahead of the
    * wildcard `*` / `*` it also sends; `fetch()` with no `Accept` set at all
-   * sends that wildcard alone. Treating only the former as "wants HTML" is
-   * what keeps every existing JSON client (including this file's own tests)
-   * getting exactly what it got before this route grew a second
-   * representation.
+   * sends that wildcard alone. Treating only an explicit `text/html` range
+   * as "wants HTML" is what keeps every existing JSON client (including
+   * this file's own tests) getting exactly what it got before this route
+   * grew a second representation.
+   *
+   * A media range's `q` parameter can mark it unacceptable outright
+   * (`q=0`, per RFC 9110 §12.5.1) rather than merely a low preference — a
+   * client sending `Accept: application/json, text/html;q=0` is refusing
+   * HTML explicitly, not asking for it, so that has to be read as "does not
+   * want HTML" rather than matched as a bare substring of the header.
    */
   #wantsHtml(req: IncomingMessage): boolean {
-    return (req.headers.accept ?? '').includes('text/html');
+    const accept = req.headers.accept;
+    if (accept === undefined) {
+      return false;
+    }
+    for (const range of accept.split(',')) {
+      const [type, ...params] = range.split(';').map((part) => part.trim());
+      if (type !== 'text/html') {
+        continue;
+      }
+      const qParam = params.find((param) => param.startsWith('q='));
+      const q = qParam === undefined ? 1 : Number(qParam.slice('q='.length));
+      return q !== 0;
+    }
+    return false;
   }
 
   /** JSON by default; the HTML panel only for a request that asked for one. */

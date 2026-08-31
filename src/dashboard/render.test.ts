@@ -75,6 +75,18 @@ describe('runListPage', () => {
     expect(html).not.toContain('<table>');
   });
 
+  it('escapes summary content instead of interpolating it as HTML', () => {
+    const html = runListPage([
+      summary({
+        project: '<script>alert(1)</script>',
+        currentPhase: '"><b>x</b>',
+      }),
+    ]);
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).not.toContain('"><b>x</b>');
+  });
+
   it('carries a refresh directive so a page left open keeps polling the log', () => {
     const html = runListPage([summary()]);
     expect(html).toContain('http-equiv="refresh"');
@@ -171,6 +183,47 @@ describe('runDetailPage', () => {
     expect(html).toContain('no tasks yet');
     expect(html).toContain('no gates yet');
   });
+
+  it('escapes gate content instead of interpolating it as HTML', () => {
+    const html = runDetailPage(
+      run({
+        gates: [
+          {
+            gateId: '<img src=x onerror=alert(2)>',
+            phase: 'design',
+            status: 'presented',
+            decidedBy: '<b>op</b>',
+            reason: '<script>alert(3)</script>',
+            awaitingApproval: true,
+          },
+        ],
+      }),
+    );
+    expect(html).not.toContain('<img src=x onerror=alert(2)>');
+    expect(html).toContain('&lt;img src=x onerror=alert(2)&gt;');
+    expect(html).not.toContain('<b>op</b>');
+    expect(html).not.toContain('<script>alert(3)</script>');
+  });
+
+  it('escapes destructive-call content instead of interpolating it as HTML', () => {
+    const html = runDetailPage(
+      run({
+        destructiveCalls: [
+          {
+            fingerprint: 'f1',
+            tool: '<script>alert(4)</script>',
+            taskId: '<b>T1</b>',
+            dryRun: false,
+            confirmedBy: '"><i>op</i>',
+          },
+        ],
+      }),
+    );
+    expect(html).not.toContain('<script>alert(4)</script>');
+    expect(html).toContain('&lt;script&gt;alert(4)&lt;/script&gt;');
+    expect(html).not.toContain('<b>T1</b>');
+    expect(html).not.toContain('<i>op</i>');
+  });
 });
 
 describe('traceGraphPage', () => {
@@ -184,6 +237,32 @@ describe('traceGraphPage', () => {
     expect(html).toContain('abc123');
     expect(html).toContain('LOAN-1');
     expect(html).toContain('traces-to');
+  });
+
+  it('escapes node and link content instead of interpolating it as HTML', () => {
+    const html = traceGraphPage({
+      nodes: [
+        {
+          id: '<script>alert(5)</script>',
+          kind: 'commit',
+          label: '<b>label</b>',
+          source: '<i>source</i>',
+        },
+      ],
+      links: [
+        {
+          src: '<script>alert(5)</script>',
+          dst: '<b>DST-1</b>',
+          relation: 'traces-to',
+          source: '<i>source</i>',
+        },
+      ],
+    });
+    expect(html).not.toContain('<script>alert(5)</script>');
+    expect(html).toContain('&lt;script&gt;alert(5)&lt;/script&gt;');
+    expect(html).not.toContain('<b>label</b>');
+    expect(html).not.toContain('<b>DST-1</b>');
+    expect(html).not.toContain('<i>source</i>');
   });
 });
 

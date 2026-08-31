@@ -261,6 +261,68 @@ describe('DashboardServer', () => {
     expect(plain.headers.get('content-type')).toContain('application/json');
   });
 
+  it('honors an explicit refusal of HTML (`q=0`) rather than treating the header as a substring match', async () => {
+    const { base } = await start();
+
+    // A client that lists `text/html;q=0` is refusing HTML explicitly per
+    // RFC 9110 §12.5.1, not merely deprioritising it — a bare substring
+    // check on the header would still see the literal text "text/html" and
+    // wrongly hand this client a page its JSON.parse cannot read.
+    const response = await fetch(`${base}/runs`, {
+      headers: { accept: 'application/json, text/html;q=0' },
+    });
+    expect(response.headers.get('content-type')).toContain('application/json');
+  });
+
+  it('renders every negotiated error as HTML for a browser, not just the per-run 404', async () => {
+    const { base } = await start();
+    const htmlAccept = { headers: { accept: 'text/html' } };
+
+    // The unknown-route 404 — an operator mistyping a URL must not be
+    // handed a raw JSON body just because this one error path was missed
+    // when HTML rendering was added to the rest.
+    const unknownRoute = await fetch(`${base}/nonsense`, htmlAccept);
+    expect(unknownRoute.status).toBe(404);
+    expect(unknownRoute.headers.get('content-type')).toContain('text/html');
+    expect(await unknownRoute.text()).toContain('nonsense');
+
+    // The 405 for a non-GET method.
+    const methodNotAllowed = await fetch(`${base}/runs`, {
+      method: 'POST',
+      ...htmlAccept,
+    });
+    expect(methodNotAllowed.status).toBe(405);
+    expect(methodNotAllowed.headers.get('content-type')).toContain('text/html');
+    expect(await methodNotAllowed.text()).toContain('read-only');
+
+    // The 400 for a malformed percent-encoding.
+    const badEncoding = await fetch(`${base}/runs/%zz`, htmlAccept);
+    expect(badEncoding.status).toBe(400);
+    expect(badEncoding.headers.get('content-type')).toContain('text/html');
+    expect(await badEncoding.text()).toContain('%zz');
+  });
+
+  it('renders a projector failure as HTML for a browser, same as the JSON boundary', async () => {
+    const { db, traces } = harness();
+    openDbs.push(db);
+
+    const throwingProjector = {
+      project(): never {
+        throw new Error('SQLITE_BUSY: database is locked');
+      },
+    } as unknown as Projector;
+
+    const server = new DashboardServer({ projector: throwingProjector, traces });
+    openServers.push(server);
+    const port = await server.listen(0);
+    const base = `http://127.0.0.1:${String(port)}`;
+
+    const response = await fetch(`${base}/runs`, { headers: { accept: 'text/html' } });
+    expect(response.status).toBe(500);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    expect(await response.text()).toContain('SQLITE_BUSY');
+  });
+
   it('renders a 404 for an unknown run as HTML rather than falling back to the JSON error body', async () => {
     const { base } = await start();
     const response = await fetch(`${base}/runs/no-such-run`, {
