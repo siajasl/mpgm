@@ -154,8 +154,13 @@ function implementPrompt(task: ImplementTask, branch: string): string {
   ].join('\n');
 }
 
-function reviewPrompt(task: ImplementTask, ref: string, base: string): string {
-  return [
+export function reviewPrompt(
+  task: ImplementTask,
+  ref: string,
+  base: string,
+  round = 1,
+): string {
+  const lines = [
     `Review the change for ${task.id} — ${task.title}.`,
     '',
     'It was asked to satisfy:',
@@ -163,10 +168,41 @@ function reviewPrompt(task: ImplementTask, ref: string, base: string): string {
     '',
     `The change is commit ${ref}. See it with \`git diff ${base}...${ref}\` and`,
     `\`git log ${base}..${ref}\`.`,
+  ];
+
+  // Said only from the second round, because on the first there is one commit
+  // and nothing to explain — and a note about rework rounds would invite a
+  // reviewer to look for a shape that is not there.
+  //
+  // T3.2.6 is why this exists. Its third review approved the change and
+  // refused it anyway, over a one-commit-per-change convention it saw broken
+  // by the four commits the loop had itself made. That was the last attempt,
+  // so the author was never even given the chance to declare a departure it
+  // had not made. Phrased about commit structure rather than naming a
+  // convention id: which id that is belongs to a project's knowledge base,
+  // and the project being reviewed here may have no such convention at all.
+  if (round > 1) {
+    lines.push(
+      '',
+      'This branch carries one commit per review round: the change, and then one',
+      "for each time it came back from review. That shape is the loop's doing",
+      "rather than the author's, and the author cannot collapse it — rewriting a",
+      'published commit discards the review already given to it.',
+      '',
+      'So do not report the number of commits as a departure this change made.',
+      "What each commit *says* is still the author's: a rework commit whose",
+      'message does not explain why it changed what it did is a finding like any',
+      'other.',
+    );
+  }
+
+  lines.push(
     '',
     `Set \`ref\` to ${ref}. Your approval is of that commit and travels no`,
     'further: if the change moves afterwards, the kernel refuses to merge on it.',
-  ].join('\n');
+  );
+
+  return lines.join('\n');
 }
 
 /**
@@ -340,7 +376,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       runId,
       taskId: reviewTaskId,
       role: reviewerRole,
-      prompt: reviewPrompt(task, repair.ref, into),
+      prompt: reviewPrompt(task, repair.ref, into, round),
       policyRoot: worktree.path,
     });
 
