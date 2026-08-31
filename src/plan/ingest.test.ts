@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { planSchema } from '../schemas.js';
-import { dependencyWaves, dryRunPlan, ingestPlan, PlanIngestError } from './ingest.js';
+import {
+  completedTaskIds,
+  dependencyWaves,
+  dryRunPlan,
+  ingestPlan,
+  PlanIngestError,
+  readyTasks,
+} from './ingest.js';
 import type { Plan } from './replan.js';
 
 const task = (id: string, dependsOn: string[] = []) => ({
@@ -164,5 +171,49 @@ describe('the dry run (R6)', () => {
     };
 
     expect(() => dependencyWaves(broken)).toThrow(PlanIngestError);
+  });
+});
+
+describe('what counts as a finished plan task', () => {
+  // The two tasks this loop actually ran. T3.2.1 merged; T3.2.2's implementing
+  // session finished, its reviewer refused, and nothing reached the trunk.
+  const merged = { status: 'completed', merged: { commit: '731e0d9' } };
+  const refused = { status: 'completed', merged: null };
+
+  it('counts a task whose change reached the trunk', () => {
+    expect([...completedTaskIds({ 'T3.2.1': merged })]).toStrictEqual(['T3.2.1']);
+  });
+
+  it('does not count a task that was written, refused and never merged', () => {
+    // `TaskCompleted` is logged for the implementing session on its own
+    // merits, and one plan task spans several sessions. Reading that as the
+    // task being done let a milestone close over a change nobody accepted.
+    expect([...completedTaskIds({ 'T3.2.2': refused })]).toStrictEqual([]);
+  });
+
+  it('counts work an operator attested to, which no session ran', () => {
+    expect([
+      ...completedTaskIds({ 'T3.1.1': { status: 'attested', merged: null } }),
+    ]).toStrictEqual(['T3.1.1']);
+  });
+
+  it('keeps a refused task dispatchable, and its dependents blocked', () => {
+    const graph = ingestPlan(PLAN);
+    const first = graph.tasks[0];
+    if (first === undefined) {
+      throw new Error('expected the fixture plan to have a task');
+    }
+
+    const ready = readyTasks(graph, completedTaskIds({ [first.id]: refused }));
+
+    // The task itself is offered again — there is work left on it — and
+    // nothing downstream has been let through on the strength of a session
+    // that finished inside it.
+    expect(ready.map((entry) => entry.id)).toContain(first.id);
+  });
+
+  it('treats a run with no tasks as nothing finished', () => {
+    expect([...completedTaskIds()]).toStrictEqual([]);
+    expect([...completedTaskIds({})]).toStrictEqual([]);
   });
 });

@@ -170,6 +170,41 @@ export function dependencyWaves(graph: PlanGraph): string[][] {
 }
 
 /**
+ * The state of one task as the scheduler needs to read it.
+ *
+ * Structural rather than the kernel's `TaskState`, so loading a plan does not
+ * depend on the shape of folded state.
+ */
+export interface TaskProgress {
+  readonly status: string;
+  readonly merged: unknown;
+}
+
+/**
+ * Plan tasks the scheduler should treat as done.
+ *
+ * A plan task is done when its change reached the trunk, or when an operator
+ * attested to work the harness never ran. Not when a session inside it
+ * finished: one plan task spans an implementing session, a review, and any
+ * rework and repair between them, and `TaskCompleted` is logged for each of
+ * those on its own merits. Reading that as the task being done would let a
+ * milestone close over a change that was written, refused by its reviewer and
+ * never merged — which is exactly what T3.2.2 did.
+ *
+ * Phase tasks are unaffected: there a task *is* a session, and this function
+ * is asked only about the plan graph.
+ */
+export function completedTaskIds(
+  tasks: Readonly<Record<string, TaskProgress>> = {},
+): Set<string> {
+  return new Set(
+    Object.entries(tasks)
+      .filter(([, task]) => task.status === 'attested' || task.merged !== null)
+      .map(([id]) => id),
+  );
+}
+
+/**
  * Tasks whose dependencies are all complete.
  *
  * The ready set, which is what the implement loop asks for and what the board

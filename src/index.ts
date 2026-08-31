@@ -355,7 +355,8 @@ export {
   ingestPlan,
   PlanIngestError,
 } from './plan/ingest.js';
-export { readyTasks } from './plan/ingest.js';
+export type { TaskProgress } from './plan/ingest.js';
+export { completedTaskIds, readyTasks } from './plan/ingest.js';
 export type { RoleDrift, RoleFreeze } from './role/freeze.js';
 export {
   assertRolesFrozen,
