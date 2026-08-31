@@ -87,17 +87,23 @@ export type DefectEvidence = z.infer<typeof defectEvidenceSchema>;
  * Where TST-5 sends a defect. `implement` names the plan task the fix lands
  * under — an existing task taking rework, or a new one added within its
  * milestone (PLN-4's autonomous case). `design` names the phase to reopen
- * and the ids whose content the defect calls into question — the same
- * `changed` set {@link ReopenRequest} takes, because a Design reopen that
- * cannot say what changed is a Design reopen that invalidates everything
- * (ORC-6).
+ * and, where the filer can say so, the ids whose content the defect calls
+ * into question — the same optional `changed` set {@link ReopenRequest}
+ * takes. `changed` is left optional here for the reason it is optional
+ * there: an operator who cannot say what changed has said that anything
+ * might have (ORC-6's safe default), and a defect filer forced to guess a
+ * `changed` set to satisfy this schema would produce a narrower cascade than
+ * that default on a too-narrow guess — worse than the unstated case it was
+ * trying to avoid. Stated non-empty, once given, is still required: a filer
+ * who names some ids and forgets one is a mistake this schema cannot catch,
+ * but naming zero when the field is present at all is caught here.
  */
 export const defectRouteSchema = z.discriminatedUnion('to', [
   z.object({ to: z.literal('implement'), taskId: z.string().min(1) }),
   z.object({
     to: z.literal('design'),
     phase: z.string().min(1),
-    changed: z.array(z.string().min(1)).min(1),
+    changed: z.array(z.string().min(1)).min(1).optional(),
   }),
 ]);
 
@@ -140,6 +146,19 @@ const defectHistoryEntrySchema = z.object({
    * field gets replaced.
    */
   ref: z.string().min(1).optional(),
+  /**
+   * The route this entry concerns, where one exists — set by
+   * {@link routeDefect} on the `routed` entry it writes (the route just
+   * chosen), and carried forward by {@link retestDefect} onto the `reopened`
+   * entry it writes when a fix does not hold (the route that failed). The
+   * same loss `ref` above exists to prevent, one field over: `routed` is the
+   * only status whose branch carries a `route` at the top level next to
+   * `open`, so once a `reopened` defect is routed again the new route
+   * overwrites the old one there, and without this field the superseded
+   * route would survive nowhere but whatever the free-text `detail` of the
+   * next `routed` entry happens to say.
+   */
+  route: defectRouteSchema.optional(),
 });
 
 /** One entry in a defect's history — append-only, mirroring the quarantine
@@ -154,9 +173,13 @@ const defectCommon = {
   description: z.string().min(1),
   evidence: defectEvidenceSchema,
   tracesTo: z.array(z.string().min(1)).min(1),
-  /** Fix/re-test round trips this defect has been through — 0 until the
-   * first one comes back failing. */
-  attempts: z.number().int().nonnegative(),
+  /** Failed fix/re-test round trips this defect has been through — 0 until
+   * the first one comes back failing, so a defect verified on its first
+   * re-test reports 0 here. Named for what it counts (rework, not total
+   * round trips) rather than for the round trip TST-5 describes, so a reader
+   * summing this across a batch of defects gets "how much re-work this
+   * caused" and not an undercount of "how many times this was retested". */
+  failedAttempts: z.number().int().nonnegative(),
   history: z.array(defectHistoryEntrySchema).min(1),
 };
 
@@ -169,29 +192,54 @@ const defectCommon = {
  * unrepresentable rather than merely unchecked. `verified` carries no
  * `verifies` field: see this module's top-of-file doc for why a closed
  * defect must not be readable as requirement-verification evidence.
+ *
+ * The union alone constrains `route`/`fix` presence, not `history` — nothing
+ * about the branch shapes stops a hand-built or on-disk `verified` defect
+ * whose `history` array stops at `open`, an out-of-band patch's own record of
+ * itself (CONV-5's obligation applies to history exactly as much as it does
+ * to `route`/`fix`, and history is not a field the union's branches can reach
+ * into). The `superRefine` below is the check that closes that: an
+ * append-only history is only a truthful record of "how did this defect get
+ * here" if it actually ends where `status` says the defect now is.
  */
-export const defectSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('open'), ...defectCommon }),
-  z.object({ status: z.literal('routed'), ...defectCommon, route: defectRouteSchema }),
-  z.object({
-    status: z.literal('fix-pending'),
-    ...defectCommon,
-    route: defectRouteSchema,
-    fix: defectFixSchema,
-  }),
-  z.object({
-    status: z.literal('reopened'),
-    ...defectCommon,
-    route: defectRouteSchema,
-    fix: defectFixSchema,
-  }),
-  z.object({
-    status: z.literal('verified'),
-    ...defectCommon,
-    route: defectRouteSchema,
-    fix: defectFixSchema,
-  }),
-]);
+export const defectSchema = z
+  .discriminatedUnion('status', [
+    z.object({ status: z.literal('open'), ...defectCommon }),
+    z.object({ status: z.literal('routed'), ...defectCommon, route: defectRouteSchema }),
+    z.object({
+      status: z.literal('fix-pending'),
+      ...defectCommon,
+      route: defectRouteSchema,
+      fix: defectFixSchema,
+    }),
+    z.object({
+      status: z.literal('reopened'),
+      ...defectCommon,
+      route: defectRouteSchema,
+      fix: defectFixSchema,
+    }),
+    z.object({
+      status: z.literal('verified'),
+      ...defectCommon,
+      route: defectRouteSchema,
+      fix: defectFixSchema,
+    }),
+  ])
+  .superRefine((defect, ctx) => {
+    const last = defect.history[defect.history.length - 1];
+    if (last !== undefined && last.status !== defect.status) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['history'],
+        message:
+          `a defect's history must end with an entry matching its own status: ` +
+          `status is '${defect.status}' but the last history entry is ` +
+          `'${last.status}'. An append-only history that stops short of the status ` +
+          `it claims is not a record of how the defect got there (CONV-5) — it is a ` +
+          `hole an out-of-band change could sit in unnoticed.`,
+      });
+    }
+  });
 
 export type Defect = z.infer<typeof defectSchema>;
 
@@ -273,7 +321,7 @@ export function fileDefect(options: FileDefectOptions): Defect {
     description: options.description,
     evidence: options.evidence,
     tracesTo: [...options.tracesTo],
-    attempts: 0,
+    failedAttempts: 0,
     history: [{ status: 'open', detail: options.description }],
   });
 }
@@ -302,10 +350,10 @@ export function routeDefect(defect: Defect, route: DefectRoute, reason: string):
 
   return build({
     ...commonFieldsOf(defect),
-    attempts: defect.attempts,
+    failedAttempts: defect.failedAttempts,
     status: 'routed',
     route,
-    history: [...defect.history, { status: 'routed', detail: reason }],
+    history: [...defect.history, { status: 'routed', detail: reason, route }],
   });
 }
 
@@ -323,7 +371,7 @@ export function recordFix(defect: Defect, fix: DefectFix): Defect {
 
   return build({
     ...commonFieldsOf(defect),
-    attempts: defect.attempts,
+    failedAttempts: defect.failedAttempts,
     status: 'fix-pending',
     route: defect.route,
     fix,
@@ -349,13 +397,14 @@ export interface RetestResult {
  * (module doc above) — the round trip is TST-5's "traced to requirements,
  * routed, fixed" obligation, not a claim that a requirement now has an
  * ongoing test the graph can point to. A fix that did not hold reopens it
- * instead of discarding it: `attempts` increments, the route and fix that
- * did not work stay on record as the newest history entry — `ref` included,
- * so the failed attempt's ref survives even once {@link routeDefect} moves
- * the defect on to `routed`, a status with no `fix` field of its own — and
- * the defect is back in a status {@link routeDefect} accepts, ready to be
- * routed again, by the same path or a different one, rather than silently
- * dropped.
+ * instead of discarding it: `failedAttempts` increments, and the route and
+ * fix that did not work stay on record as the newest history entry — `ref`
+ * and `route` both included, so neither the failed attempt's ref nor the
+ * route it was tried under is lost even once {@link routeDefect} moves the
+ * defect on to `routed`, a status whose own `route`/`fix` fields hold only
+ * whatever comes next — and the defect is back in a status
+ * {@link routeDefect} accepts, ready to be routed again, by the same path or
+ * a different one, rather than silently dropped.
  */
 export function retestDefect(defect: Defect, result: RetestResult): Defect {
   if (defect.status !== 'fix-pending') {
@@ -365,7 +414,7 @@ export function retestDefect(defect: Defect, result: RetestResult): Defect {
   if (result.passed) {
     return build({
       ...commonFieldsOf(defect),
-      attempts: defect.attempts,
+      failedAttempts: defect.failedAttempts,
       status: 'verified',
       route: defect.route,
       fix: defect.fix,
@@ -378,13 +427,18 @@ export function retestDefect(defect: Defect, result: RetestResult): Defect {
 
   return build({
     ...commonFieldsOf(defect),
-    attempts: defect.attempts + 1,
+    failedAttempts: defect.failedAttempts + 1,
     status: 'reopened',
     route: defect.route,
     fix: defect.fix,
     history: [
       ...defect.history,
-      { status: 'reopened', detail: result.detail, ref: defect.fix.ref },
+      {
+        status: 'reopened',
+        detail: result.detail,
+        ref: defect.fix.ref,
+        route: defect.route,
+      },
     ],
   });
 }
@@ -423,6 +477,12 @@ export interface DesignReopenRequestOptions {
  * (`src/gate/reopen.ts`) would refuse it too, but not until the request has
  * already been built and handed onward, which is a call this function can
  * settle immediately instead of deferring to a caller two modules away.
+ *
+ * `changed` passes through exactly as the route named it, `undefined`
+ * included: an unstated `changed` here becomes an unstated `changed` on the
+ * {@link ReopenRequest}, which `reopenPhase` already reads as "the whole of
+ * what the reopened phase's gate approved" (ORC-6) rather than a set this
+ * function would have to invent.
  */
 export function designReopenRequest(
   defect: Defect,
@@ -452,6 +512,10 @@ export function designReopenRequest(
     runId: options.runId,
     phase: defect.route.phase,
     reason: options.reason,
-    changed: defect.route.changed,
+    // Omitted, not set to `undefined` — `exactOptionalPropertyTypes` and
+    // `ReopenRequest.changed`'s own doc both treat "absent" and "present but
+    // undefined" as different things, and it is the former this function
+    // means to pass through.
+    ...(defect.route.changed !== undefined ? { changed: defect.route.changed } : {}),
   };
 }
