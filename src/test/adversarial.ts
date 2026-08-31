@@ -662,14 +662,44 @@ function runProcess(
   return new Promise((resolve, reject) => {
     // `env` is passed explicitly rather than merged into `process.env`:
     // spawn's default is inheritance, so an omitted option is the leak.
-    const child = spawn(command, [...args], { cwd, env });
+    //
+    // `detached: true` on POSIX makes this child the leader of a new process
+    // group. That is what the timeout below needs: Node's own `--test`
+    // spawns a further child per test file under process isolation (the
+    // default since Node 20), so the process this promise can see is not the
+    // one running a case body — it is that grandchild's parent. The
+    // grandchild is not itself detached, so it inherits the group its parent
+    // leads, and killing the group reaches it too. A bound that only killed
+    // `child` would stop the runner and leave the case body's own process
+    // orphaned, still running whatever it was running when the clock ran out
+    // — which is exactly the shape of the thing this bound exists to stop.
+    // Windows has no equivalent of a POSIX process group; `detached` there
+    // only opens a new console and does nothing for this. This path is
+    // POSIX-only, and on Windows falls back to killing just the process
+    // spawned here.
+    const posix = process.platform !== 'win32';
+    const child = spawn(command, [...args], { cwd, env, detached: posix });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      if (posix && child.pid !== undefined) {
+        try {
+          // A negative pid is `kill(2)`'s own spelling for "the process
+          // group led by this pid", not a Node convention — it reaches the
+          // grandchild along with `child` itself.
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          // The group is already gone (the run finished as the timer fired):
+          // nothing left to kill, and `child`'s own exit will resolve this
+          // promise via `close` regardless.
+          child.kill('SIGKILL');
+        }
+      } else {
+        child.kill('SIGKILL');
+      }
     }, timeoutMs);
 
     child.stdout.setEncoding('utf8');

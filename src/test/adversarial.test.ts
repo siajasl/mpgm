@@ -576,7 +576,14 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           kind: 'property',
           about: 'a message that happens to read as a TAP result line',
           defect: 'this case always fails; it exists to spell another case’s id',
-          body: "assert.ok(false, 'ok 9 - one-cent-invents-a-cent');",
+          // `assert.ok` renders its message as a single-line quoted YAML
+          // scalar (`error: 'ok 9 - …'`), which never matches `resultLine` —
+          // that shape does not reproduce the bug. `assert.equal` renders an
+          // actual/expected mismatch as a multi-line `error: |-` block, and
+          // node --test --test-reporter=tap prints the message on its own
+          // indented line inside it, which is what a real failing case looks
+          // like and what `parseTapResults` has to see through.
+          body: "assert.equal(1, 2, 'ok 9 - one-cent-invents-a-cent');",
         },
         {
           id: 'zero-ways-is-refused',
@@ -834,17 +841,36 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     // and the `SIGKILL` actually fire; removing them would leave a suite like
     // this one hanging the kernel for ever and this test is what would go
     // red first.
+    //
+    // Killing the runner is not the same as killing the body: Node's
+    // `--test` spawns a further child per test file, so a body that loops
+    // for ever runs in a process the runner's own exit does not touch. To
+    // tell those apart, the body writes a heartbeat file on a loop rather
+    // than sitting in one `await` — if only the runner dies, the heartbeat
+    // keeps ticking after `runAdversarialSuite` has already rejected, which
+    // is what this test would see if `runProcess` went back to killing just
+    // the one process it spawned.
     const directory = sampleCheckout();
+    const heartbeatDirectory = mkdtempSync(join(tmpdir(), 'mpgm-adversarial-heartbeat-'));
+    temporary.push(heartbeatDirectory);
+    const heartbeat = join(heartbeatDirectory, 'heartbeat');
+
     const hanging = adversarialSuiteSchema.parse({
       subject: './split.mjs',
-      summary: 'One case never returns.',
+      summary: 'One case never returns, and proves it is still running while it does.',
       cases: [
         {
           id: 'a-case-that-never-returns',
           kind: 'negative',
-          about: 'a body that awaits a promise nothing ever settles',
+          about: 'a body that loops for ever, writing proof of life as it goes',
           defect: 'the wall-clock bound stopped enforcing itself',
-          body: 'await new Promise(() => {});',
+          body: [
+            "const fs = await import('node:fs');",
+            'while (true) {',
+            `  fs.writeFileSync(${JSON.stringify(heartbeat)}, String(Date.now()));`,
+            '  await new Promise((resolve) => setTimeout(resolve, 50));',
+            '}',
+          ].join('\n'),
         },
         {
           id: 'the-subject-still-loads',
@@ -869,6 +895,14 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
         execute: nodeTestExecutor({ projectDir: directory, timeoutMs: 1_500 }),
       }),
     ).rejects.toThrow(/killed after 1500ms/);
+
+    // The heartbeat was ticking every 50ms; by the time the promise above
+    // rejected, at least one had already landed. If the body's own process
+    // is really dead, no further heartbeat follows it — wait well past
+    // another tick and check the file stopped changing.
+    const lastBeat = readFileSync(heartbeat, 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    expect(readFileSync(heartbeat, 'utf8')).toBe(lastBeat);
   }, 15_000);
 });
 
