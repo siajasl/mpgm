@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: Implements one planned task inside its own worktree, on its own branch.
-model: claude-sonnet-5
+model: claude-opus-5
 tools:
   allow: [Read, Write, Edit, Glob, Grep, Bash]
 paths:
