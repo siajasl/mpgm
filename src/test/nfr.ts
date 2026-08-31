@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ContractSpec } from '../contract/capability.js';
 import type { CoverageRow } from '../trace/index-store.js';
+import { withoutQuarantined } from './quarantine.js';
 
 /**
  * The `test.nfr` capability (DESIGN §4.7, TST-2, TST-3).
@@ -268,6 +269,15 @@ export interface RequirementCoverageInput {
   readonly graph: readonly CoverageRow[];
   /** TST-3's fresh source: this run's {@link nfrCoverage} rows. */
   readonly nfr: readonly NfrCoverageRow[];
+  /**
+   * Test ids the quarantine ledger currently excludes (TST-6,
+   * `src/test/quarantine.ts`). Defaults to none. Applied to both `graph` and
+   * `nfr` before they are combined, so a requirement whose only `verifiedBy`
+   * was a since-quarantined test reports unverified — the report is never
+   * combined first and filtered after, which would let the below-threshold
+   * short-circuit below read a graph row that quarantine has not yet touched.
+   */
+  readonly quarantined?: ReadonlySet<string>;
 }
 
 /**
@@ -291,8 +301,11 @@ export interface RequirementCoverageInput {
 export function requirementCoverageReport(
   input: RequirementCoverageInput,
 ): RequirementCoverageReport {
-  const graphById = new Map(input.graph.map((row) => [row.id, row]));
-  const nfrById = new Map(input.nfr.map((row) => [row.id, row]));
+  const quarantined = input.quarantined ?? new Set<string>();
+  const graph = withoutQuarantined(input.graph, quarantined);
+  const nfr = withoutQuarantined(input.nfr, quarantined);
+  const graphById = new Map(graph.map((row) => [row.id, row]));
+  const nfrById = new Map(nfr.map((row) => [row.id, row]));
 
   const rows = input.requirements.map((requirement): RequirementCoverageRow => {
     const graphRow = graphById.get(requirement.id);
