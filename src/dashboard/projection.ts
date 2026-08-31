@@ -1,5 +1,6 @@
 import type {
   ChecksState,
+  DestructiveCallState,
   EffectState,
   GateState,
   GateStatus,
@@ -64,6 +65,8 @@ export interface DashboardRun {
   readonly gates: readonly DashboardGate[];
   readonly effects: readonly EffectState[];
   readonly votes: readonly VoteState[];
+  /** Destructive calls the kernel knows about, dry run or not (SAF-4, OBS-3). */
+  readonly destructiveCalls: readonly DestructiveCallState[];
 }
 
 /** One line per run — the list view an operator scans before drilling in. */
@@ -121,6 +124,7 @@ export function runProjection(run: RunState): DashboardRun {
     gates: Object.values(run.gates).map(dashboardGate),
     effects: Object.values(run.effects),
     votes: Object.values(run.votes),
+    destructiveCalls: Object.values(run.destructiveCalls),
   };
 }
 

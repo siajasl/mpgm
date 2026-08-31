@@ -72,8 +72,30 @@ export class DashboardServer {
       return;
     }
 
+    // The projector reads the live database on every request (that is what
+    // makes this a *live* view rather than a start-time snapshot), so it can
+    // throw for reasons entirely outside this handler's control — a writer
+    // holding the file lock, a snapshot row that fails to parse, a database
+    // closed out from under it. A read-only view sharing the kernel's own
+    // projector must not let that kind of failure escape as an uncaught
+    // exception: in this process that kills the dashboard *and* the kernel
+    // it is observing, and the caller sees nothing but a timeout rather than
+    // an error it can act on (CONV-3).
+    try {
+      this.#dispatch(req, res);
+    } catch (err) {
+      this.#json(res, 500, {
+        error: `projection failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  #dispatch(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? '/', 'http://dashboard.local');
-    const segments = url.pathname.split('/').filter((segment) => segment !== '');
+    const segments = url.pathname
+      .split('/')
+      .filter((segment) => segment !== '')
+      .map((segment) => decodeURIComponent(segment));
 
     if (segments.length === 1 && segments[0] === 'runs') {
       this.#json(res, 200, { runs: allSummaries(this.#projector.project()) });

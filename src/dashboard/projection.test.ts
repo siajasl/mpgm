@@ -48,6 +48,16 @@ describe('runProjection / summaryOf', () => {
           type: 'GatePresented',
           payload: { gateId: 'G1', phase: 'scope', artifactRefs: [] },
         },
+        {
+          runId: RUN,
+          type: 'GatePresented',
+          payload: { gateId: 'G2', phase: 'design', artifactRefs: [] },
+        },
+        {
+          runId: RUN,
+          type: 'GateApproved',
+          payload: { gateId: 'G2', by: 'op' },
+        },
       ]);
 
       const run = requireRun(projector.project(), RUN);
@@ -56,17 +66,73 @@ describe('runProjection / summaryOf', () => {
       expect(projection.tasks).toEqual([
         expect.objectContaining({ taskId: 'T1', status: 'dispatched', blocked: false }),
       ]);
-      expect(projection.gates).toEqual([
+      // G1 is still presented and G2 has been decided — asserting both sides
+      // is what stops `awaitingApproval` from being hardcoded true and still
+      // passing (a mutation the previous version of this suite let through).
+      const g1 = projection.gates.find((gate) => gate.gateId === 'G1');
+      const g2 = projection.gates.find((gate) => gate.gateId === 'G2');
+      expect(g1).toEqual(
         expect.objectContaining({
           gateId: 'G1',
           status: 'presented',
           awaitingApproval: true,
         }),
-      ]);
+      );
+      expect(g2).toEqual(
+        expect.objectContaining({
+          gateId: 'G2',
+          status: 'approved',
+          awaitingApproval: false,
+        }),
+      );
 
       const summary = summaryOf(run);
       expect(summary.pendingApprovals).toBe(1);
       expect(summary.blockedTasks).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('lists a destructive call awaiting confirmation, and drops the wait once confirmed', () => {
+    const { db, log, projector } = harness();
+    try {
+      log.appendMany([
+        { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'DryRunRecorded',
+          payload: {
+            taskId: 'T1',
+            tool: 'deploy',
+            fingerprint: 'fp-1',
+            summary: 'would deploy',
+          },
+        },
+      ]);
+
+      const beforeConfirm = runProjection(requireRun(projector.project(), RUN));
+      expect(beforeConfirm.destructiveCalls).toEqual([
+        expect.objectContaining({ fingerprint: 'fp-1', dryRun: true, confirmedBy: null }),
+      ]);
+
+      log.appendMany([
+        {
+          runId: RUN,
+          type: 'DestructiveOpConfirmed',
+          payload: { taskId: 'T1', tool: 'deploy', fingerprint: 'fp-1', by: 'op' },
+        },
+      ]);
+
+      const afterConfirm = runProjection(requireRun(projector.project(), RUN));
+      expect(afterConfirm.destructiveCalls).toEqual([
+        expect.objectContaining({ fingerprint: 'fp-1', dryRun: true, confirmedBy: 'op' }),
+      ]);
     } finally {
       db.close();
     }
