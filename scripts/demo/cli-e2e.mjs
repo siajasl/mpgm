@@ -6,7 +6,14 @@
  * model calls. The live path is the M1.3 demo.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -481,6 +488,65 @@ try {
     confirmed.result.ok && confirmed.output.includes('confirmed by macg'),
     confirmed.output,
   );
+
+  // approve-role — the half of a role exemption an agent cannot write.
+  // The workspace carries this project's freeze manifest, whose exemptions
+  // propose role definitions; until an operator approves each one the kernel
+  // refuses to dispatch anything at all.
+  const freezeManifest = JSON.parse(
+    readFileSync(join(workspace, 'roles', 'freeze.json'), 'utf8'),
+  );
+  const proposed = freezeManifest.exemptions ?? [];
+  check(
+    'the manifest proposes at least one role definition',
+    proposed.length > 0,
+    `${String(proposed.length)} exemption(s)`,
+  );
+
+  const beforeApproval = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/sample',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'a proposed role does not dispatch on the manifest alone',
+    !beforeApproval.result.ok && beforeApproval.output.includes('without an approved'),
+    beforeApproval.output.split('\n')[0] ?? '',
+  );
+
+  const wrongDigest = await call([
+    'approve-role',
+    proposed[0].role,
+    '--digest',
+    'f'.repeat(64),
+    '--by',
+    'macg',
+    '--reason',
+    'read it',
+  ]);
+  check(
+    'approving a digest the file does not have is refused',
+    !wrongDigest.result.ok && wrongDigest.output.includes('read the definition'),
+    wrongDigest.output.split('\n')[0] ?? '',
+  );
+
+  for (const exemption of proposed) {
+    await call([
+      'approve-role',
+      exemption.role,
+      '--digest',
+      exemption.digest,
+      '--by',
+      'macg',
+      '--reason',
+      'read the definition and it does what the task asked',
+      '--run',
+      'r1',
+    ]);
+  }
 
   // implement — the self-hosting entry point (T3.1.8). The sample project has
   // no gated Plan artifact, so the verb refuses rather than dispatching an

@@ -28,11 +28,17 @@ export const roleFreezeSchema = z.object({
   /** Role name to sha256 of its file, exactly as committed. */
   digests: z.record(z.string().min(1), z.string().regex(/^[0-9a-f]{64}$/)),
   /**
-   * Deliberate changes since the freeze.
+   * Deliberate changes proposed since the freeze.
    *
-   * Each names the role, the digest being allowed, who approved it and why.
-   * An exemption without a reason is a rubber stamp, and the schema will not
-   * take one.
+   * Each names the role, the digest being allowed and why. An exemption
+   * without a reason is a rubber stamp, and the schema will not take one.
+   *
+   * `approvedBy` is a claim, not a fact: this file is inside the repository,
+   * so anything that can write a change can write a name into it — and one
+   * agent already wrote an operator's, for a role that operator had never
+   * seen. What makes an exemption count is a `RoleApproved` event, which a
+   * task cannot append. Read this field as who the entry *says* approved it,
+   * and the log as who did.
    */
   exemptions: z
     .array(
@@ -85,13 +91,30 @@ export function roleDigests(directory: string): Record<string, string> {
  * and has never been reviewed against the frozen set, which is the same
  * problem as an edited one wearing different clothes.
  */
+/** A role definition an operator approved, as `<role>@<digest>`. */
+export function approvalKey(role: string, digest: string): string {
+  return `${role}@${digest}`;
+}
+
 export function roleDrift(
   freeze: RoleFreeze,
   current: Record<string, string>,
+  approved?: ReadonlySet<string>,
 ): RoleDrift[] {
   const drift: RoleDrift[] = [];
+  // Both halves are required where both are available: the manifest says
+  // which digest is meant to be allowed and why, the log says an operator
+  // agreed, and either alone is a sentence an agent could have written.
+  //
+  // Omitting `approved` checks the manifest alone, and is not a weaker mood
+  // of the same question — it is the only question CI can ask. The event log
+  // is machine-local (`.mpgm/` is not committed), so a checkout has no way to
+  // know what an operator approved. CI answers "is this manifest consistent
+  // with the role files beside it"; the kernel, which does have the log,
+  // answers "did anyone agree to this" before it spends money on a session.
   const exempt = (role: string, digest: string): boolean =>
-    freeze.exemptions.some((entry) => entry.role === role && entry.digest === digest);
+    freeze.exemptions.some((entry) => entry.role === role && entry.digest === digest) &&
+    (approved === undefined || approved.has(approvalKey(role, digest)));
 
   for (const [role, digest] of Object.entries(current)) {
     const frozen = freeze.digests[role];
@@ -120,6 +143,9 @@ export function roleDrift(
         role,
         kind: 'removed',
         digest: '',
+        // A removed role has no digest to approve, so the manifest alone
+        // carries it: there is no definition left for an operator to vouch
+        // for, and refusing forever would make deleting a role impossible.
         exempt: freeze.exemptions.some((entry) => entry.role === role),
         detail: `role '${role}' was frozen but is no longer present`,
       });
@@ -151,8 +177,12 @@ export function loadRoleFreeze(path: string): RoleFreeze {
  * Fails closed, and names every drifted role rather than the first, so one
  * commit fixes the manifest instead of one run per role.
  */
-export function assertRolesFrozen(freeze: RoleFreeze, directory: string): RoleDrift[] {
-  const drift = roleDrift(freeze, roleDigests(directory));
+export function assertRolesFrozen(
+  freeze: RoleFreeze,
+  directory: string,
+  approved?: ReadonlySet<string>,
+): RoleDrift[] {
+  const drift = roleDrift(freeze, roleDigests(directory), approved);
   const unapproved = unapprovedDrift(drift);
   if (unapproved.length > 0) {
     throw new RoleFreezeError(
@@ -161,9 +191,17 @@ export function assertRolesFrozen(freeze: RoleFreeze, directory: string): RoleDr
         unapproved
           .map((entry) => `  - ${entry.detail} (${entry.digest.slice(0, 12)})`)
           .join('\n') +
-        `\n\nEither restore them, or add an exemption to the freeze manifest naming the new ` +
-        `digest, who approved it and why — the change then goes through the merge gate like ` +
-        `any other.`,
+        `\n\nEither restore them, or approve the new definition:\n` +
+        unapproved
+          .filter((entry) => entry.digest !== '')
+          .map(
+            (entry) =>
+              `  mpgm approve-role ${entry.role} --digest ${entry.digest} --by <who> --reason <why>`,
+          )
+          .join('\n') +
+        `\n\nThe manifest must name the same digest and say why. Both are needed: the file ` +
+        `says what is meant to be allowed, and the log says an operator agreed — either alone ` +
+        `is a sentence an agent could have written.`,
     );
   }
   return drift;
