@@ -355,6 +355,30 @@ export class AdversarialRunError extends Error {
 }
 
 /**
+ * The name of a case, out of a TAP result line's description.
+ *
+ * A description may carry a directive — `# SKIP`, `# TODO`, and Node's own
+ * `# type=testPointer` — which is a statement about the run and not part of
+ * the name, so it is cut at the first `#` that follows whitespace. Scanned
+ * rather than matched, because the regex that expresses this is ambiguous with
+ * the description in front of it and backtracks quadratically on a long run of
+ * spaces (CodeQL js/polynomial-redos); a single pass cannot.
+ *
+ * The remainder is right-trimmed: padding a runner added to align its columns
+ * is no more part of the name than the directive is, and an id carrying it
+ * matches no case the suite declared.
+ */
+function tapDescription(rest: string): string {
+  for (let index = 1; index < rest.length; index += 1) {
+    const previous = rest[index - 1];
+    if (rest[index] === '#' && (previous === ' ' || previous === '\t')) {
+      return rest.slice(0, index).trimEnd();
+    }
+  }
+  return rest.trimEnd();
+}
+
+/**
  * Read per-case results out of TAP 13, as `node --test --test-reporter=tap`
  * emits it.
  *
@@ -372,7 +396,13 @@ export class AdversarialRunError extends Error {
  */
 export function parseTapResults(output: string): AdversarialExecution[] {
   const results: AdversarialExecution[] = [];
-  const line = /^(\s*)(not )?ok\s+\d+\s+-\s+(.*?)(?:\s+#.*)?$/;
+  // The description is read as `(\S.*)` and its trailing directive stripped by
+  // {@link tapDescription}, rather than as a lazy `(.*?)` followed by an
+  // optional `\s+#.*`: `.` matches a space, so the lazy group and the
+  // whitespace in front of a directive overlap, and a result line carrying a
+  // long run of spaces backtracks quadratically (CodeQL js/polynomial-redos).
+  // A runner's output is exactly the kind of string nobody bounds.
+  const resultLine = /^([ \t]*)(not )?ok[ \t]+\d+[ \t]+-[ \t]+(\S.*)?$/;
 
   let pending:
     { id: string; passed: boolean; indent: number; detail: string[] } | undefined;
@@ -387,12 +417,16 @@ export function parseTapResults(output: string): AdversarialExecution[] {
     }
   };
 
-  for (const raw of output.split('\n')) {
-    const match = line.exec(raw);
+  for (const crlfLine of output.split('\n')) {
+    // A CRLF report leaves a `\r` on the end of every line once the output is
+    // split on '\n', and `.` does not match it: left on, it stops a result
+    // line being recognised at all, so a whole suite reads as `not-reported`.
+    const raw = crlfLine.endsWith('\r') ? crlfLine.slice(0, -1) : crlfLine;
+    const match = resultLine.exec(raw);
     if (match !== null) {
       flush();
       pending = {
-        id: match[3] ?? '',
+        id: tapDescription(match[3] ?? ''),
         passed: match[2] === undefined,
         indent: (match[1] ?? '').length,
         detail: [],

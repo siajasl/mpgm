@@ -314,6 +314,22 @@ describe('parseTapResults', () => {
       },
     ]);
   });
+
+  it('reads the case id off a line padded, CRLF-terminated or carrying a directive', () => {
+    // Everything after the id on a result line is the runner's, not the
+    // suite's: a `# SKIP` directive, the padding Node aligns its columns with,
+    // the `\r` a CRLF report leaves behind once the output is split on '\n'.
+    // Any of them left inside the id makes the case unmatchable, and the
+    // verdict then reports a case that ran as `not-reported` (CONV-4) while
+    // refusing the run outright for a result it cannot attribute.
+    const results = parseTapResults(
+      ['ok 1 - alpha  ', 'ok 2 - beta\r', 'not ok 3 - gamma # SKIP no runtime'].join(
+        '\n',
+      ),
+    );
+
+    expect(results.map((result) => result.id)).toEqual(['alpha', 'beta', 'gamma']);
+  });
 });
 
 describe('the sample project (T3.2.2 completion criterion)', () => {
