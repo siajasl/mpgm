@@ -305,7 +305,7 @@ describe('a review that never approves (NFR-1)', () => {
       ...(maxReviewAttempts === undefined ? {} : { maxReviewAttempts }),
     });
 
-    return { result, log, repo, head, git };
+    return { result, log, repo, head, git, provider };
   }
 
   it('blocks and escalates rather than merging or looping on', async () => {
@@ -322,6 +322,24 @@ describe('a review that never approves (NFR-1)', () => {
       expect(breach.limit).toBe(2);
       // The trunk is untouched: a change nobody approved does not land.
       expect(run(repo, ['rev-parse', 'HEAD'])).toBe(head);
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
+  it('tells the second review that the extra commits are the loop’s', async () => {
+    // The unit tests over `reviewPrompt` cannot see whether the loop passes it
+    // the round, and without the round every review would be told it is the
+    // first — which is how T3.2.6's third review came to refuse an approved
+    // change over four commits the loop had made itself.
+    const { log, provider } = await refusedForever(2);
+    try {
+      const reviews = provider.requests.filter((request) =>
+        request.prompt.includes('Review the change for'),
+      );
+      expect(reviews).toHaveLength(2);
+      expect(reviews[0]?.prompt).not.toContain('one commit per review round');
+      expect(reviews[1]?.prompt).toContain('one commit per review round');
     } finally {
       log.close();
     }
