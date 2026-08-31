@@ -564,6 +564,35 @@ export {
   observeBoard,
 } from './pm/github-provider.js';
 export type {
+  AdversarialCase,
+  AdversarialCaseKind,
+  AdversarialCaseResult,
+  AdversarialExecution,
+  AdversarialExecutor,
+  AdversarialOutcome,
+  AdversarialSuite,
+  AdversarialVerdict,
+  NodeTestExecutorOptions,
+  RunAdversarialSuiteOptions,
+  TestRunOutcome,
+} from './test/adversarial.js';
+export {
+  adversarialCaseKinds,
+  adversarialCaseSchema,
+  AdversarialDuplicateResultError,
+  AdversarialResultMismatchError,
+  AdversarialRunError,
+  adversarialSuiteSchema,
+  adversarialVerdict,
+  executionsFromRun,
+  nodeTestExecutor,
+  parseTapResults,
+  renderSuite,
+  runAdversarialSuite,
+  testEnvironment,
+  testEnvironmentAllowlist,
+} from './test/adversarial.js';
+export type {
   NfrCoverageRow,
   NfrProblem,
   NfrRequirement,

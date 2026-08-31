@@ -27,6 +27,13 @@
       "approvedBy": "macg",
       "reason": "Steps 30 to 90. The reviewer mutation-tests rather than reading a diff as prose, and the rework loop adds a commit each round, so the change it must read grows while its budget did not: T3.2.2's third review ran out of turns on six commits and 1704 lines, stranding two completed rounds of findings. Reviewing thoroughly is not cheaper than writing, and 30 was sized when a task was smaller than this.",
       "at": "2026-08-31"
+    },
+    {
+      "role": "adversarial-tester",
+      "digest": "d158652971c97a1e808d8a5eadde1be6b58d52f7cdec731b86b8cf0788f4df0d",
+      "approvedBy": "macg",
+      "reason": "T3.2.2 is 'adversarial test role' in the gated Plan, so the role is the task: TST-4 asks for tests beyond the implementer's own, and the implementer cannot be the agent that writes them. Recorded as an exemption rather than folded into `digests`, because that map says what was present when the freeze was taken and this role was not — an addition nobody has evaluated is the thing AGT-6 wants visible, and hiding it among the frozen digests would remove the only record that it was approved and by whom. It stays an exemption until the eval harness (T5.2.1a) can say whether the role is any good.",
+      "at": "2026-08-31"
     }
   ]
 }

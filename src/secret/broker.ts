@@ -27,7 +27,14 @@ import type { ToolDecision, ToolGate } from '../agent/session.js';
  *    is append-only: a secret written into it cannot later be removed.
  *
  * The first layer is the control. The second exists because the first is a
- * claim about a system with subprocesses in it.
+ * claim about a system with subprocesses in it — and it holds only while every
+ * path that runs *model-authored* code in one scrubs. `spawn` inherits by
+ * default, so an omitted `env` hands over every secret at once, past a broker
+ * that never sees the call. The kernel's own tools (`git`, `gh`) inherit
+ * deliberately: the kernel chose the command and `gh` needs its credential.
+ * The generated adversarial suite does not, because a case body is written by
+ * a model; it gets an allowlist of its own (`testEnvironment`,
+ * src/test/adversarial.ts).
  */
 
 export class SecretError extends Error {}
