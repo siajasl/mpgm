@@ -17,7 +17,22 @@ import type { MergeDecision, MergeRefusal } from './merge.js';
  * agent that has to act on it.
  */
 
-export const DEFAULT_REVIEW_ATTEMPTS = 2;
+/**
+ * Reviews taken before a change that still cannot merge is escalated.
+ *
+ * Three rather than two on the evidence of the first self-hosted task: two
+ * rounds found two unrelated real defects — a test that could not fail, then
+ * a correlation the kernel had and threw away — and exhausted with the second
+ * still open. That is a reviewer earning its cost, not a loop going nowhere,
+ * and stopping there spends the reviews and keeps neither fix.
+ *
+ * It stays small for the reason any of these budgets do. Each round costs a
+ * rework session and a fresh review, so the price of being wrong about this
+ * number is paid every time a task is refused; a change that cannot satisfy a
+ * reviewer in three goes is a task for an operator to look at rather than a
+ * loop to leave running (NFR-1).
+ */
+export const DEFAULT_REVIEW_ATTEMPTS = 3;
 
 export type Review = z.infer<typeof codeReviewSchema>;
 

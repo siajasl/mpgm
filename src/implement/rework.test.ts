@@ -15,7 +15,12 @@ import { implementTask } from './loop.js';
 import { WorktreeManager } from './worktree.js';
 import { decideMerge, type MergeDecisionRequest } from './merge.js';
 import { mergeVerdict, type CheckRun } from './checks.js';
-import { isReworkable, renderReview, type Review } from './rework.js';
+import {
+  DEFAULT_REVIEW_ATTEMPTS,
+  isReworkable,
+  renderReview,
+  type Review,
+} from './rework.js';
 
 const GREEN: CheckRun[] = [
   { name: 'build', status: 'completed', conclusion: 'success', url: '' },
@@ -224,16 +229,19 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
-  it('blocks and escalates rather than merging or looping on', async () => {
+  /**
+   * Every session: the author says it is done, the reviewer refuses. What is
+   * under test is that this terminates, blocks and leaves a record — a loop
+   * that ran on would spend a budget nobody set.
+   *
+   * `maxReviewAttempts` omitted means the default applies, which is the only
+   * way to tell that the default is still wired to anything.
+   */
+  async function refusedForever(maxReviewAttempts?: number) {
     const repo = newRepo();
-    const worktrees = new WorktreeManager({ repo });
     const head = git(repo, ['rev-parse', 'HEAD']);
-
-    // Every session: the author says it is done, the reviewer refuses. The
-    // point is that this terminates, blocks, and leaves a record — a loop
-    // that ran on would spend a budget nobody set.
     const provider = new ScriptedProvider(
-      Array.from({ length: 8 }, (_, index) =>
+      Array.from({ length: 16 }, (_, index) =>
         scriptedSuccess(
           index % 2 === 0
             ? {
@@ -264,56 +272,74 @@ describe('a review that never approves (NFR-1)', () => {
     );
 
     const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
-    try {
-      log.append({
-        runId: 'r',
-        type: 'RunStarted',
-        payload: { project: 'mpgm', operator: 'op' },
-      });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
 
-      const result = await implementTask({
-        runId: 'r',
-        task: {
-          id: 'T1',
-          title: 'A task the reviewer will not accept',
-          completionCriteria: ['It is done.'],
-          tracesTo: ['IMP-3'],
-          milestone: 'M1',
-        },
-        repo,
-        worktrees,
-        sessions: new SessionRunner({
-          log,
-          provider,
-          schemas: projectOutputSchemas(),
-          policyRoot: repo,
-        }),
-        roles: RoleRegistry.fromDirectory(
-          join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
-        ),
+    const result = await implementTask({
+      runId: 'r',
+      task: {
+        id: 'T1',
+        title: 'A task the reviewer will not accept',
+        completionCriteria: ['It is done.'],
+        tracesTo: ['IMP-3'],
+        milestone: 'M1',
+      },
+      repo,
+      worktrees: new WorktreeManager({ repo }),
+      sessions: new SessionRunner({
         log,
-        kb: [],
-        policy: { maxClass: 'internal', unlabelled: 'internal' },
-        checks: (ref) => Promise.resolve(mergeVerdict({ ref, runs: GREEN })),
-        maxReviewAttempts: 2,
-      });
+        provider,
+        schemas: projectOutputSchemas(),
+        policyRoot: repo,
+      }),
+      roles: RoleRegistry.fromDirectory(
+        join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+      ),
+      log,
+      kb: [],
+      policy: { maxClass: 'internal', unlabelled: 'internal' },
+      checks: (ref) => Promise.resolve(mergeVerdict({ ref, runs: GREEN })),
+      ...(maxReviewAttempts === undefined ? {} : { maxReviewAttempts }),
+    });
 
+    return { result, log, repo, head, git };
+  }
+
+  it('blocks and escalates rather than merging or looping on', async () => {
+    const { result, log, repo, head, git: run } = await refusedForever(2);
+    try {
       expect(result.status).toBe('blocked');
       expect(result.reason).toMatch(/still refuses the change after 2 attempt/);
       // Two reviews taken, not one and not forever.
       expect(result.rounds).toHaveLength(2);
       // Escalated rather than dropped: exhaustion is an event (NFR-1).
       const breach = log.read().find((event) => event.type === 'BudgetExceeded')
-        ?.payload as {
-        kind: string;
-        limit: number;
-      };
+        ?.payload as { kind: string; limit: number };
       expect(breach.kind).toBe('reviews');
       expect(breach.limit).toBe(2);
       // The trunk is untouched: a change nobody approved does not land.
-      expect(git(repo, ['rev-parse', 'HEAD'])).toBe(head);
+      expect(run(repo, ['rev-parse', 'HEAD'])).toBe(head);
     } finally {
       log.close();
     }
   }, 20_000);
+
+  it('takes DEFAULT_REVIEW_ATTEMPTS reviews when the caller names no bound', async () => {
+    // Asserted against the constant rather than against a literal: what would
+    // go wrong is the default being disconnected, not its value changing, and
+    // a test that has to be edited whenever the number moves is a test that
+    // stops being read.
+    const { result, log } = await refusedForever();
+    try {
+      expect(result.rounds).toHaveLength(DEFAULT_REVIEW_ATTEMPTS);
+      expect(result.reason).toContain(
+        `after ${String(DEFAULT_REVIEW_ATTEMPTS)} attempt(s)`,
+      );
+    } finally {
+      log.close();
+    }
+  }, 30_000);
 });
