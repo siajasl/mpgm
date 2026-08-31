@@ -166,7 +166,14 @@ describe('the adversarial suite schema (TST-4)', () => {
     expect(adversarialSuiteSchema.safeParse(duplicated).success).toBe(false);
   });
 
-  it('refuses a subject outside the project under test', () => {
+  it('refuses a subject the rendered file could not resolve or could not quote', () => {
+    // A resolution and rendering constraint, not a confinement one: the
+    // generated file is written into the project under test, so only a
+    // relative specifier names the module the run was asked about, and only a
+    // quote-free one can be dropped between quotes without the import
+    // statement ending early. It stops none of these from being reached from
+    // inside a case `body`, and the executor says so — see the trust
+    // assumption on `nodeTestExecutor` and the test that pins it below.
     for (const subject of ['node:fs', '/etc/passwd', 'lodash', "./x.mjs'; import 'fs"]) {
       expect(adversarialSuiteSchema.safeParse({ ...suite(), subject }).success).toBe(
         false,
@@ -404,6 +411,62 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     });
 
     expect(execFileSync('ls', [directory], { encoding: 'utf8' })).toBe(before);
+  }, 30_000);
+
+  it('runs case bodies as trusted code, reaching whatever the kernel reaches', async () => {
+    // Pins the trust assumption documented on `nodeTestExecutor` rather than
+    // leaving it as prose that can quietly stop being true. There is no
+    // control being evaded here: `body` is unconstrained JavaScript, this
+    // executor writes it into the project and runs it with the harness's own
+    // privileges, and the `subject` constraint in the schema bounds none of
+    // that. The case below names `./split.mjs` as its subject and touches a
+    // directory outside the project anyway. If a sandbox ever lands (ADR-6),
+    // this test fails — and whoever lands it rewrites the docstring with it,
+    // which is the point of asserting an assumption instead of asserting a
+    // guarantee nobody has.
+    const directory = sampleCheckout();
+    const outsideDirectory = mkdtempSync(join(tmpdir(), 'mpgm-adversarial-outside-'));
+    temporary.push(outsideDirectory);
+    const outside = join(outsideDirectory, 'reached.txt');
+
+    const reaching = adversarialSuiteSchema.parse({
+      subject: './split.mjs',
+      summary: 'What a case body can reach, which is everything the kernel can.',
+      cases: [
+        {
+          id: 'a-body-reaches-the-filesystem',
+          kind: 'negative',
+          about: 'a body importing a module its suite was never allowed to name',
+          defect: 'the assumption changed: something now confines a case body',
+          body: [
+            "const fs = await import('node:fs');",
+            `fs.writeFileSync(${JSON.stringify(outside)}, 'reached', 'utf8');`,
+          ].join('\n'),
+        },
+        {
+          id: 'the-subject-still-loads',
+          kind: 'boundary',
+          about: 'the declared subject is the module the file imported',
+          defect: 'the rendered import did not resolve against the project',
+          body: "assert.equal(typeof subject.splitEvenly, 'function');",
+        },
+        {
+          id: 'the-run-reported-every-case',
+          kind: 'property',
+          about: 'a suite with a side effect is still reported on case by case',
+          defect: 'a case ran and the verdict did not hear about it',
+          body: 'assert.ok(true);',
+        },
+      ],
+    });
+
+    const verdict = await runAdversarialSuite({
+      suite: reaching,
+      execute: nodeTestExecutor({ projectDir: directory }),
+    });
+
+    expect(verdict.clean).toBe(true);
+    expect(readFileSync(outside, 'utf8')).toBe('reached');
   }, 30_000);
 
   it('reports why a run produced no results rather than calling it unreported', async () => {

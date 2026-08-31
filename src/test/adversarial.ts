@@ -14,11 +14,16 @@ import { z } from 'zod';
  * argument nobody validated, the value at the edge of the range, the
  * invariant that holds on the three inputs the author happened to try.
  *
- * What that role returns is *data*, not code the kernel imports: a suite of
- * cases, each with an id, the class of attack it makes and a test body. The
- * kernel renders that suite into one `node:test` file (`renderSuite`), hands
- * it to an executor, and folds what comes back into a verdict keyed by case
- * id (`adversarialVerdict`). Two things follow from that split. A case that
+ * What that role returns is *data* on the way in — a suite of cases, each with
+ * an id, the class of attack it makes and a test body, validated before
+ * anything is done with it, which is why the role needs no shell and no
+ * writable path (SAF-3, DESIGN §4.2). It does not stay data: the kernel
+ * renders the suite into one `node:test` file (`renderSuite`), hands it to an
+ * executor, and an executor runs it. Where that boundary is crossed, and on
+ * what assumption, is written at {@link nodeTestExecutor}; nothing in this
+ * module confines a case body, and no part of it should be read as doing so.
+ * The verdict is then folded from what comes back, keyed by case id
+ * (`adversarialVerdict`). Two things follow from that split. A case that
  * fails is attributable — it names the defect it found in the tester's own
  * words, which is what a defect artifact (T3.2.4) needs and what a raw
  * runner log does not have. And a case the runner never reported on is not
@@ -55,11 +60,22 @@ const caseId = z
  * The module the suite attacks, as the rendered file will import it.
  *
  * Relative-only, and within the character set a specifier can be written in
- * without quoting. A suite that could name `node:fs`, an absolute path or an
- * installed package would be a suite that could reach outside the project it
- * was asked to test, and the cheapest place to refuse that is the schema —
- * the alternative is a check somewhere downstream that has to be remembered
- * (CONV-5).
+ * without quoting. What that buys is a specifier the renderer can put between
+ * single quotes and the runner can then resolve: the rendered file is written
+ * into the project under test, so a relative specifier resolves against it,
+ * where `node:fs`, an absolute path or an installed package resolves against
+ * something the run was not asked about and reports on a module nobody chose.
+ * The character set is the rendering half of the same point — a quote or a
+ * newline in the string would close the import statement and continue in code,
+ * and constraining the shape means the renderer never has to escape (CONV-5).
+ *
+ * It is **not** a confinement boundary and nothing may be built on it as one.
+ * `body` is unconstrained JavaScript that {@link nodeTestExecutor} writes into
+ * the project and executes, so a case reaches whatever the harness reaches
+ * regardless of what `subject` names: `await import('node:fs')` inside a body
+ * gets everything a subject of `node:fs` would have got, and this regex sees
+ * none of it. The trust assumption that actually governs a run is stated at
+ * {@link nodeTestExecutor}.
  */
 const subjectSpecifier = z
   .string()
@@ -523,6 +539,30 @@ function runProcess(
  * resolves — under a name nothing else will collide with, and removed
  * afterwards whether the run passed, failed or threw. Left behind, it would
  * be picked up by the project's next test run as a test nobody wrote.
+ *
+ * ## Trust assumption
+ *
+ * **Case bodies are executed as trusted code, with the privileges the kernel
+ * has.** A suite is validated data until this function; here it becomes a file
+ * in the project and a child process, and that process inherits this one's
+ * environment and credentials. Nothing constrains a body: it may
+ * `await import('node:fs')`, read anything the harness can read, write outside
+ * `projectDir`, or open a socket. In particular the schema's `subject`
+ * constraint bounds none of that and is not intended to — a suite is only as
+ * trustworthy as the session that generated it, and a tester that has read a
+ * repository carrying planted instructions (SAF-3) is exactly the session that
+ * assumption is uncomfortable about.
+ *
+ * That is an assumption and not a control, stated so that nobody builds on a
+ * confinement this module does not provide (CONV-4 — a control that is trusted
+ * and bypassed is worse than none). It holds only because generated suites are
+ * run where the project's own tests already run, on code the harness would
+ * have executed anyway. Confinement belongs to the OS layer (ADR-6:
+ * sandboxed execution as defense in depth), and this path notably does not
+ * pass through the `PreToolUse` policy hook that bounds an agent's own tool
+ * calls — the agent never makes the call; the kernel does, on its behalf.
+ * Until a sandbox exists, run generated suites where you would run untrusted
+ * tests, which is to say not on anything you would mind losing.
  */
 export function nodeTestExecutor(options: NodeTestExecutorOptions): AdversarialExecutor {
   const timeoutMs = options.timeoutMs ?? 60_000;
