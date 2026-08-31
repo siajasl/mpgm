@@ -1,5 +1,6 @@
 import {
   approve,
+  approveRole,
   attest,
   chat,
   confirm,
@@ -17,7 +18,7 @@ import {
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: fourteen verbs and a handful of flags. A CLI framework would
+ * Deliberately small: fifteen verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -30,6 +31,7 @@ export const VERBS = [
   'kill',
   'redirect',
   'approve',
+  'approve-role',
   'attest',
   'confirm',
   'implement',
@@ -52,6 +54,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>] [--tag]
   mpgm confirm <fingerprint> --run <id> --by <who> [--reason <s>]
   mpgm attest <task> --by <who> --evidence <s> [--note <s>] [--run <id>]
+  mpgm approve-role <role> --digest <d> --by <who> --reason <s> [--run <id>]
   mpgm implement <task> --repo <owner/name> [--run <id>]
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
@@ -167,6 +170,16 @@ export async function runCli(
         runId,
         require('a phase name', positional[0]),
         flags.brief ?? '',
+      );
+
+    case 'approve-role':
+      return approveRole(
+        context,
+        runId,
+        require('a role name', positional[0]),
+        require('--digest', flags.digest),
+        require('--by', flags.by),
+        require('--reason', flags.reason),
       );
 
     case 'attest':

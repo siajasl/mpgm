@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  approvalKey,
   assertRolesFrozen,
   digestOf,
+  roleDigests,
   roleDrift,
   RoleFreezeError,
   roleFreezeSchema,
@@ -93,6 +95,72 @@ describe('the role freeze (PLAN section 1)', () => {
 
     expect(drift).toHaveLength(1);
     expect(drift[0]).toMatchObject({ kind: 'changed', exempt: true });
+  });
+
+  it('does not exempt on the manifest alone when the log is available', () => {
+    // The manifest is inside the repository, so a task that can write a change
+    // can write an exemption — and one did, naming an operator who had never
+    // seen the role. Where the log can be consulted, the manifest proposes and
+    // the log decides.
+    const changed = `${original}Revised.\n`;
+    const directory = roleDirectory({ implementer: changed });
+    const manifest = freeze({ implementer: digestOf(original) }, [
+      {
+        role: 'implementer',
+        digest: digestOf(changed),
+        approvedBy: 'macg',
+        reason: 'an agent wrote this line, and could write any name into it',
+        at: '2026-08-31',
+      },
+    ]);
+
+    const withoutApproval = roleDrift(manifest, roleDigests(directory), new Set());
+    expect(withoutApproval[0]).toMatchObject({ kind: 'changed', exempt: false });
+
+    const withApproval = roleDrift(
+      manifest,
+      roleDigests(directory),
+      new Set([approvalKey('implementer', digestOf(changed))]),
+    );
+    expect(withApproval[0]).toMatchObject({ kind: 'changed', exempt: true });
+  });
+
+  it('needs the manifest too — an approval alone does not exempt', () => {
+    // Approving a digest nobody proposed would let an operator wave through a
+    // role change with no record of what it was for.
+    const changed = `${original}Revised.\n`;
+    const directory = roleDirectory({ implementer: changed });
+    const manifest = freeze({ implementer: digestOf(original) }, []);
+
+    const drift = roleDrift(
+      manifest,
+      roleDigests(directory),
+      new Set([approvalKey('implementer', digestOf(changed))]),
+    );
+
+    expect(drift[0]).toMatchObject({ kind: 'changed', exempt: false });
+  });
+
+  it('checks the manifest alone where there is no log to consult', () => {
+    // CI has no event log: `.mpgm/` is machine-local and never committed. So a
+    // checkout can ask whether the manifest agrees with the role files beside
+    // it, and nothing else. Refusing everything there would make the trunk
+    // permanently red rather than making anything safer.
+    const changed = `${original}Revised.\n`;
+    const directory = roleDirectory({ implementer: changed });
+    const manifest = freeze({ implementer: digestOf(original) }, [
+      {
+        role: 'implementer',
+        digest: digestOf(changed),
+        approvedBy: 'macg',
+        reason: 'the role was asking for the wrong thing in review',
+        at: '2026-08-25',
+      },
+    ]);
+
+    expect(roleDrift(manifest, roleDigests(directory))[0]).toMatchObject({
+      exempt: true,
+    });
   });
 
   it('does not let an exemption cover a later change as well', () => {

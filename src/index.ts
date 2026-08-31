@@ -300,6 +300,8 @@ export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
 export type { CliContext, CommandResult } from './cli/commands.js';
 export {
   approve,
+  approveRole,
+  approvedRoles,
   attest,
   confirm,
   chat,
@@ -367,6 +369,7 @@ export {
   roleFreezeSchema,
   RoleFreezeError,
   unapprovedDrift,
+  approvalKey,
 } from './role/freeze.js';
 export type {
   ImplementOptions,

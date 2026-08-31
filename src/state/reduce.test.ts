@@ -211,6 +211,16 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'RoleApproved',
+        payload: {
+          role: 'adversarial-tester',
+          digest: 'd'.repeat(64),
+          by: 'operator',
+          reason: 'read the definition and it does what TST-4 asks',
+        },
+      },
+      {
+        runId: RUN,
         type: 'OperatorIntervened',
         payload: { action: 'redirect', detail: '' },
       },

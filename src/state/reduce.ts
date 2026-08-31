@@ -522,6 +522,16 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       return withRun(state, { ...run, kbUpdates: [...run.kbUpdates, update] }, seq);
     }
 
+    case 'RoleApproved': {
+      // Recorded, and deliberately not folded. An approval is a fact about
+      // the project rather than about one run — a role approved during one
+      // run is still approved in the next — so the freeze reads it from the
+      // log directly. Folding it into run state would make it look like a
+      // property of whichever run happened to record it.
+      requireRun(state, event.runId, type);
+      return { ...state, lastSeq: seq };
+    }
+
     case 'OperatorIntervened': {
       const payload = event.payload as PayloadOf<typeof operatorIntervened>;
       const run = requireRun(state, event.runId, type);

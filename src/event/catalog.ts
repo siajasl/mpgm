@@ -127,6 +127,30 @@ export const taskAttested = defineEvent(
   }),
 );
 
+/**
+ * An operator approved a role definition by digest (AGT-6, PLAN section 1).
+ *
+ * The freeze manifest names who approved an exemption and why, and an agent
+ * that can edit that file can write any name into it — one already wrote an
+ * operator's, for a role that operator had never seen. No schema can tell a
+ * person's approval from an agent's assertion of one, because both are the
+ * same string in the same file.
+ *
+ * So the approval is kept where a task cannot write: here. A manifest
+ * exemption proposes a role; this event is what makes it count.
+ */
+export const roleApproved = defineEvent(
+  'RoleApproved',
+  z.object({
+    role: nonEmpty,
+    /** sha256 of the role file, exactly as approved. */
+    digest: z.string().regex(/^[0-9a-f]{64}$/),
+    by: nonEmpty,
+    /** Why this definition is acceptable. */
+    reason: nonEmpty,
+  }),
+);
+
 export const validationFailed = defineEvent(
   'ValidationFailed',
   z.object({
@@ -414,6 +438,7 @@ export const kernelEvents = [
   phaseEntered,
   phaseReopened,
   planRevised,
+  roleApproved,
   runStarted,
   sessionUsage,
   taskAttested,

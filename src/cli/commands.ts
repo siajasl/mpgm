@@ -19,7 +19,12 @@ import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
 import { RoleRegistry } from '../role/loader.js';
-import { assertRolesFrozen, loadRoleFreeze } from '../role/freeze.js';
+import {
+  approvalKey,
+  assertRolesFrozen,
+  loadRoleFreeze,
+  roleDigests,
+} from '../role/freeze.js';
 import { awaitChecks, mergeVerdict } from '../implement/checks.js';
 import {
   fetchCheckLog,
@@ -271,6 +276,7 @@ export async function implement(
       assertRolesFrozen(
         loadRoleFreeze(join(context.root, 'roles', 'freeze.json')),
         join(context.root, 'roles'),
+        approvedRoles(log),
       );
     } catch (error) {
       context.write(error instanceof Error ? error.message : String(error));
@@ -698,6 +704,85 @@ export function approve(
     }
 
     return { ok: true, detail: status };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Role definitions an operator has approved, from the log.
+ *
+ * Read rather than folded into projected state: this is a property of the
+ * project across every run, not of one run — a role approved during the
+ * Definition phase is still approved when an Implement task dispatches
+ * months later.
+ */
+export function approvedRoles(log: {
+  read: (options?: { type?: string }) => readonly { payload: unknown }[];
+}): Set<string> {
+  return new Set(
+    log.read({ type: 'RoleApproved' }).map((event) => {
+      const payload = event.payload as { role: string; digest: string };
+      return approvalKey(payload.role, payload.digest);
+    }),
+  );
+}
+
+/**
+ * `mpgm approve-role <role> --digest <d> --by <who> --reason <why>` — vouch
+ * for a role definition (AGT-6, PLAN section 1).
+ *
+ * The freeze manifest proposes a role and says why; this says an operator
+ * agreed. Kept apart because the manifest lives in the repository and a task
+ * that can write a change can write a name into it — one already wrote an
+ * operator's, for a role that operator had never seen. A task cannot append
+ * to the log, so this is the half that cannot be forged.
+ *
+ * The digest is required rather than computed from the file on disk: an
+ * operator approves a definition they have read, and re-reading the file here
+ * would approve whatever it says now.
+ */
+export function approveRole(
+  context: CliContext,
+  runId: string,
+  role: string,
+  digest: string,
+  by: string,
+  reason: string,
+): CommandResult {
+  const { db, log, projector } = open(context);
+  try {
+    if (!/^[0-9a-f]{64}$/.test(digest)) {
+      context.write(`'${digest}' is not a sha256 digest; see the freeze manifest`);
+      return { ok: false, detail: 'bad digest' };
+    }
+
+    const onDisk = roleDigests(join(context.root, 'roles'))[role];
+    if (onDisk === undefined) {
+      context.write(`no role '${role}' in ${join(context.root, 'roles')}`);
+      return { ok: false, detail: 'unknown role' };
+    }
+    if (onDisk !== digest) {
+      // Approving a digest the file does not have would approve nothing, and
+      // would read afterwards as though it had.
+      context.write(
+        `roles/${role}.md is ${onDisk.slice(0, 12)}, not ${digest.slice(0, 12)} — ` +
+          `read the definition you mean to approve and name its digest`,
+      );
+      return { ok: false, detail: 'digest mismatch' };
+    }
+
+    if (projector.project().runs[runId] === undefined) {
+      log.append({
+        runId,
+        type: 'RunStarted',
+        payload: { project: context.root, operator: by },
+      });
+    }
+    log.append({ runId, type: 'RoleApproved', payload: { role, digest, by, reason } });
+
+    context.write(`${role}@${digest.slice(0, 12)} approved by ${by}`);
+    return { ok: true, detail: 'approved' };
   } finally {
     db.close();
   }
