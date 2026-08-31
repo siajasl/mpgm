@@ -10,6 +10,7 @@ import {
   elicitationOutputSchema,
   exchangeSchema,
 } from './elicit/session.js';
+import { adversarialSuiteSchema } from './test/adversarial.js';
 
 /**
  * The project's own schemas.
@@ -659,6 +660,7 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
     'elicitation.turn': elicitationOutputSchema,
     change: changeSchema,
     'code-review': codeReviewSchema,
+    'adversarial-suite': adversarialSuiteSchema,
   });
 }
 

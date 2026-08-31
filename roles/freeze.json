@@ -27,6 +27,13 @@
       "approvedBy": "macg",
       "reason": "T3.2.2 asks for adversarial test generation, and PLAN section 3 puts that task on Opus 5. Routing by task class is T5.2.3 and is not wired, so the only place the model can be said is the role, and saying it there says it for every implement task rather than for this one. Accepted knowingly: the cost is higher on all of them until it is changed back or T5.2.3 lands.",
       "at": "2026-08-31"
+    },
+    {
+      "role": "adversarial-tester",
+      "digest": "d158652971c97a1e808d8a5eadde1be6b58d52f7cdec731b86b8cf0788f4df0d",
+      "approvedBy": "macg",
+      "reason": "T3.2.2 is 'adversarial test role' in the gated Plan, so the role is the task: TST-4 asks for tests beyond the implementer's own, and the implementer cannot be the agent that writes them. Recorded as an exemption rather than folded into `digests`, because that map says what was present when the freeze was taken and this role was not — an addition nobody has evaluated is the thing AGT-6 wants visible, and hiding it among the frozen digests would remove the only record that it was approved and by whom. It stays an exemption until the eval harness (T5.2.1a) can say whether the role is any good.",
+      "at": "2026-08-31"
     }
   ]
 }
