@@ -77,6 +77,28 @@ const SAMPLE_PLAN = {
 const failures = [];
 const exercised = new Set();
 
+/**
+ * Poll until `read` returns something, or give up.
+ *
+ * `serve` does not resolve until it is stopped, so its output cannot be
+ * awaited the way every other verb's is — the port has to be read out from
+ * under a promise that is still running. Bounded, because a hang that reports
+ * nothing is worse than a failure that does.
+ */
+async function until(read, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = read();
+    if (value !== undefined) {
+      return value;
+    }
+    if (Date.now() > deadline) {
+      return undefined;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 function check(label, condition, detail = '') {
   process.stdout.write(
     `  ${condition ? 'ok  ' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}\n`,
@@ -736,6 +758,92 @@ try {
     replayed.output.includes('RunStarted') &&
       replayed.output.includes('GateApproved') &&
       replayed.output.includes('reproduces the run exactly'),
+  );
+
+  // serve — OBS-3. The dashboard has rendered folded state since T3.2.5b, but
+  // a library an operator cannot start is not a live view of anything. What is
+  // checked here is the reachable thing: the address it says it is on serves
+  // the run this script has been building all along.
+  const badPort = await call(['serve', '--port', 'banana']);
+  check(
+    'serve refuses a port that is not one, and says what it was given',
+    !badPort.result.ok && badPort.output.includes("not 'banana'"),
+    badPort.output,
+  );
+
+  const highPort = await call(['serve', '--port', '99999']);
+  check(
+    'serve refuses a port past the top of the range',
+    !highPort.result.ok && highPort.output.includes("not '99999'"),
+    highPort.output,
+  );
+
+  // `Number('0x50')` is 80. An operator who typed a hex literal did not mean
+  // port 80, and a console that silently agreed would be binding somewhere
+  // they never asked for.
+  const hexPort = await call(['serve', '--port', '0x50']);
+  check(
+    'serve refuses a port it would have to interpret',
+    !hexPort.result.ok && hexPort.output.includes("not '0x50'"),
+    hexPort.output,
+  );
+
+  const dashboardLines = [];
+  const stop = new AbortController();
+  exercised.add('serve');
+  // Port 0 so that two copies of this script can run at once; an operator gets
+  // DEFAULT_DASHBOARD_PORT instead, which is the address worth bookmarking.
+  const serving = runCli(['serve', '--port', '0'], {
+    ...context,
+    signal: stop.signal,
+    write: (line) => dashboardLines.push(line),
+  });
+
+  const url = await until(
+    () => /http:\/\/127\.0\.0\.1:\d+/.exec(dashboardLines.join('\n'))?.[0],
+  );
+  check(
+    'serve tells the operator where to look',
+    url !== undefined,
+    url ?? '(never said)',
+  );
+
+  const served = await fetch(`${url}/runs`).then((response) => response.json());
+  check(
+    'and the dashboard is there, serving this run',
+    served.runs.some((entry) => entry.runId === 'r1'),
+    served.runs.map((entry) => entry.runId).join(', ') || '(no runs)',
+  );
+
+  // Read-only is the whole claim, so it is checked rather than asserted in a
+  // comment: a POST would be the way a dashboard left open could touch a run.
+  const posted = await fetch(`${url}/runs`, { method: 'POST' });
+  check('and refuses anything but a read', posted.status === 405, String(posted.status));
+
+  // A second dashboard on the port the first one holds. Ordinary — the
+  // operator forgot the one already running — and the refusal has to name the
+  // cause rather than whatever the cleanup path throws.
+  const taken = await call(['serve', '--port', new URL(url).port]);
+  check(
+    'serve says why it could not bind, rather than dying in its own cleanup',
+    !taken.result.ok && taken.output.includes('could not listen on port'),
+    taken.output,
+  );
+
+  stop.abort();
+  // Raced rather than awaited: a `serve` that ignored the signal would hang
+  // this script forever instead of failing it, and a check that can only hang
+  // is not a check (CONV-6).
+  const stopped = await Promise.race([
+    serving,
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ ok: false, detail: 'never stopped' }), 5000),
+    ),
+  ]);
+  check(
+    'serve gives the port back when it is stopped',
+    stopped.ok && stopped.detail.includes('stopped by aborted'),
+    stopped.detail,
   );
 
   // usage and error paths
