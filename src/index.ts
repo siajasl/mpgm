@@ -573,6 +573,7 @@ export type {
   AdversarialVerdict,
   NodeTestExecutorOptions,
   RunAdversarialSuiteOptions,
+  TestRunOutcome,
 } from './test/adversarial.js';
 export {
   adversarialCaseKinds,
@@ -581,6 +582,7 @@ export {
   AdversarialRunError,
   adversarialSuiteSchema,
   adversarialVerdict,
+  executionsFromRun,
   nodeTestExecutor,
   parseTapResults,
   renderSuite,

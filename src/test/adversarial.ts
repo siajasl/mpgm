@@ -342,14 +342,17 @@ export async function runAdversarialSuite(
 }
 
 /**
- * Raised when a test run produced no case results at all (CONV-3, CONV-4).
+ * Raised when a run produced nothing a verdict may be folded from (CONV-3,
+ * CONV-4). See {@link executionsFromRun} for which runs those are.
  *
- * Returning an empty list would be read as "every case is `not-reported`",
- * which is true but useless: the interesting fact is *why* nothing ran — a
- * syntax error in a generated body, a subject that does not resolve, a
- * missing runtime. That reason is in the runner's own output and nowhere
- * else, so it travels with the error, along with the rendered source, since
- * the file it was written to is gone by the time anybody reads this.
+ * Folding such a run anyway would produce a verdict that is technically true
+ * and useless: six cases `not-reported`, or a suite that reads as clean
+ * because the runner was killed before it could say otherwise. The
+ * interesting fact is *why* — a syntax error in a generated body, a subject
+ * that does not resolve, a case that loops for ever, a missing runtime. That
+ * reason is in the runner's own output and nowhere else, so it travels with
+ * the error, along with the rendered source, since the file it was written to
+ * is gone by the time anybody reads this.
  */
 export class AdversarialRunError extends Error {
   readonly source: string;
@@ -358,7 +361,7 @@ export class AdversarialRunError extends Error {
 
   constructor(detail: string, source: string, exitCode: number | null, stderr: string) {
     super(
-      `the generated adversarial suite produced no case results: ${detail}. ` +
+      `the generated adversarial suite produced no verdict: ${detail}. ` +
         `Exit code ${exitCode === null ? '(killed)' : String(exitCode)}. ` +
         `Runner output:\n${stderr.trim() || '(empty)'}\n` +
         `The rendered suite is on this error's \`source\` property.`,
@@ -570,10 +573,12 @@ export interface NodeTestExecutorOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
-interface ProcessOutcome {
+/** What a finished suite process leaves behind for the verdict to be read from. */
+export interface TestRunOutcome {
   readonly stdout: string;
   readonly stderr: string;
   readonly code: number | null;
+  /** Whether the kernel killed it for exceeding its wall-clock bound. */
   readonly timedOut: boolean;
 }
 
@@ -583,7 +588,7 @@ function runProcess(
   cwd: string,
   env: Readonly<Record<string, string | undefined>>,
   timeoutMs: number,
-): Promise<ProcessOutcome> {
+): Promise<TestRunOutcome> {
   return new Promise((resolve, reject) => {
     // `env` is passed explicitly rather than merged into `process.env`:
     // spawn's default is inheritance, so an omitted option is the leak.
@@ -610,6 +615,66 @@ function runProcess(
       resolve({ stdout, stderr, code, timedOut });
     });
   });
+}
+
+/**
+ * The case results a finished run may be folded into a verdict from — or the
+ * error saying why it may not (CONV-3, CONV-4).
+ *
+ * A run reports two things, and a verdict is only sound when they agree: the
+ * TAP the runner printed, and how the process ended. Reading the first and
+ * discarding the second is how a partial run reads as a whole one, so both
+ * disagreements are refused rather than folded:
+ *
+ * - **The run was killed.** Whatever it managed to print, it did not finish,
+ *   and the cases it never reached would fold as `not-reported` — true, but a
+ *   description of a suite the runner declined to report rather than of a
+ *   timeout. Worse, the results it did print are then trusted: a body that
+ *   prints its own TAP and then hangs would be reporting on itself. A killed
+ *   run is not a report.
+ * - **Every reported case passed, and the process still failed.** The runner
+ *   exits non-zero when a case fails, so that is expected next to a failure
+ *   and a contradiction next to none: an unhandled rejection after the last
+ *   case, a subject whose import crashed the process, a file row nobody
+ *   parsed. Something happened that the report does not describe, and a clean
+ *   verdict is the one verdict it must not produce.
+ */
+export function executionsFromRun(
+  outcome: TestRunOutcome,
+  context: { source: string; command: string; timeoutMs: number },
+): AdversarialExecution[] {
+  const executions = parseTapResults(outcome.stdout).filter(
+    (execution) => !isFileRow(execution.id),
+  );
+  const fail = (detail: string): never => {
+    throw new AdversarialRunError(
+      detail,
+      context.source,
+      outcome.code,
+      outcome.stderr || outcome.stdout,
+    );
+  };
+
+  if (outcome.timedOut) {
+    return fail(
+      `${context.command} was killed after ${String(context.timeoutMs)}ms, ` +
+        `having reported ${String(executions.length)} case result(s) — a case ` +
+        `body can loop for ever, and a run that did not finish cannot say ` +
+        `which case did`,
+    );
+  }
+  if (executions.length === 0) {
+    return fail(`${context.command} reported no tests`);
+  }
+  if (outcome.code !== 0 && executions.every((execution) => execution.passed)) {
+    return fail(
+      `${context.command} reported ${String(executions.length)} case(s), all ` +
+        'passing, and then exited ' +
+        (outcome.code === null ? 'on a signal' : `with code ${String(outcome.code)}`) +
+        ' — the run disagrees with its own report, so it is not a clean suite',
+    );
+  }
+  return executions;
 }
 
 /**
@@ -668,21 +733,11 @@ export function nodeTestExecutor(options: NodeTestExecutorOptions): AdversarialE
         env,
         timeoutMs,
       );
-      const executions = parseTapResults(outcome.stdout).filter(
-        (execution) => !isFileRow(execution.id),
-      );
-      if (executions.length === 0) {
-        throw new AdversarialRunError(
-          outcome.timedOut
-            ? `the run was killed after ${String(timeoutMs)}ms`
-            : `'${process.execPath} --test ${name}' in '${options.projectDir}' ` +
-                `reported no tests`,
-          source,
-          outcome.code,
-          outcome.stderr || outcome.stdout,
-        );
-      }
-      return executions;
+      return executionsFromRun(outcome, {
+        source,
+        command: `'${process.execPath} --test ${name}' in '${options.projectDir}'`,
+        timeoutMs,
+      });
     } finally {
       rmSync(path, { force: true });
     }

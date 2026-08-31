@@ -16,6 +16,7 @@ import {
   AdversarialRunError,
   adversarialSuiteSchema,
   adversarialVerdict,
+  executionsFromRun,
   nodeTestExecutor,
   parseTapResults,
   renderSuite,
@@ -23,6 +24,7 @@ import {
   testEnvironment,
   type AdversarialExecution,
   type AdversarialSuite,
+  type TestRunOutcome,
 } from './adversarial.js';
 
 const projectRoot = join(import.meta.dirname, '..', '..');
@@ -374,6 +376,73 @@ describe('the environment a generated suite is run with (SAF-2)', () => {
       Path: 'C:\\Windows\\system32',
       SystemRoot: 'C:\\Windows',
     });
+  });
+});
+
+describe('reading a finished run (CONV-4)', () => {
+  const context = {
+    source: '// the rendered suite',
+    command: "'node --test adversarial-1.test.mjs' in '/project'",
+    timeoutMs: 1_000,
+  };
+  const outcome = (overrides: Partial<TestRunOutcome>): TestRunOutcome => ({
+    stdout: 'TAP version 13\nok 1 - a-case\n',
+    stderr: '',
+    code: 0,
+    timedOut: false,
+    ...overrides,
+  });
+
+  it('folds a finished run that reported a failure', () => {
+    const executions = executionsFromRun(
+      outcome({ stdout: 'TAP version 13\nok 1 - a-case\nnot ok 2 - b-case\n', code: 1 }),
+      context,
+    );
+
+    expect(executions.map((execution) => execution.passed)).toEqual([true, false]);
+  });
+
+  it('refuses a killed run even when it printed results first', () => {
+    // Two ways this bites. The cases the runner never reached would fold as
+    // `not-reported`, which describes a suite the runner declined rather than
+    // a case that hung; and the results it did print get trusted, so a body
+    // that prints its own `ok` lines and then loops for ever would be
+    // reporting on itself. A killed run is not a report.
+    expect(() =>
+      executionsFromRun(outcome({ code: null, timedOut: true }), context),
+    ).toThrow(AdversarialRunError);
+    expect(() =>
+      executionsFromRun(outcome({ code: null, timedOut: true }), context),
+    ).toThrow(/killed after 1000ms/);
+  });
+
+  it('refuses a run whose every case passed and whose process then failed', () => {
+    // The runner exits non-zero when a case fails, so a non-zero exit next to
+    // no failure is a disagreement: an unhandled rejection after the last
+    // case, a crash on the way out, something the report does not describe. A
+    // clean verdict is the one verdict that must not come out of it.
+    expect(() => executionsFromRun(outcome({ code: 7 }), context)).toThrow(
+      /disagrees with its own report/,
+    );
+  });
+
+  it('reports the reason without the reader having to read this module', () => {
+    // CONV-3: the runner's own output is where the cause is, and the rendered
+    // file is gone by the time anybody reads the error.
+    try {
+      executionsFromRun(
+        outcome({ stdout: '', stderr: 'SyntaxError: Unexpected token', code: 1 }),
+        context,
+      );
+      expect.unreachable('a run with no results must not fold into a verdict');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AdversarialRunError);
+      expect((error as AdversarialRunError).message).toContain(
+        'SyntaxError: Unexpected token',
+      );
+      expect((error as AdversarialRunError).message).toContain('reported no tests');
+      expect((error as AdversarialRunError).source).toBe(context.source);
+    }
   });
 });
 
