@@ -678,3 +678,9 @@ export {
 } from './dashboard/projection.js';
 export type { DashboardServerOptions } from './dashboard/server.js';
 export { DashboardServer } from './dashboard/server.js';
+export {
+  errorPage,
+  runDetailPage,
+  runListPage,
+  traceGraphPage,
+} from './dashboard/render.js';

@@ -214,6 +214,79 @@ describe('DashboardServer', () => {
     expect(traceResponse.status).toBe(200);
   });
 
+  it('renders a live run as HTML for a request that asks for it, and reflects an event that lands after the first render', async () => {
+    const { base, log } = await start();
+    const htmlAccept = { headers: { accept: 'text/html,application/xhtml+xml' } };
+
+    log.appendMany([
+      { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+      {
+        runId: RUN,
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+      },
+    ]);
+
+    const home = await fetch(`${base}/`);
+    expect(home.headers.get('content-type')).toContain('text/html');
+    const homeBody = await home.text();
+    expect(homeBody).toContain(`href="/runs/${RUN}"`);
+
+    const before = await fetch(`${base}/runs/${RUN}`, htmlAccept);
+    expect(before.headers.get('content-type')).toContain('text/html');
+    const beforeBody = await before.text();
+    expect(beforeBody).toContain('T1');
+    expect(beforeBody).not.toContain('G1');
+
+    // Nothing restarted the server between requests — this event committed
+    // after the first HTML render, so seeing it in the second is exactly
+    // what "live" means here, same as it does for the JSON API above.
+    log.appendMany([
+      {
+        runId: RUN,
+        type: 'GatePresented',
+        payload: { gateId: 'G1', phase: 'scope', artifactRefs: [] },
+      },
+    ]);
+
+    const after = await fetch(`${base}/runs/${RUN}`, htmlAccept);
+    const afterBody = await after.text();
+    expect(afterBody).toContain('G1');
+    expect(afterBody).toContain('class="awaiting"');
+
+    // A plain `fetch()` with no `Accept: text/html` must still get JSON —
+    // the HTML panel is additive, not a replacement for the API T3.2.5a
+    // already shipped and tests above still depend on.
+    const plain = await fetch(`${base}/runs/${RUN}`);
+    expect(plain.headers.get('content-type')).toContain('application/json');
+  });
+
+  it('renders a 404 for an unknown run as HTML rather than falling back to the JSON error body', async () => {
+    const { base } = await start();
+    const response = await fetch(`${base}/runs/no-such-run`, {
+      headers: { accept: 'text/html' },
+    });
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    const body = await response.text();
+    expect(body).toContain('no-such-run');
+  });
+
+  it('renders the trace graph as HTML for a request that asks for it', async () => {
+    const { base, traces } = await start();
+    traces.indexCommit({
+      sha: 'abc123',
+      subject: 'Fix the loan bug',
+      body: 'Traces-To: LOAN-1',
+    });
+
+    const response = await fetch(`${base}/trace`, { headers: { accept: 'text/html' } });
+    expect(response.headers.get('content-type')).toContain('text/html');
+    const body = await response.text();
+    expect(body).toContain('abc123');
+    expect(body).toContain('LOAN-1');
+  });
+
   it('serves the trace graph', async () => {
     const { base, traces } = await start();
 
