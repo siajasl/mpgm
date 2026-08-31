@@ -33,11 +33,17 @@ import type { ReopenRequest } from '../gate/reopen.js';
  * generic artifact-link walk ({@link extractArtifactLinks},
  * `src/trace/links.ts`) unchanged — a `tracesTo` array on an artifact's own
  * `data` is read as citations from the artifact itself, so a Defect artifact
- * needs no special case there. A `verified` defect additionally declares
- * `verifies: tracesTo` (same walk, `verifies` rather than `traces-to`) —
- * once a fix has been retested and held, the defect *is* evidence the
- * requirement holds, the same distinction TST-2 draws between a citation and
- * a check.
+ * needs no special case there. Deliberately as `traces-to` only, never
+ * `verifies`: `TraceIndexStore.coverage()` (`src/trace/index-store.ts`) marks
+ * a requirement verified the moment *anything* holds a `verifies` link to it,
+ * with no notion of which suite that link came from or whether the same
+ * check still runs on the next commit. A closed defect is exactly the wrong
+ * shape for that — the round trip proves a `caseId` held once, at re-test
+ * time, not that a requirement now has an ongoing check — so a `verified`
+ * Defect emits nothing `extractArtifactLinks` would read as `verifies`. A
+ * requirement is verified by a test the graph can point to, not by a defect
+ * against it having been closed; that is TST-2's own "by which tests" and it
+ * is what the Test gate's "all Must-have requirements verified" reads.
  *
  * Routing itself is left to whoever files or triages the defect: judging
  * "does this invalidate a design assumption" is exactly the kind of call
@@ -123,6 +129,17 @@ export type DefectStatus = (typeof defectStatuses)[number];
 const defectHistoryEntrySchema = z.object({
   status: z.enum(defectStatuses),
   detail: z.string().min(1),
+  /**
+   * The fix ref this entry concerns, where one exists — set by
+   * {@link recordFix} and carried forward by {@link retestDefect} on both
+   * branches. `routed` and `open` never carry the current `fix` field
+   * (routing to a fresh route is not a fix), so without this a re-route of a
+   * `reopened` defect would strand the failed attempt's ref nowhere the
+   * defect itself still holds it. History is append-only and never trimmed,
+   * so once written here it outlives however many times the top-level `fix`
+   * field gets replaced.
+   */
+  ref: z.string().min(1).optional(),
 });
 
 /** One entry in a defect's history — append-only, mirroring the quarantine
@@ -149,11 +166,9 @@ const defectCommon = {
  * A discriminated union on `status` rather than one shape with optional
  * `route`/`fix` fields, so that "routed with no route" or "verified with no
  * fix" is not a state the type system lets through (CONV-5) — each is
- * unrepresentable rather than merely unchecked. `verified` additionally
- * carries `verifies`, always equal to `tracesTo` at the moment a re-test held
- * (set by {@link retestDefect}, never supplied directly): a defect
- * conjecturing it verifies a requirement it never traced to would be a claim
- * this module has no evidence for.
+ * unrepresentable rather than merely unchecked. `verified` carries no
+ * `verifies` field: see this module's top-of-file doc for why a closed
+ * defect must not be readable as requirement-verification evidence.
  */
 export const defectSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('open'), ...defectCommon }),
@@ -175,7 +190,6 @@ export const defectSchema = z.discriminatedUnion('status', [
     ...defectCommon,
     route: defectRouteSchema,
     fix: defectFixSchema,
-    verifies: z.array(z.string().min(1)).min(1),
   }),
 ]);
 
@@ -313,7 +327,10 @@ export function recordFix(defect: Defect, fix: DefectFix): Defect {
     status: 'fix-pending',
     route: defect.route,
     fix,
-    history: [...defect.history, { status: 'fix-pending', detail: fix.summary }],
+    history: [
+      ...defect.history,
+      { status: 'fix-pending', detail: fix.summary, ref: fix.ref },
+    ],
   });
 }
 
@@ -328,14 +345,17 @@ export interface RetestResult {
  * (TST-5's second obligation, and the reason the round trip is a round trip
  * rather than a straight line).
  *
- * A held fix closes the defect: `verified`, with `verifies` set to exactly
- * the requirements this defect traced to — a re-test is what turns a
- * citation into a check (TST-2's distinction, `src/trace/links.ts`). A fix
- * that did not hold reopens it instead of discarding it: `attempts`
- * increments, the route and fix that did not work stay on record as the
- * newest history entry, and the defect is back in a status
- * {@link routeDefect} accepts — ready to be routed again, by the same path
- * or a different one, rather than silently dropped.
+ * A held fix closes the defect: `verified`. It carries no `verifies` link
+ * (module doc above) — the round trip is TST-5's "traced to requirements,
+ * routed, fixed" obligation, not a claim that a requirement now has an
+ * ongoing test the graph can point to. A fix that did not hold reopens it
+ * instead of discarding it: `attempts` increments, the route and fix that
+ * did not work stay on record as the newest history entry — `ref` included,
+ * so the failed attempt's ref survives even once {@link routeDefect} moves
+ * the defect on to `routed`, a status with no `fix` field of its own — and
+ * the defect is back in a status {@link routeDefect} accepts, ready to be
+ * routed again, by the same path or a different one, rather than silently
+ * dropped.
  */
 export function retestDefect(defect: Defect, result: RetestResult): Defect {
   if (defect.status !== 'fix-pending') {
@@ -349,8 +369,10 @@ export function retestDefect(defect: Defect, result: RetestResult): Defect {
       status: 'verified',
       route: defect.route,
       fix: defect.fix,
-      verifies: defect.tracesTo,
-      history: [...defect.history, { status: 'verified', detail: result.detail }],
+      history: [
+        ...defect.history,
+        { status: 'verified', detail: result.detail, ref: defect.fix.ref },
+      ],
     });
   }
 
@@ -360,7 +382,10 @@ export function retestDefect(defect: Defect, result: RetestResult): Defect {
     status: 'reopened',
     route: defect.route,
     fix: defect.fix,
-    history: [...defect.history, { status: 'reopened', detail: result.detail }],
+    history: [
+      ...defect.history,
+      { status: 'reopened', detail: result.detail, ref: defect.fix.ref },
+    ],
   });
 }
 
@@ -393,7 +418,11 @@ export interface DesignReopenRequestOptions {
  *
  * Refuses a defect not routed to `design` at all — routing to Implement and
  * asking for a Design reopen request is a caller error, not something to
- * silently reinterpret as "reopen anyway".
+ * silently reinterpret as "reopen anyway". Refuses an empty `reason` for the
+ * same audit reason {@link routeDefect} does — {@link reopenPhase}
+ * (`src/gate/reopen.ts`) would refuse it too, but not until the request has
+ * already been built and handed onward, which is a call this function can
+ * settle immediately instead of deferring to a caller two modules away.
  */
 export function designReopenRequest(
   defect: Defect,
@@ -411,6 +440,11 @@ export function designReopenRequest(
     throw new DefectDataError(
       `defect is routed to '${defect.route.to}', not 'design' — a reopen request ` +
         `can only be built for a defect ORC-1 actually sent to Design`,
+    );
+  }
+  if (options.reason.trim() === '') {
+    throw new DefectDataError(
+      'a design reopen request must say why (CONV-3, mirrors routeDefect and GateError)',
     );
   }
 
