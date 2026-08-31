@@ -20,6 +20,7 @@ import {
   parseTapResults,
   renderSuite,
   runAdversarialSuite,
+  testEnvironment,
   type AdversarialExecution,
   type AdversarialSuite,
 } from './adversarial.js';
@@ -339,6 +340,43 @@ describe('parseTapResults', () => {
   });
 });
 
+describe('the environment a generated suite is run with (SAF-2)', () => {
+  it('keeps only what a node child needs, whatever else the kernel holds', () => {
+    // An allowlist, so the failure mode is a suite that cannot read a variable
+    // it wanted rather than a credential handed to model-authored code. The
+    // classified ones are here to show that a denylist would have had to know
+    // about them; `MPGM_ANYTHING` is the one it would not have known about.
+    const scrubbed = testEnvironment({
+      PATH: '/usr/bin',
+      HOME: '/home/kernel',
+      GITHUB_TOKEN: 'ghp_not_a_real_token',
+      AWS_SECRET_ACCESS_KEY: 'not-a-real-key',
+      MPGM_ANYTHING: 'the variable nobody classified',
+      NODE_OPTIONS: '--require ./anything.js',
+      UNSET: undefined,
+    });
+
+    expect(scrubbed).toEqual({ PATH: '/usr/bin', HOME: '/home/kernel' });
+  });
+
+  it('matches names the way the platform that set them resolves them', () => {
+    // Windows preserves the case it was given and resolves without it, so a
+    // case-sensitive allowlist drops `Path` and leaves the child unable to
+    // spawn anything — a scrub that breaks every run is a scrub somebody
+    // turns off.
+    const scrubbed = testEnvironment({
+      Path: 'C:\\Windows\\system32',
+      SystemRoot: 'C:\\Windows',
+      SomethingElse: 'dropped',
+    });
+
+    expect(scrubbed).toEqual({
+      Path: 'C:\\Windows\\system32',
+      SystemRoot: 'C:\\Windows',
+    });
+  });
+});
+
 describe('the sample project (T3.2.2 completion criterion)', () => {
   it("passes the implementer's own tests despite the planted defect", () => {
     // The premise of TST-4. Every amount the author tested divides evenly, so
@@ -467,6 +505,116 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
 
     expect(verdict.clean).toBe(true);
     expect(readFileSync(outside, 'utf8')).toBe('reached');
+  }, 30_000);
+
+  it("does not hand a case body the kernel's credentials", async () => {
+    // The other half of the trust assumption above, and the half that needs no
+    // sandbox: a case body is model-authored code from a session that has just
+    // read an arbitrary repository (SAF-3), and the secret broker's first
+    // layer of control is that a credential is simply not in the environment
+    // to be read (src/secret/broker.ts). A child that inherited `process.env`
+    // would defeat that layer for every secret at once, on a path the broker
+    // never sees — `process.env.GITHUB_TOKEN` in a body, out over a socket,
+    // never touching log-write redaction. So the suite's process gets an
+    // allowlist and nothing else.
+    const directory = sampleCheckout();
+    process.env.MPGM_FAKE_CREDENTIAL = 'not-a-real-credential-value';
+
+    try {
+      const scrubbed = adversarialSuiteSchema.parse({
+        subject: './split.mjs',
+        summary: 'What the kernel hands the process it runs a generated suite in.',
+        cases: [
+          {
+            id: 'a-kernel-credential-is-not-in-scope',
+            kind: 'negative',
+            about: "reading a variable of the kernel's from inside a case body",
+            defect: "the suite's process inherited the kernel's credentials",
+            body: 'assert.equal(process.env.MPGM_FAKE_CREDENTIAL, undefined);',
+          },
+          {
+            id: 'nothing-outside-the-allowlist-survives',
+            kind: 'boundary',
+            about: 'a variable nobody classified, which is the usual kind',
+            defect: 'the scrub is a denylist, so an unclassified secret passes',
+            body: [
+              'const leaked = Object.keys(process.env).filter((name) =>',
+              "  name.startsWith('MPGM_'),",
+              ');',
+              'assert.deepEqual(leaked, []);',
+            ].join('\n'),
+          },
+          {
+            id: 'the-child-can-still-find-its-way-around',
+            kind: 'property',
+            about: 'the allowlist keeps what a node child needs to run at all',
+            defect: 'the scrub is so tight the suite cannot run',
+            body: 'assert.ok(process.env.PATH !== undefined || process.env.Path !== undefined);',
+          },
+        ],
+      });
+
+      const verdict = await runAdversarialSuite({
+        suite: scrubbed,
+        execute: nodeTestExecutor({ projectDir: directory }),
+      });
+
+      expect(verdict.defects).toEqual([]);
+      expect(verdict.clean).toBe(true);
+    } finally {
+      delete process.env.MPGM_FAKE_CREDENTIAL;
+    }
+  }, 30_000);
+
+  it('runs with the environment it was given, and with nothing else', async () => {
+    // A subject that reads configuration from the environment is served by
+    // naming the variables, one at a time, rather than by turning inheritance
+    // back on. What is passed is what the child gets.
+    const directory = sampleCheckout();
+    process.env.MPGM_FAKE_CREDENTIAL = 'not-a-real-credential-value';
+
+    try {
+      const configured = adversarialSuiteSchema.parse({
+        subject: './split.mjs',
+        summary: 'A suite whose project needs one variable of its own.',
+        cases: [
+          {
+            id: 'the-declared-variable-arrives',
+            kind: 'boundary',
+            about: 'the one variable the caller chose to pass',
+            defect: 'the executor ignored the environment it was handed',
+            body: "assert.equal(process.env.MPGM_PROJECT_SETTING, 'configured');",
+          },
+          {
+            id: 'the-undeclared-one-does-not',
+            kind: 'negative',
+            about: 'everything the caller did not choose to pass',
+            defect: "the given environment was merged with the kernel's",
+            body: 'assert.equal(process.env.MPGM_FAKE_CREDENTIAL, undefined);',
+          },
+          {
+            id: 'the-subject-still-loads',
+            kind: 'property',
+            about: 'a scrubbed environment does not stop the module resolving',
+            defect: 'the run cannot import what it was asked to attack',
+            body: "assert.equal(typeof subject.splitEvenly, 'function');",
+          },
+        ],
+      });
+
+      const verdict = await runAdversarialSuite({
+        suite: configured,
+        execute: nodeTestExecutor({
+          projectDir: directory,
+          env: { ...testEnvironment(), MPGM_PROJECT_SETTING: 'configured' },
+        }),
+      });
+
+      expect(verdict.defects).toEqual([]);
+      expect(verdict.clean).toBe(true);
+    } finally {
+      delete process.env.MPGM_FAKE_CREDENTIAL;
+    }
   }, 30_000);
 
   it('reports why a run produced no results rather than calling it unreported', async () => {

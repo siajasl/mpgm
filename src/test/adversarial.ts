@@ -482,6 +482,75 @@ function isFileRow(id: string): boolean {
   return /\.(?:mjs|cjs|js|ts)$/.test(id);
 }
 
+/**
+ * Variables a generated suite's process keeps from the kernel's environment.
+ *
+ * An allowlist, not a denylist, because the question "does this variable hold
+ * a credential?" has no reliable answer and a wrong answer here is a leak
+ * (CONV-4): a variable nobody thought about is dropped rather than passed.
+ * What is here is what a `node` child needs to start and to find a temporary
+ * directory — on Windows, spawning fails outright without `SystemRoot` and
+ * `ComSpec`.
+ *
+ * `NODE_OPTIONS` is conspicuously absent. It is the one variable whose value
+ * is executed rather than read, and the process it would be executed in is
+ * running model-authored code already.
+ *
+ * Names are matched case-insensitively: Windows preserves the case it was
+ * given (`Path`, `SystemRoot`) but resolves without it, so a case-sensitive
+ * list would drop `Path` and leave the child unable to spawn anything.
+ */
+export const testEnvironmentAllowlist: readonly string[] = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  // Windows: without these a child process does not start at all.
+  'SystemRoot',
+  'SystemDrive',
+  'ComSpec',
+  'PATHEXT',
+  'USERPROFILE',
+  'WINDIR',
+];
+
+/**
+ * The environment a generated suite is run with, by default.
+ *
+ * The secret broker's first layer of control is that a credential is simply
+ * *not there* to be read — every agent session is given
+ * `SecretBroker.environment(process.env)` rather than the kernel's own
+ * (src/secret/broker.ts, SAF-2, ADR-6). A case body is model-authored code
+ * written by a session that has just read an arbitrary repository, which may
+ * carry instructions of its own (SAF-3); handing that process the kernel's
+ * environment would put `process.env.GITHUB_TOKEN` back within reach on a
+ * path the broker never sees, and the value could leave over a socket without
+ * ever passing log-write redaction. So this path scrubs too, and scrubs
+ * harder than the broker does: the broker removes what it knows to be secret,
+ * while a suite process is given only what it is known to need.
+ *
+ * This is the one part of the exposure at {@link nodeTestExecutor} that
+ * needs no sandbox to close. The rest — the filesystem, the network — still
+ * does.
+ */
+export function testEnvironment(
+  base: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> {
+  const allowed = new Set(testEnvironmentAllowlist.map((name) => name.toLowerCase()));
+  const result: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && allowed.has(key.toLowerCase())) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 export interface NodeTestExecutorOptions {
   /**
    * Directory the rendered suite is written into and run from. The suite's
@@ -490,6 +559,15 @@ export interface NodeTestExecutorOptions {
   readonly projectDir: string;
   /** Wall-clock bound on the run. A generated case can loop for ever. */
   readonly timeoutMs?: number;
+  /**
+   * Environment for the suite's process. Defaults to {@link testEnvironment},
+   * which keeps only what a `node` child needs — a project whose subject reads
+   * configuration from the environment passes it here, one variable at a
+   * time. Passing `process.env` restores inheritance, and gives a case body
+   * every credential the kernel holds; nothing stops a caller doing that, and
+   * nothing should read it as supported.
+   */
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
 interface ProcessOutcome {
@@ -503,10 +581,13 @@ function runProcess(
   command: string,
   args: readonly string[],
   cwd: string,
+  env: Readonly<Record<string, string | undefined>>,
   timeoutMs: number,
 ): Promise<ProcessOutcome> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], { cwd });
+    // `env` is passed explicitly rather than merged into `process.env`:
+    // spawn's default is inheritance, so an omitted option is the leak.
+    const child = spawn(command, [...args], { cwd, env });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -544,8 +625,7 @@ function runProcess(
  *
  * **Case bodies are executed as trusted code, with the privileges the kernel
  * has.** A suite is validated data until this function; here it becomes a file
- * in the project and a child process, and that process inherits this one's
- * environment and credentials. Nothing constrains a body: it may
+ * in the project and a child process. Nothing constrains a body: it may
  * `await import('node:fs')`, read anything the harness can read, write outside
  * `projectDir`, or open a socket. In particular the schema's `subject`
  * constraint bounds none of that and is not intended to — a suite is only as
@@ -563,9 +643,17 @@ function runProcess(
  * calls — the agent never makes the call; the kernel does, on its behalf.
  * Until a sandbox exists, run generated suites where you would run untrusted
  * tests, which is to say not on anything you would mind losing.
+ *
+ * The assumption stops short of the kernel's *credentials*. The child is given
+ * {@link testEnvironment} rather than `process.env`, because the broker's
+ * first layer of control is that a secret is not there to be read, and a
+ * sibling path that inherits the environment defeats that layer for every
+ * secret at once (SAF-2). It is the one piece of confinement available here
+ * without an OS to enforce it, so it is not left to one.
  */
 export function nodeTestExecutor(options: NodeTestExecutorOptions): AdversarialExecutor {
   const timeoutMs = options.timeoutMs ?? 60_000;
+  const env = options.env ?? testEnvironment();
 
   return async (source: string) => {
     const name = `adversarial-${randomUUID()}.test.mjs`;
@@ -577,6 +665,7 @@ export function nodeTestExecutor(options: NodeTestExecutorOptions): AdversarialE
         process.execPath,
         ['--test', '--test-reporter=tap', name],
         options.projectDir,
+        env,
         timeoutMs,
       );
       const executions = parseTapResults(outcome.stdout).filter(

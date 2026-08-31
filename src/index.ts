@@ -585,6 +585,8 @@ export {
   parseTapResults,
   renderSuite,
   runAdversarialSuite,
+  testEnvironment,
+  testEnvironmentAllowlist,
 } from './test/adversarial.js';
 export type {
   NfrCoverageRow,
