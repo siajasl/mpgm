@@ -20,8 +20,9 @@ import { z } from 'zod';
  * writable path (SAF-3, DESIGN §4.2). It does not stay data: the kernel
  * renders the suite into one `node:test` file (`renderSuite`), hands it to an
  * executor, and an executor runs it. Where that boundary is crossed, and on
- * what assumption, is written at {@link nodeTestExecutor}; nothing in this
- * module confines a case body, and no part of it should be read as doing so.
+ * what assumption, is written at {@link nodeTestExecutor}; the one thing this
+ * module keeps out of a case body's reach is the kernel's environment, and
+ * nothing else here confines one or should be read as doing so.
  * The verdict is then folded from what comes back, keyed by case id
  * (`adversarialVerdict`). Two things follow from that split. A case that
  * fails is attributable — it names the defect it found in the tester's own
@@ -71,10 +72,11 @@ const caseId = z
  *
  * It is **not** a confinement boundary and nothing may be built on it as one.
  * `body` is unconstrained JavaScript that {@link nodeTestExecutor} writes into
- * the project and executes, so a case reaches whatever the harness reaches
- * regardless of what `subject` names: `await import('node:fs')` inside a body
- * gets everything a subject of `node:fs` would have got, and this regex sees
- * none of it. The trust assumption that actually governs a run is stated at
+ * the project and executes, so a case reaches whatever the harness reaches —
+ * the kernel's credentials excepted, which the executor withholds — whatever
+ * `subject` names: `await import('node:fs')` inside a body gets everything a
+ * subject of `node:fs` would have got, and this regex sees none of it. The
+ * trust assumption that actually governs a run is stated at
  * {@link nodeTestExecutor}.
  */
 const subjectSpecifier = z
