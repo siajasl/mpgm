@@ -110,7 +110,11 @@ A quarantine ledger tracks flaky tests and excludes them from coverage claims
 (DESIGN §4.7). `detectFlaky` (`src/test/quarantine.ts`) compares at least two
 reruns of the same suite against the same code and reports every test id whose
 outcome disagreed — including a test that sometimes went unreported, which is
-itself a disagreement rather than a hole to skip over. `detectAndQuarantine`
+itself a disagreement rather than a hole to skip over. A rerun that reports
+the same test id twice is refused (`FlakyDetectionDuplicateIdError`), not
+folded: comparing an id's two reports against each other inside one run would
+read as that id disagreeing with itself, which is a within-run duplicate
+mistaken for a between-run flake. `detectAndQuarantine`
 folds what it finds straight into the ledger: there is no operator gate
 between detection and quarantine, the same way a red `ci.checks` verdict
 blocks a merge without anyone approving that it should. Quarantining the same

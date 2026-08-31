@@ -101,6 +101,41 @@ export class FlakyDetectionMismatchError extends Error {
   }
 }
 
+/**
+ * Raised when one rerun handed to {@link detectFlaky} reports the same test id
+ * more than once.
+ *
+ * The "same suite" guard above compares *sets* of ids between reruns, because
+ * two reruns are allowed to report their ids in a different order. But a set
+ * throws away count, and count is exactly what tells apart a real rerun from
+ * a single run that happens to mention an id twice — a parameterised case, an
+ * in-run retry, the same test name reused across two files. Read past that,
+ * `[[{a,passed},{a,failed}]]` looks like `a` disagreeing with itself across
+ * reruns, when the only thing that happened is one run reporting on `a`
+ * twice: a false flakiness verdict, off evidence gathered inside a single
+ * run rather than across the reruns this module exists to compare. Refusing
+ * is the same refusal `AdversarialDuplicateResultError` makes when one suite
+ * execution reports a case more than once (CONV-4).
+ */
+export class FlakyDetectionDuplicateIdError extends Error {
+  readonly ids: readonly string[];
+  readonly runIndex: number;
+
+  constructor(ids: readonly string[], runIndex: number) {
+    super(
+      `rerun ${String(runIndex)} reported the same test id more than once: ` +
+        `${ids.join(', ')}. A rerun that mentions an id twice is not two ` +
+        `reruns of it — comparing its own two reports against each other would ` +
+        `read a disagreement inside a single run as flakiness across reruns ` +
+        `(CONV-4). If these are a genuine rerun of the same test, fold them ` +
+        `into one outcome per id before calling detectFlaky.`,
+    );
+    this.name = 'FlakyDetectionDuplicateIdError';
+    this.ids = ids;
+    this.runIndex = runIndex;
+  }
+}
+
 /** A test whose outcome disagreed across the reruns it was compared over. */
 export interface FlakyTest {
   readonly id: string;
@@ -122,6 +157,20 @@ export interface FlakyTest {
  * disagrees with the first, so by the time this loop runs, every rerun
  * reports on the same ids and "not seen" cannot happen.
  */
+/** The ids that appear more than once in `ids`, each listed once, in first-seen order. */
+function duplicateIds(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) {
+      duplicated.add(id);
+    } else {
+      seen.add(id);
+    }
+  }
+  return [...duplicated];
+}
+
 export function detectFlaky(
   runs: readonly (readonly TestRerun[])[],
 ): readonly FlakyTest[] {
@@ -135,6 +184,16 @@ export function detectFlaky(
 
   runs.forEach((run, index) => {
     const gotIds = run.map((rerun) => rerun.id);
+
+    // Checked before the id-set comparison below, because a set throws away
+    // count: a run that reports the same id twice would otherwise compare as
+    // agreeing with itself (its own id set has one member), and this is the
+    // gap that lets a within-run disagreement pass as a between-run one.
+    const duplicated = duplicateIds(gotIds);
+    if (duplicated.length > 0) {
+      throw new FlakyDetectionDuplicateIdError(duplicated, index);
+    }
+
     const gotSet = new Set(gotIds);
     const agrees =
       gotSet.size === expectedSet.size && expectedIds.every((id) => gotSet.has(id));
@@ -213,7 +272,12 @@ function reasonFor(test: FlakyTest, ref: string): string {
  * on a later run gets no second entry, the same "converges instead of
  * duplicating" rule the PM projector applies to its own reconcile pass
  * (PMG-4) — a ledger that grew a fresh row every time the same test failed
- * to settle would bury the one row that mattered under duplicates of it.
+ * to settle would bury the one row that mattered under duplicates of it. The
+ * same rule applies within one call, not only across calls: `flaky` is
+ * whatever a caller assembled (normally {@link detectFlaky}'s result, but
+ * this function does not require that), and if it names one test id twice
+ * only its first occurrence becomes a row — a single call is not the place
+ * to grow the duplicate this function otherwise refuses to grow across calls.
  */
 export function quarantineFlaky(
   ledger: QuarantineLedger,
@@ -221,14 +285,20 @@ export function quarantineFlaky(
   flaky: readonly FlakyTest[],
 ): QuarantineLedger {
   const already = quarantinedIds(ledger);
-  const additions = flaky
-    .filter((test) => !already.has(test.id))
-    .map((test): QuarantineEntry => ({
+  const addedInThisCall = new Set<string>();
+  const additions: QuarantineEntry[] = [];
+  for (const test of flaky) {
+    if (already.has(test.id) || addedInThisCall.has(test.id)) {
+      continue;
+    }
+    addedInThisCall.add(test.id);
+    additions.push({
       testId: test.id,
       ref,
       outcomes: test.outcomes,
       reason: reasonFor(test, ref),
-    }));
+    });
+  }
   return additions.length === 0 ? ledger : [...ledger, ...additions];
 }
 

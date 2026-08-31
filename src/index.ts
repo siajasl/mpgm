@@ -628,6 +628,7 @@ export type {
 export {
   detectAndQuarantine,
   detectFlaky,
+  FlakyDetectionDuplicateIdError,
   FlakyDetectionMismatchError,
   FlakyDetectionRunsError,
   quarantineFlaky,

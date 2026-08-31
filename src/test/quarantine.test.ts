@@ -3,6 +3,7 @@ import type { CoverageRow } from '../trace/index-store.js';
 import {
   detectAndQuarantine,
   detectFlaky,
+  FlakyDetectionDuplicateIdError,
   FlakyDetectionMismatchError,
   FlakyDetectionRunsError,
   quarantinedIds,
@@ -70,6 +71,40 @@ describe('detectFlaky (TST-6)', () => {
     );
   });
 
+  // A run that reports one id twice is not a rerun disagreeing with itself —
+  // it is a single run whose own two reports would otherwise be compared as
+  // if they came from separate reruns, producing a false flakiness verdict
+  // off evidence gathered inside one run.
+  it('refuses a run that reports the same test id more than once', () => {
+    expect(() =>
+      detectFlaky([
+        run([
+          ['a', 'passed'],
+          ['a', 'failed'],
+        ]),
+        run([['a', 'passed']]),
+      ]),
+    ).toThrow(FlakyDetectionDuplicateIdError);
+  });
+
+  it('names the duplicated ids and the run index on the duplicate-id error', () => {
+    try {
+      detectFlaky([
+        run([['a', 'passed']]),
+        run([
+          ['a', 'passed'],
+          ['a', 'failed'],
+        ]),
+      ]);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(FlakyDetectionDuplicateIdError);
+      const duplicate = error as FlakyDetectionDuplicateIdError;
+      expect(duplicate.ids).toEqual(['a']);
+      expect(duplicate.runIndex).toBe(1);
+    }
+  });
+
   it('names the expected and actual ids and the run index in the mismatch error', () => {
     try {
       detectFlaky([
@@ -125,6 +160,20 @@ describe('quarantineFlaky', () => {
   it('leaves an untouched ledger alone when nothing is flaky', () => {
     const ledger: QuarantineLedger = [];
     expect(quarantineFlaky(ledger, 'abc123', [])).toBe(ledger);
+  });
+
+  // The same convergence rule quarantineFlaky applies across calls (a test
+  // already on the ledger gets no second row) also applies within one call:
+  // `flaky` is caller-assembled input, not guaranteed unique by construction,
+  // and a naive append would grow two rows for one test from a single call.
+  it('does not add two entries for the same test id named twice in one call', () => {
+    const ledger = quarantineFlaky([], 'abc123', [
+      { id: 'flaky-case', outcomes: ['passed', 'failed'] },
+      { id: 'flaky-case', outcomes: ['failed', 'passed', 'failed'] },
+    ]);
+
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.outcomes).toEqual(['passed', 'failed']);
   });
 });
 
