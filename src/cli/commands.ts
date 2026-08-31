@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { AgentSessionProvider } from '../agent/session.js';
 import { SessionRunner } from '../agent/runner.js';
 import type { OutputSchemaRegistry } from '../agent/output-registry.js';
@@ -33,6 +34,7 @@ import {
   openPullRequest,
 } from '../implement/github-checks.js';
 import { implementTask } from '../implement/loop.js';
+import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
 import { Projector } from '../state/projector.js';
@@ -94,6 +96,49 @@ function knowledgeBase(context: CliContext): readonly KbDocument[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * What git says about a candidate `--into`, for `targetRefusal` to judge.
+ *
+ * Every question is asked with a command that fails loudly when the answer is
+ * "there is none", so a missing HEAD or remote arrives here as `undefined`
+ * rather than as an empty string that reads like an answer.
+ */
+function targetFacts(path: string): TargetFacts {
+  const resolved = (candidate: string | undefined): string | undefined => {
+    try {
+      return candidate === undefined ? undefined : realpathSync(candidate);
+    } catch {
+      return candidate;
+    }
+  };
+  const ask = (args: readonly string[]): string | undefined => {
+    try {
+      return execFileSync('git', [...args], {
+        cwd: path,
+        encoding: 'utf8',
+        // Silenced: every one of these questions has "there is none" as an
+        // ordinary answer, and git says so on stderr. Letting it through would
+        // print `fatal: not a git repository` above the refusal that explains
+        // it, which reads like a crash.
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      return undefined;
+    }
+  };
+
+  return {
+    path,
+    // `realpathSync` because git reports the resolved path, and on macOS a
+    // repository under /tmp is reached through a symlink — comparing the two
+    // unresolved would refuse every temporary checkout as "not its own top
+    // level".
+    topLevel: resolved(ask(['rev-parse', '--show-toplevel'])),
+    head: ask(['rev-parse', 'HEAD']),
+    originUrl: ask(['remote', 'get-url', 'origin']),
+  };
 }
 
 /** `mpgm run <phase>` — execute a phase and present its gate. */
@@ -382,9 +427,17 @@ export async function implement(
   runId: string,
   taskId: string,
   repo: string,
+  into: string = context.root,
 ): Promise<CommandResult> {
+  // Resolved the same way git reports it, so the top-level comparison is
+  // between two paths of the same kind.
+  const target = realpathSync(resolve(into));
   const { db, log, projector } = open(context);
   try {
+    // The freeze first, and the target second. Both refuse before anything is
+    // dispatched, but they answer different questions and only one of them is
+    // about safety: whether agents may run under these definitions at all
+    // comes before where their work would land.
     try {
       assertRolesFrozen(
         loadRoleFreeze(join(context.root, 'roles', 'freeze.json')),
@@ -394,6 +447,12 @@ export async function implement(
     } catch (error) {
       context.write(error instanceof Error ? error.message : String(error));
       return { ok: false, detail: 'role freeze' };
+    }
+
+    const refusal = targetRefusal(targetFacts(target), repo);
+    if (refusal !== undefined) {
+      context.write(refusal);
+      return { ok: false, detail: 'unusable target' };
     }
 
     const artifacts = new ArtifactStore({
@@ -433,13 +492,18 @@ export async function implement(
     const result = await implementTask({
       runId,
       task,
-      repo: context.root,
-      worktrees: new WorktreeManager({ repo: context.root }),
+      // The code follows the target; the roles, the plan and the log stay with
+      // mpgm. `policyRoot` above all: the paths a role is allowed to write are
+      // relative to the checkout the agent is working in, so leaving it on
+      // `context.root` would point the policy hook at a tree the task never
+      // touches.
+      repo: target,
+      worktrees: new WorktreeManager({ repo: target }),
       sessions: new SessionRunner({
         log,
         provider: context.provider,
         schemas: context.outputSchemas,
-        policyRoot: context.root,
+        policyRoot: target,
       }),
       roles: RoleRegistry.fromDirectory(join(context.root, 'roles')),
       log,
@@ -451,7 +515,7 @@ export async function implement(
       publish: async (branch) => {
         await Promise.resolve(
           execFileSync('git', ['push', '--force-with-lease', 'origin', branch], {
-            cwd: context.root,
+            cwd: target,
             stdio: 'ignore',
           }),
         );

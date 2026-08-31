@@ -58,7 +58,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm confirm <fingerprint> --run <id> --by <who> [--reason <s>]
   mpgm attest <task> --by <who> --evidence <s> [--note <s>] [--run <id>]
   mpgm approve-role <role> --digest <d> --by <who> --reason <s> [--run <id>]
-  mpgm implement <task> --repo <owner/name> [--run <id>]
+  mpgm implement <task> --repo <owner/name> [--into <path>] [--run <id>]
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
   mpgm trace <id> | --coverage | --dangling
@@ -155,6 +155,7 @@ export async function runCli(
         runId,
         require('a task id', positional[0]),
         require('--repo', flags.repo),
+        flags.into,
       );
 
     case 'reopen':
