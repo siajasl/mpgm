@@ -104,9 +104,38 @@ outvote it. The row reports `verified: false` and keeps `problem:
 case falls back to the graph's verdict, because there the graph is the only
 source with anything to say.
 
+## Quarantine (TST-6)
+
+A quarantine ledger tracks flaky tests and excludes them from coverage claims
+(DESIGN §4.7). `detectFlaky` (`src/test/quarantine.ts`) compares at least two
+reruns of the same suite against the same code and reports every test id whose
+outcome disagreed — including a test that sometimes went unreported, which is
+itself a disagreement rather than a hole to skip over. A rerun that reports
+the same test id twice is refused (`FlakyDetectionDuplicateIdError`), not
+folded: comparing an id's two reports against each other inside one run would
+read as that id disagreeing with itself, which is a within-run duplicate
+mistaken for a between-run flake. `detectAndQuarantine`
+folds what it finds straight into the ledger: there is no operator gate
+between detection and quarantine, the same way a red `ci.checks` verdict
+blocks a merge without anyone approving that it should. Quarantining the same
+test again is a no-op (idempotent, mirroring `pm.github`'s reconcile), so a
+still-flaky test does not grow a second row every time it disagrees again.
+
+The ledger reaches `requirementCoverageReport` through its `quarantined`
+input: `withoutQuarantined` strips a quarantined id out of `verifiedBy` on
+both the `graph` and `nfr` sources *before* they are combined, so a
+requirement whose only evidence was a since-quarantined test comes back
+`verified: false` rather than holding on evidence the ledger no longer
+trusts — coverage drops, it does not silently stay put. A requirement a
+second, non-quarantined source still verifies is unaffected: quarantine
+removes one test's standing as evidence, not the requirement's.
+
 ## Consumers
 
 - [`src/test/nfr.ts`](../src/test/nfr.ts) — `runNfrSuite` (the orchestration:
   call `run` once per quantified NFR), `nfrCoverage` (TST-3 verdict) and
   `requirementCoverageReport` (the combined TST-2/TST-3 report this contract
   exists to produce).
+- [`src/test/quarantine.ts`](../src/test/quarantine.ts) — `detectFlaky`,
+  `quarantineFlaky`/`detectAndQuarantine` (TST-6's ledger) and
+  `withoutQuarantined` (the exclusion `requirementCoverageReport` applies).

@@ -615,3 +615,23 @@ export {
   runNfrSuite,
   testNfrContract,
 } from './test/nfr.js';
+export type {
+  DetectAndQuarantineOptions,
+  DetectAndQuarantineResult,
+  FlakyTest,
+  QuarantinableCoverageRow,
+  QuarantineEntry,
+  QuarantineLedger,
+  RerunOutcome,
+  TestRerun,
+} from './test/quarantine.js';
+export {
+  detectAndQuarantine,
+  detectFlaky,
+  FlakyDetectionDuplicateIdError,
+  FlakyDetectionMismatchError,
+  FlakyDetectionRunsError,
+  quarantineFlaky,
+  quarantinedIds,
+  withoutQuarantined,
+} from './test/quarantine.js';
