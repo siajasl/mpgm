@@ -561,6 +561,7 @@ export type {
   RunNfrSuiteOptions,
 } from './test/nfr.js';
 export {
+  NfrMismatchError,
   nfrCoverage,
   nfrRunInput,
   nfrRunOutput,

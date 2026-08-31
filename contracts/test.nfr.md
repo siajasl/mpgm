@@ -53,6 +53,17 @@ call this contract never received is reported as `not-run` by `nfrCoverage`
 result that came back outside threshold — the dangerous version of this
 component is the one that reads "nothing ran" as "nothing to worry about").
 
+`requirementId` in the output MUST echo the one the provider was asked to
+measure. `runNfrSuite` refuses a result whose echoed `requirementId` disagrees
+with the requirement it just requested, by throwing `NfrMismatchError` rather
+than rebinding the result to the requested id: a mismatch reads identically
+whether the provider mislabelled the right measurement or answered a
+different, out-of-order call, and only the provider knows which. Rebinding
+would resolve that ambiguity by trusting it — reporting the requested
+requirement verified from a measurement that may actually be of another one.
+
+
+
 Repeatable: a rerun produces a fresh, independently comparable measurement.
 Unlike `pm.github#apply`, nothing here needs to converge on a prior call's
 effect, because there is no state to converge on — only a new reading.

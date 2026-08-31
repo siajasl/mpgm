@@ -48,6 +48,46 @@ export const nfrRunOutput = z.object({
 export type NfrRunOutput = z.infer<typeof nfrRunOutput>;
 
 /**
+ * Raised when a `test.nfr` provider's result echoes a `requirementId` other
+ * than the one `runNfrSuite` just asked about (CONV-4).
+ *
+ * The mismatch is ambiguous on its face: a provider that copy-pastes an id
+ * while measuring the right requirement looks identical, from the returned
+ * value alone, to one that multiplexes concurrent calls and answers out of
+ * order — measuring a *different* requirement and mislabelling it as this
+ * one. Silently rebinding the result to the requested id would resolve that
+ * ambiguity by permitting it, and in the second case would report the
+ * requested requirement verified from a measurement of something else
+ * entirely, with no trace left that anything disagreed. Throwing instead
+ * refuses the ambiguity rather than guessing through it, the same way
+ * `MergeBlockedError` (`src/implement/checks.ts`) refuses a merge sooner than
+ * assume a check that never reported would have passed.
+ */
+export class NfrMismatchError extends Error {
+  readonly repo: string;
+  readonly ref: string;
+  /** The requirement `runNfrSuite` asked this call to measure. */
+  readonly requested: string;
+  /** The `requirementId` the provider's result echoed instead. */
+  readonly echoed: string;
+
+  constructor(repo: string, ref: string, requested: string, echoed: string) {
+    super(
+      `test.nfr run for ${repo}@${ref} asked to measure requirement ` +
+        `'${requested}' but the provider's result echoed requirementId ` +
+        `'${echoed}' instead; refusing to bind this measurement to either ` +
+        `requirement, since the provider may have measured '${echoed}' ` +
+        `rather than mislabelled '${requested}' (CONV-4)`,
+    );
+    this.name = 'NfrMismatchError';
+    this.repo = repo;
+    this.ref = ref;
+    this.requested = requested;
+    this.echoed = echoed;
+  }
+}
+
+/**
  * The contract specification. `contracts/test.nfr.md` is the prose half; this
  * is the half the kernel validates against.
  */
@@ -163,6 +203,9 @@ export interface RunNfrSuiteOptions {
  * the ambiguity CONV-4 (fail closed) exists to rule out. It propagates, and a
  * caller that wants partial results decides that for itself by choosing what
  * `run` resolves with rather than by this function guessing on its behalf.
+ * A result whose echoed `requirementId` disagrees with the one requested
+ * fails the same way, by throwing {@link NfrMismatchError} — see the
+ * mismatch check below.
  */
 export async function runNfrSuite(
   options: RunNfrSuiteOptions,
@@ -182,17 +225,24 @@ export async function runNfrSuite(
       unit: requirement.unit,
       measuredBy: requirement.measuredBy,
     });
-    // The requirement this result is about is what was just asked, not
-    // whatever `result.requirementId` echoes back — the schema only demands
-    // a non-empty string, so a provider that copy-pastes an id, or
-    // multiplexes concurrent calls and answers out of order, could otherwise
-    // hand `nfrCoverage` a result labelled for a different requirement than
-    // the one it actually measured. Overwriting the id with the one this
-    // call bound it to (mirrors `repair.ts`, which keys `logs` by the check
-    // it asked for rather than anything a provider might echo) makes that
-    // mislabelling impossible to represent in the pushed result at all,
-    // rather than a case `nfrCoverage`'s matching would need to detect.
-    results.push({ ...result, requirementId: requirement.id });
+    // The schema only demands `requirementId` be a non-empty string, so
+    // nothing stops a provider echoing one that disagrees with what this
+    // call requested. That disagreement is refused outright rather than
+    // resolved by trusting either side: overwriting it with the requested id
+    // would report the requested requirement verified from a measurement
+    // that, for all this function can tell, was actually of the echoed one
+    // — precisely the mislabelling this module exists to make impossible to
+    // represent (CONV-4, CONV-5). Only once the ids already agree is the
+    // result known to be about the requirement it is pushed under.
+    if (result.requirementId !== requirement.id) {
+      throw new NfrMismatchError(
+        options.repo,
+        options.ref,
+        requirement.id,
+        result.requirementId,
+      );
+    }
+    results.push(result);
   }
   return nfrCoverage(options.requirements, results);
 }

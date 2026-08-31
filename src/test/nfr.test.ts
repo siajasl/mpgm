@@ -6,6 +6,7 @@ import {
 } from '../contract/capability.js';
 import type { CoverageRow } from '../trace/index-store.js';
 import {
+  NfrMismatchError,
   nfrCoverage,
   requirementCoverageReport,
   runNfrSuite,
@@ -180,30 +181,47 @@ describe('runNfrSuite', () => {
   });
 
   // The output schema only requires a non-empty string for `requirementId`,
-  // so nothing stops a provider echoing the wrong one back — a copy-paste in
-  // the provider, or one multiplexing concurrent calls and answering out of
-  // order. runNfrSuite must bind each result to the requirement it actually
-  // asked about, not to whatever the provider claims.
-  it('binds a result to the requirement it was asked about, not the id the provider echoes', async () => {
-    const rows = await runNfrSuite({
+  // so nothing stops a provider echoing one that disagrees with what was
+  // requested — a copy-paste in the provider, or one multiplexing concurrent
+  // calls and answering out of order. That disagreement is indistinguishable,
+  // from the result alone, between "mislabelled the right measurement" and
+  // "measured the wrong requirement"; runNfrSuite must refuse it rather than
+  // guess by rebinding to the requested id (CONV-4), which would otherwise
+  // report NFR-2 verified from a measurement that, for all this function can
+  // tell, was actually of NFR-1.
+  it('refuses a result whose echoed requirementId disagrees with the one requested', async () => {
+    await expect(
+      runNfrSuite({
+        repo: 'o/r',
+        ref: 'abc',
+        requirements: [latency, throughput],
+        run: (input) =>
+          Promise.resolve(
+            result({
+              // Always echoes NFR-1, regardless of which requirement was
+              // actually requested.
+              requirementId: 'NFR-1',
+              passed: input.requirementId === 'NFR-2',
+            }),
+          ),
+      }),
+    ).rejects.toThrow(NfrMismatchError);
+  });
+
+  it('names the requested and echoed requirement, and the repo/ref, in the mismatch error', async () => {
+    const attempt = runNfrSuite({
       repo: 'o/r',
-      ref: 'abc',
-      requirements: [latency, throughput],
-      run: (input) =>
-        Promise.resolve(
-          result({
-            // Always echoes NFR-1, regardless of which requirement was
-            // actually requested.
-            requirementId: 'NFR-1',
-            passed: input.requirementId === 'NFR-2',
-          }),
-        ),
+      ref: 'abc123',
+      requirements: [throughput],
+      run: () => Promise.resolve(result({ requirementId: 'NFR-1', passed: true })),
     });
 
-    expect(rows.map((row) => [row.id, row.verified])).toEqual([
-      ['NFR-1', false],
-      ['NFR-2', true],
-    ]);
+    await expect(attempt).rejects.toMatchObject({
+      repo: 'o/r',
+      ref: 'abc123',
+      requested: 'NFR-2',
+      echoed: 'NFR-1',
+    });
   });
 
   it('propagates a provider failure rather than reading it as not-run', async () => {
