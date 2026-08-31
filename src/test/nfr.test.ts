@@ -179,6 +179,33 @@ describe('runNfrSuite', () => {
     ]);
   });
 
+  // The output schema only requires a non-empty string for `requirementId`,
+  // so nothing stops a provider echoing the wrong one back — a copy-paste in
+  // the provider, or one multiplexing concurrent calls and answering out of
+  // order. runNfrSuite must bind each result to the requirement it actually
+  // asked about, not to whatever the provider claims.
+  it('binds a result to the requirement it was asked about, not the id the provider echoes', async () => {
+    const rows = await runNfrSuite({
+      repo: 'o/r',
+      ref: 'abc',
+      requirements: [latency, throughput],
+      run: (input) =>
+        Promise.resolve(
+          result({
+            // Always echoes NFR-1, regardless of which requirement was
+            // actually requested.
+            requirementId: 'NFR-1',
+            passed: input.requirementId === 'NFR-2',
+          }),
+        ),
+    });
+
+    expect(rows.map((row) => [row.id, row.verified])).toEqual([
+      ['NFR-1', false],
+      ['NFR-2', true],
+    ]);
+  });
+
   it('propagates a provider failure rather than reading it as not-run', async () => {
     await expect(
       runNfrSuite({

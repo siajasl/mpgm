@@ -182,7 +182,17 @@ export async function runNfrSuite(
       unit: requirement.unit,
       measuredBy: requirement.measuredBy,
     });
-    results.push(result);
+    // The requirement this result is about is what was just asked, not
+    // whatever `result.requirementId` echoes back — the schema only demands
+    // a non-empty string, so a provider that copy-pastes an id, or
+    // multiplexes concurrent calls and answers out of order, could otherwise
+    // hand `nfrCoverage` a result labelled for a different requirement than
+    // the one it actually measured. Overwriting the id with the one this
+    // call bound it to (mirrors `repair.ts`, which keys `logs` by the check
+    // it asked for rather than anything a provider might echo) makes that
+    // mislabelling impossible to represent in the pushed result at all,
+    // rather than a case `nfrCoverage`'s matching would need to detect.
+    results.push({ ...result, requirementId: requirement.id });
   }
   return nfrCoverage(options.requirements, results);
 }
