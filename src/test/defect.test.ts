@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   blocksGate,
   DefectDataError,
+  defectSchema,
   DefectLifecycleError,
   designReopenRequest,
   fileDefect,
@@ -54,7 +55,7 @@ describe('fileDefect (TST-5)', () => {
     expect(defect.status).toBe('open');
     expect(defect.tracesTo).toEqual(['LOAN-3']);
     expect(defect.evidence).toEqual(evidence());
-    expect(defect.attempts).toBe(0);
+    expect(defect.failedAttempts).toBe(0);
     expect(defect.history).toEqual([{ status: 'open', detail: filing.description }]);
   });
 
@@ -94,7 +95,7 @@ describe('the round trip: route -> fix -> re-test (TST-5)', () => {
       detail: 'splitEvenly(0, 3) still returns [] instead of throwing',
     });
     assertStatus(stillBroken, 'reopened');
-    expect(stillBroken.attempts).toBe(1);
+    expect(stillBroken.failedAttempts).toBe(1);
     // The failed attempt is not discarded — it stays as evidence for the
     // next route, in both the current fields and the history.
     expect(stillBroken.route).toEqual({ to: 'implement', taskId: 'T3.1.9' });
@@ -109,11 +110,15 @@ describe('the round trip: route -> fix -> re-test (TST-5)', () => {
       'reopened',
     ]);
 
-    // Routed again — this time it lands.
+    // Routed again to a *different* target — this time it lands. Re-routing
+    // to a different route (rather than the same one, as the Design case
+    // below does) is what makes the "which route did the failed attempt run
+    // under" question below non-trivial to answer from the top-level `route`
+    // field alone.
     const reRouted = routeDefect(
       stillBroken,
-      { to: 'implement', taskId: 'T3.1.9' },
-      'first fix missed the zero-amount case entirely; retrying the same task',
+      { to: 'implement', taskId: 'T3.1.10' },
+      'first fix missed the zero-amount case entirely; a different task owns the retry',
     );
     const secondFix = recordFix(reRouted, {
       ref: 'def456',
@@ -125,7 +130,10 @@ describe('the round trip: route -> fix -> re-test (TST-5)', () => {
     });
 
     assertStatus(verified, 'verified');
-    expect(verified.attempts).toBe(1);
+    // Verified on the second round trip: one round trip failed before this
+    // one held, so `failedAttempts` reads 1 (not 2 — the round trip that
+    // held is not a failed attempt).
+    expect(verified.failedAttempts).toBe(1);
     // A held re-test closes the defect, but does not itself become a
     // requirement-verification claim — a closed defect must not be readable
     // as "LOAN-3 is verified" by the trace graph (see defect.ts's module
@@ -148,9 +156,22 @@ describe('the round trip: route -> fix -> re-test (TST-5)', () => {
     // it — `routed` carries no `fix` field, so the only place `abc123`
     // survives after `reRouted` is the `reopened` history entry that named
     // it at the moment it failed.
-    expect(reRouted.history.find((entry) => entry.status === 'reopened')?.ref).toBe(
-      'abc123',
-    );
+    const reopenedEntry = reRouted.history.find((entry) => entry.status === 'reopened');
+    expect(reopenedEntry?.ref).toBe('abc123');
+    // Nor is the route the failed attempt ran under — `reRouted.route` is
+    // now `T3.1.10`, so the only structured place `T3.1.9` (the route that
+    // failed) survives is the `reopened` entry that carried it forward
+    // before the second `routeDefect` call overwrote the top-level field.
+    expect(reopenedEntry?.route).toEqual({ to: 'implement', taskId: 'T3.1.9' });
+    // And the new `routed` entry records the route just chosen, so the
+    // history alone (without reading top-level `route`, which the next
+    // transition will itself overwrite) can say which task each attempt ran
+    // under.
+    const routedEntries = verified.history.filter((entry) => entry.status === 'routed');
+    expect(routedEntries.map((entry) => entry.route)).toEqual([
+      { to: 'implement', taskId: 'T3.1.9' },
+      { to: 'implement', taskId: 'T3.1.10' },
+    ]);
   });
 
   it('routes to Design instead, and hands ORC-6 a reopen request naming what changed', () => {
@@ -182,6 +203,65 @@ describe('the round trip: route -> fix -> re-test (TST-5)', () => {
     });
     const verified = retestDefect(fixPending, { passed: true, detail: 'holds now' });
     expect(verified.status).toBe('verified');
+  });
+
+  it('routes to Design with no stated `changed`, leaving ORC-6 its own default', () => {
+    // A filer who cannot say what a Design defect calls into question must
+    // be able to say so, rather than being forced to guess a `changed` set —
+    // a too-narrow guess would narrow the ORC-6 cascade below the safe
+    // default `ReopenRequest.changed: undefined` already means.
+    const filed = fileDefect({
+      ...filing,
+      title: 'something about the split design looks wrong, but not sure what yet',
+    });
+
+    const routed = routeDefect(
+      filed,
+      { to: 'design', phase: 'design' },
+      'looks like a design assumption is wrong, but which one is unclear',
+    );
+
+    const request = designReopenRequest(routed, {
+      runId: 'run-8',
+      reason: 'defect DEF-10: unclear which design assumption failed',
+    });
+    // No `changed` was stated, so none is invented — `reopenPhase` reads this
+    // as "treat the whole of what the phase's gate approved as open to
+    // question" (ORC-6), not as an empty, no-op set.
+    expect(request.changed).toBeUndefined();
+  });
+});
+
+describe("CONV-5: a defect's history must end where its own status says it is", () => {
+  it('refuses a verified defect whose history stops at open', () => {
+    const malformed = {
+      status: 'verified',
+      title: filing.title,
+      severity: filing.severity,
+      description: filing.description,
+      evidence: filing.evidence,
+      tracesTo: filing.tracesTo,
+      failedAttempts: 0,
+      route: { to: 'implement', taskId: 'T1' },
+      fix: { ref: 'abc123', summary: 'a fix' },
+      // Never records being routed, fixed or retested — exactly the
+      // out-of-band-patch shape TST-5's round trip exists to rule out, and
+      // which the union alone (constraining only `route`/`fix` presence)
+      // does not catch.
+      history: [{ status: 'open', detail: 'filed' }],
+    };
+
+    const result = defectSchema.safeParse(malformed);
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts the real round trip, whose history always ends at its own status', () => {
+    const filed = fileDefect(filing);
+    const routed = routeDefect(filed, { to: 'implement', taskId: 'T1' }, 'why');
+    const fixPending = recordFix(routed, { ref: 'r', summary: 's' });
+    const verified = retestDefect(fixPending, { passed: true, detail: 'holds' });
+
+    expect(defectSchema.safeParse(verified).success).toBe(true);
   });
 });
 
