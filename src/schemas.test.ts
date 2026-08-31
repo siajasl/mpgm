@@ -500,6 +500,15 @@ describe('schema registration', () => {
     }
   });
 
+  it('registers defect as a stored artifact only, not a session output', () => {
+    // TST-5, T3.2.4: a Defect is built by the round trip in
+    // `src/test/defect.ts`, not asserted whole by one session's structured
+    // output, and its top-level discriminated union would fail the
+    // object-topped check below regardless.
+    expect(projectArtifactSchemas().families).toContain('defect');
+    expect(projectOutputSchemas().has('defect')).toBe(false);
+  });
+
   it('derives a JSON Schema the structured-output tool can accept', () => {
     // The requirement union is nested inside an object rather than at the top
     // level: a top-level union emits `oneOf` with no `type`, which the API

@@ -635,3 +635,31 @@ export {
   quarantinedIds,
   withoutQuarantined,
 } from './test/quarantine.js';
+export type {
+  Defect,
+  DefectEvidence,
+  DefectFix,
+  DefectHistoryEntry,
+  DefectRoute,
+  DefectSeverity,
+  DefectStatus,
+  DesignReopenRequestOptions,
+  FileDefectOptions,
+  RetestResult,
+} from './test/defect.js';
+export {
+  blocksGate,
+  DefectDataError,
+  defectEvidenceSchema,
+  defectFixSchema,
+  DefectLifecycleError,
+  defectRouteSchema,
+  defectSchema,
+  defectSeverities,
+  defectStatuses,
+  designReopenRequest,
+  fileDefect,
+  recordFix,
+  retestDefect,
+  routeDefect,
+} from './test/defect.js';

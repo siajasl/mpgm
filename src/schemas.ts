@@ -11,6 +11,7 @@ import {
   exchangeSchema,
 } from './elicit/session.js';
 import { adversarialSuiteSchema } from './test/adversarial.js';
+import { defectSchema } from './test/defect.js';
 
 /**
  * The project's own schemas.
@@ -664,7 +665,18 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
   });
 }
 
-/** Schemas the artifact store validates and migrates against. */
+/**
+ * Schemas the artifact store validates and migrates against.
+ *
+ * `defect` is registered here only, not in {@link projectOutputSchemas}: a
+ * {@link defectSchema} value is built by the round trip in
+ * `src/test/defect.ts` (`fileDefect` and the transitions that follow it) from
+ * evidence and a routing decision, not asserted whole by a single session's
+ * structured output — and its top-level discriminated union would fail
+ * {@link OutputSchemaRegistry.jsonSchema}'s object-at-the-top-level
+ * requirement regardless (`schemas.test.ts`'s "object-topped" check exists
+ * for exactly this shape).
+ */
 export function projectArtifactSchemas(): ArtifactSchemaRegistry {
   return new ArtifactSchemaRegistry([
     defineArtifactSchema('definition', definitionSchema),
@@ -675,5 +687,6 @@ export function projectArtifactSchemas(): ArtifactSchemaRegistry {
     defineArtifactSchema('design-candidates', designCandidatesSchema),
     defineArtifactSchema('design', designSchema),
     defineArtifactSchema('elicitation', elicitationSchema),
+    defineArtifactSchema('defect', defectSchema),
   ]);
 }
