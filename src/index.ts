@@ -562,3 +562,23 @@ export {
   githubPmProvider,
   observeBoard,
 } from './pm/github-provider.js';
+export type {
+  NfrCoverageRow,
+  NfrProblem,
+  NfrRequirement,
+  NfrRunInput,
+  NfrRunOutput,
+  RequirementCoverageInput,
+  RequirementCoverageReport,
+  RequirementCoverageRow,
+  RunNfrSuiteOptions,
+} from './test/nfr.js';
+export {
+  NfrMismatchError,
+  nfrCoverage,
+  nfrRunInput,
+  nfrRunOutput,
+  requirementCoverageReport,
+  runNfrSuite,
+  testNfrContract,
+} from './test/nfr.js';
