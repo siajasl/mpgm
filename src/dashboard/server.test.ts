@@ -144,6 +144,31 @@ describe('DashboardServer', () => {
     expect(body.error).toContain('no-such-run');
   });
 
+  it('404s a run id that shadows Object.prototype, rather than resolving the inherited property', async () => {
+    const { base } = await start();
+
+    // `{}['constructor']` resolves to `Object.prototype.constructor` rather
+    // than `undefined` -- an unguarded index lookup would treat this as a
+    // run that exists and fail deeper (inside the projection) instead of
+    // reporting, correctly, that the log has no such run.
+    const response = await fetch(`${base}/runs/constructor`);
+    expect(response.status).toBe(404);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('constructor');
+  });
+
+  it('400s a malformed percent-encoding rather than blaming the projector for it', async () => {
+    const { base } = await start();
+
+    // `%zz` is not a valid escape; decodeURIComponent throws a URIError
+    // that has nothing to do with the projector. That must not surface as
+    // the same 500 a genuine projection failure would.
+    const response = await fetch(`${base}/runs/%zz`);
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('%zz');
+  });
+
   it('404s an unknown route', async () => {
     const { base } = await start();
     const response = await fetch(`${base}/nonsense`);

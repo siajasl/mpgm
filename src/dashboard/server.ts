@@ -84,6 +84,17 @@ export class DashboardServer {
     try {
       this.#dispatch(req, res);
     } catch (err) {
+      // If a response has already begun (headers sent on an earlier path
+      // through this same request), writing another one throws
+      // ERR_HTTP_HEADERS_SENT from inside this catch -- which would escape
+      // the request listener and reintroduce the process-killing failure
+      // this boundary exists to close off. Destroying the socket keeps that
+      // exception from ever being raised, at the cost of an incomplete
+      // response the client sees as a dropped connection rather than a 500.
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       this.#json(res, 500, {
         error: `projection failed: ${err instanceof Error ? err.message : String(err)}`,
       });
@@ -92,10 +103,25 @@ export class DashboardServer {
 
   #dispatch(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? '/', 'http://dashboard.local');
-    const segments = url.pathname
-      .split('/')
-      .filter((segment) => segment !== '')
-      .map((segment) => decodeURIComponent(segment));
+    const rawSegments = url.pathname.split('/').filter((segment) => segment !== '');
+
+    // Decoding is client input, not a projection failure: a malformed
+    // escape (`%zz`) throws a URIError that has nothing to do with the
+    // projector, and letting it fall into the 500 boundary would blame the
+    // server for a client-side mistake and name a component -- "projection"
+    // -- that was never reached (CONV-3). Answer 400 here instead, naming
+    // the segment that failed to decode.
+    const segments: string[] = [];
+    for (const segment of rawSegments) {
+      try {
+        segments.push(decodeURIComponent(segment));
+      } catch {
+        this.#json(res, 400, {
+          error: `malformed path segment '${segment}': not a valid percent-encoding`,
+        });
+        return;
+      }
+    }
 
     if (segments.length === 1 && segments[0] === 'runs') {
       this.#json(res, 200, { runs: allSummaries(this.#projector.project()) });
@@ -104,7 +130,15 @@ export class DashboardServer {
 
     if (segments.length === 2 && segments[0] === 'runs') {
       const runId = segments[1] ?? '';
-      const run = this.#projector.project().runs[runId];
+      const runs = this.#projector.project().runs;
+      // A plain object's index access resolves inherited keys too --
+      // `runs['constructor']` or `runs['__proto__']` answer with
+      // `Object.prototype`'s own value rather than `undefined`, which then
+      // fails inside `runProjection` for reasons that look like a
+      // projector bug rather than what they are: a run that simply does
+      // not exist. `Object.hasOwn` treats the log's own keys as the only
+      // ones that count.
+      const run = Object.hasOwn(runs, runId) ? runs[runId] : undefined;
       if (run === undefined) {
         this.#json(res, 404, { error: `no run '${runId}' in the log` });
         return;
