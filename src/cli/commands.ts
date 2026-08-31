@@ -28,7 +28,7 @@ import {
 } from '../implement/github-checks.js';
 import { implementTask } from '../implement/loop.js';
 import { WorktreeManager } from '../implement/worktree.js';
-import { ingestPlan, readyTasks } from '../plan/ingest.js';
+import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
 import { Projector } from '../state/projector.js';
 import { fold } from '../state/reduce.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
@@ -296,7 +296,7 @@ export async function implement(
     if (task === undefined) {
       context.write(
         `no task '${taskId}' in the plan. Ready now: ` +
-          (readyTasks(graph, completedTaskIds(projector.project().runs[runId]))
+          (readyTasks(graph, completedTaskIds(projector.project().runs[runId]?.tasks))
             .map((candidate) => candidate.id)
             .join(', ') || '(none)'),
       );
@@ -401,26 +401,6 @@ export async function implement(
 }
 
 /** Task ids a run has completed, for the ready set. */
-/**
- * Task ids the scheduler should treat as done.
- *
- * Attested tasks count. The scheduler's question is whether the work exists,
- * and for mpgm's own P1-M3.1 it does — built by operator-driven sessions
- * before the harness could run them. Excluding them would have the plan graph
- * offer to build the worktree manager from inside the worktree manager. The
- * two statuses stay separate everywhere the difference matters; here it does
- * not.
- */
-function completedTaskIds(
-  run: { tasks: Readonly<Record<string, { status: string }>> } | undefined,
-) {
-  return new Set(
-    Object.entries(run?.tasks ?? {})
-      .filter(([, task]) => task.status === 'completed' || task.status === 'attested')
-      .map(([id]) => id),
-  );
-}
-
 /** Where a project's gated Plan lives. */
 const PLAN_ARTIFACT = 'artifacts/plan/plan.md';
 
