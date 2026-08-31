@@ -742,6 +742,9 @@ export function approvedRoles(log: {
  * operator approves a definition they have read, and re-reading the file here
  * would approve whatever it says now.
  */
+/** `<who>`, `<why>`, `<read the role and say...>` — a template nobody filled in. */
+const PLACEHOLDER = /<[^<>]*>/;
+
 export function approveRole(
   context: CliContext,
   runId: string,
@@ -755,6 +758,20 @@ export function approveRole(
     if (!/^[0-9a-f]{64}$/.test(digest)) {
       context.write(`'${digest}' is not a sha256 digest; see the freeze manifest`);
       return { ok: false, detail: 'bad digest' };
+    }
+
+    // A reason that is still the placeholder is a rubber stamp, which is what
+    // the freeze exists to prevent — and the schema takes it, because it is
+    // not empty. This catches only the paste-the-template mistake, which has
+    // already happened once here; nothing detects a reason that is merely
+    // thoughtless, and pretending otherwise would be its own rubber stamp.
+    if (PLACEHOLDER.test(reason)) {
+      context.write(
+        `that reason is still the placeholder: ${reason.trim()}\n\n` +
+          `Read the definition and say why it is acceptable. The reason is the ` +
+          `only part of this record a later reader cannot reconstruct.`,
+      );
+      return { ok: false, detail: 'placeholder reason' };
     }
 
     const onDisk = roleDigests(join(context.root, 'roles'))[role];
