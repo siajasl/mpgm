@@ -10,7 +10,7 @@ paths:
 budgets:
   tokens: 200000
   costUsd: 6
-  steps: 30
+  steps: 90
   wallClockSeconds: 1800
 output:
   schema: code-review

@@ -22,10 +22,10 @@
   },
   "exemptions": [
     {
-      "role": "implementer",
-      "digest": "3349183090ca8e2651074202aa3438e7cdc1cd68bb6ceb7d0e8ac660b5e74d5e",
+      "role": "code-reviewer",
+      "digest": "de76df45c552f94fcce3b26c5b36ac7732137fb9a01a0d87f300d21b3ada9058",
       "approvedBy": "macg",
-      "reason": "T3.2.2 asks for adversarial test generation, and PLAN section 3 puts that task on Opus 5. Routing by task class is T5.2.3 and is not wired, so the only place the model can be said is the role, and saying it there says it for every implement task rather than for this one. Accepted knowingly: the cost is higher on all of them until it is changed back or T5.2.3 lands.",
+      "reason": "Steps 30 to 90. The reviewer mutation-tests rather than reading a diff as prose, and the rework loop adds a commit each round, so the change it must read grows while its budget did not: T3.2.2's third review ran out of turns on six commits and 1704 lines, stranding two completed rounds of findings. Reviewing thoroughly is not cheaper than writing, and 30 was sized when a task was smaller than this.",
       "at": "2026-08-31"
     }
   ]
