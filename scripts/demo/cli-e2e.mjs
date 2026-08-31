@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -178,6 +179,14 @@ try {
   writeFileSync(join(workspace, '.gitignore'), '.mpgm/\n');
   execFileSync('git', ['add', '-A'], { cwd: workspace });
   execFileSync('git', ['commit', '--quiet', '-m', 'sample project'], { cwd: workspace });
+  // An origin matching the --repo below. `implement` refuses a working copy
+  // whose origin is a different repository, because the branch would be
+  // pushed to one and its checks read from another.
+  execFileSync(
+    'git',
+    ['remote', 'add', 'origin', 'https://github.com/example/sample.git'],
+    { cwd: workspace },
+  );
 
   const lines = [];
   const context = {
@@ -614,6 +623,84 @@ try {
     '--run',
     'r1',
   ]);
+  // --into: the working copy the task lands in, which from T3.2.6 is not the
+  // mpgm checkout. Each of these would otherwise fail somewhere expensive —
+  // deep in the worktree manager, or not at all, with the branch pushed to one
+  // repository and its checks read from another.
+  // Outside the workspace, because a directory *inside* a repository is in one
+  // as far as git is concerned.
+  const elsewhere = mkdtempSync(join(tmpdir(), 'mpgm-not-a-repo-'));
+  const notRepo = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/sample',
+    '--into',
+    elsewhere,
+    '--run',
+    'r1',
+  ]);
+  check(
+    'implement refuses an --into that is not a repository',
+    !notRepo.result.ok && notRepo.output.includes('not a git repository'),
+    notRepo.output.split('\n')[0] ?? '',
+  );
+
+  const empty = join(workspace, 'empty-repo');
+  mkdirSync(empty, { recursive: true });
+  execFileSync('git', ['init', '--quiet'], { cwd: empty });
+  execFileSync(
+    'git',
+    ['remote', 'add', 'origin', 'https://github.com/example/sample.git'],
+    { cwd: empty },
+  );
+  const noCommits = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/sample',
+    '--into',
+    empty,
+    '--run',
+    'r1',
+  ]);
+  check(
+    'implement refuses an --into with nothing to branch from',
+    !noCommits.result.ok && noCommits.output.includes('no commits'),
+    noCommits.output.split('\n')[0] ?? '',
+  );
+
+  const inside = join(workspace, 'roles');
+  const subdirectory = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/sample',
+    '--into',
+    inside,
+    '--run',
+    'r1',
+  ]);
+  check(
+    'implement refuses an --into that is a subdirectory of a repository',
+    !subdirectory.result.ok && subdirectory.output.includes('inside a repository'),
+    subdirectory.output.split('\n')[0] ?? '',
+  );
+
+  const otherRepo = await call([
+    'implement',
+    'T9.9.9',
+    '--repo',
+    'example/somewhere-else',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'implement refuses a working copy of a different repository',
+    !otherRepo.result.ok && otherRepo.output.includes('example/sample'),
+    otherRepo.output.split('\n')[0] ?? '',
+  );
+
   check(
     'implement refuses without a gated Plan artifact',
     !noPlan.result.ok && noPlan.output.includes('could not read the gated Plan'),
@@ -669,6 +756,52 @@ try {
     'the sample task is dispatchable before it is attested',
     beforeAttesting.output.includes('Ready now: T9.1.1'),
     beforeAttesting.output.split('\n')[0] ?? '',
+  );
+
+  // The task lands where --into says, not where mpgm lives (T3.2.6). The
+  // provider is exhausted by now, so this dispatch fails — but it fails after
+  // the worktree has been made, and the worktree is the thing under test.
+  const elsewhereRepo = mkdtempSync(join(tmpdir(), 'mpgm-target-'));
+  execFileSync('git', ['init', '--quiet'], { cwd: elsewhereRepo });
+  execFileSync('git', ['config', 'user.email', 'e2e@example.com'], {
+    cwd: elsewhereRepo,
+  });
+  execFileSync('git', ['config', 'user.name', 'mpgm e2e'], { cwd: elsewhereRepo });
+  writeFileSync(join(elsewhereRepo, 'README.md'), '# elsewhere\n');
+  execFileSync('git', ['add', '-A'], { cwd: elsewhereRepo });
+  execFileSync('git', ['commit', '--quiet', '-m', 'initial'], { cwd: elsewhereRepo });
+  execFileSync(
+    'git',
+    ['remote', 'add', 'origin', 'https://github.com/example/sample.git'],
+    { cwd: elsewhereRepo },
+  );
+
+  // The provider is out of scripted turns by now, so the dispatch throws once
+  // it reaches the implementer's session. That is fine and deliberate: the
+  // worktree is made before any agent runs, and where it was made is the whole
+  // question. Scripting a full implement-and-review round here would be a
+  // second copy of what demo:switchover already does live.
+  await call([
+    'implement',
+    'T9.1.1',
+    '--repo',
+    'example/sample',
+    '--into',
+    elsewhereRepo,
+    // A run of its own: dispatching T9.1.1 in r1 would make it a task that run
+    // has already done, and the attestation checks below are about a task no
+    // session ever ran.
+    '--run',
+    'r-into',
+  ]).catch(() => undefined);
+  check(
+    'the task is implemented in the working copy --into names',
+    existsSync(join(elsewhereRepo, '.mpgm', 'worktrees', 'T9.1.1')),
+    join(elsewhereRepo, '.mpgm', 'worktrees', 'T9.1.1'),
+  );
+  check(
+    'and not in the mpgm checkout',
+    !existsSync(join(workspace, '.mpgm', 'worktrees', 'T9.1.1')),
   );
 
   const invented = await call([

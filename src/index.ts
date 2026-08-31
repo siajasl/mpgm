@@ -316,6 +316,8 @@ export {
 } from './cli/commands.js';
 export type { Verb } from './cli/main.js';
 export { parseArgs, runCli, USAGE, VERBS } from './cli/main.js';
+export type { TargetFacts } from './implement/target.js';
+export { githubSlug, targetRefusal } from './implement/target.js';
 export type {
   CommitRecord,
   ExtractedLinks,
