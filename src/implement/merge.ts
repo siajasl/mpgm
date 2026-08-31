@@ -164,6 +164,7 @@ export function changeReviewed(
       summary: review.summary,
       findings,
       deviations: [...deviations],
+      declaredDeviations: [...declaredDeviations],
       undeclaredDeviations: undeclaredDeviations(deviations, declaredDeviations),
     },
   };

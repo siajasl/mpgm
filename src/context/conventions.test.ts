@@ -140,6 +140,83 @@ describe('undeclaredDeviations', () => {
   it('does not count the same one twice', () => {
     expect(undeclaredDeviations(['CONV-1', 'CONV-1'], [])).toEqual(['CONV-1']);
   });
+
+  it('matches on the id, however either side glossed it', () => {
+    // Every one of these is a string a reviewer actually wrote about the same
+    // two rules across six reviews of one task. The author writes its
+    // declaration before the review exists, so it cannot spell the gloss the
+    // reviewer will choose; comparing whole strings made a declaration match
+    // only by luck.
+    expect(
+      undeclaredDeviations(['CONV-1 (one logical change per commit)'], ['CONV-1']),
+    ).toEqual([]);
+    expect(
+      undeclaredDeviations(['CONV-1'], ['CONV-1 (one logical change per commit)']),
+    ).toEqual([]);
+    expect(
+      undeclaredDeviations(
+        ['CONV-5 (express an obligation as unrepresentable rather than checked)'],
+        ['CONV-5 (express an obligation as something that cannot be represented)'],
+      ),
+    ).toEqual([]);
+    expect(
+      undeclaredDeviations(
+        [
+          'CONV-6 — every test must be able to fail; a test that passes against ' +
+            'the unmodified code reports coverage that does not exist.',
+        ],
+        ['CONV-6'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('still reports a rule nobody declared, gloss or no gloss', () => {
+    expect(
+      undeclaredDeviations(['CONV-1 (one logical change per commit)'], ['CONV-2']),
+    ).toEqual(['CONV-1 (one logical change per commit)']);
+  });
+
+  it('reads an id only where the entry names one, not where it mentions one', () => {
+    // The field is called `convention` and holds one: an id at the front is a
+    // naming, an id inside a sentence is a reference. Reading a reference as
+    // a naming would let a declaration that merely points at another rule
+    // excuse a departure from it.
+    expect(undeclaredDeviations(['CONV-1'], ['see CONV-1 for context'])).toEqual([
+      'CONV-1',
+    ]);
+  });
+
+  it('reports the reviewer’s wording, not the bare id', () => {
+    // The gloss is what tells the author which departure is meant, and the
+    // feedback that goes back to it is built from this list.
+    expect(undeclaredDeviations(['CONV-1 (one logical change per commit)'], [])).toEqual([
+      'CONV-1 (one logical change per commit)',
+    ]);
+  });
+
+  it('counts two spellings of one id as one deviation', () => {
+    expect(
+      undeclaredDeviations(['CONV-1', 'CONV-1 (one logical change per commit)'], []),
+    ).toEqual(['CONV-1']);
+  });
+
+  it('does not excuse a rule the reviewer described without naming', () => {
+    // A reviewer who wrote prose with no id named nothing an author could
+    // have declared against. Treating that as excused would let the vaguest
+    // possible finding be the one that passes.
+    expect(
+      undeclaredDeviations(['commits should be one logical change'], ['CONV-1']),
+    ).toEqual(['commits should be one logical change']);
+    // And two unnamed rules are two rules, not one bucket: collapsing every
+    // id-less entry onto a single key would let any prose declaration excuse
+    // any prose finding.
+    expect(
+      undeclaredDeviations(
+        ['commits should be one logical change'],
+        ['tests should be able to fail'],
+      ),
+    ).toEqual(['commits should be one logical change']);
+  });
 });
 
 describe('mpgm’s own conventions', () => {
