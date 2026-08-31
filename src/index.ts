@@ -578,6 +578,7 @@ export type {
 export {
   adversarialCaseKinds,
   adversarialCaseSchema,
+  AdversarialDuplicateResultError,
   AdversarialResultMismatchError,
   AdversarialRunError,
   adversarialSuiteSchema,

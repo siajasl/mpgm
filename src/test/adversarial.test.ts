@@ -12,6 +12,7 @@ import { EventLog } from '../event/store.js';
 import { loadRoleFile } from '../role/loader.js';
 import { projectOutputSchemas } from '../schemas.js';
 import {
+  AdversarialDuplicateResultError,
   AdversarialResultMismatchError,
   AdversarialRunError,
   adversarialSuiteSchema,
@@ -247,14 +248,26 @@ describe('adversarialVerdict', () => {
     ).toThrow(AdversarialResultMismatchError);
   });
 
-  it('takes the last result for a case that was reported twice', () => {
+  it('refuses a case reported twice rather than taking the last result (CONV-4)', () => {
+    // This used to be the fail-open: a rerun and a phantom row look
+    // identical from here — both are a second execution under an id the
+    // suite already declared — and folding either by last-wins can turn a
+    // genuine failure into a silent pass. Nothing in this module produces a
+    // real rerun inside one execution list, so there is no result this can
+    // wrongly refuse; a caller that does mean to merge reruns does so before
+    // calling this function, on purpose, rather than getting it for free.
     const parsed = suite();
     const executions = [
       ...parsed.cases.map((entry) => execution({ id: entry.id, passed: false })),
       ...parsed.cases.map((entry) => execution({ id: entry.id, passed: true })),
     ];
 
-    expect(adversarialVerdict(parsed, executions).clean).toBe(true);
+    expect(() => adversarialVerdict(parsed, executions)).toThrow(
+      AdversarialDuplicateResultError,
+    );
+    expect(() => adversarialVerdict(parsed, executions)).toThrow(
+      new RegExp(parsed.cases[0]?.id ?? ''),
+    );
   });
 });
 
@@ -339,6 +352,53 @@ describe('parseTapResults', () => {
     );
 
     expect(results.map((result) => result.id)).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('does not read a result line out of an open failure’s own diagnostics', () => {
+    // Reproduces a real run: two declared cases, `b-case` and `a-case`,
+    // where `b-case` fails for a genuine reason and `a-case` fails on an
+    // assertion whose *message* happens to spell a TAP result line naming
+    // `b-case` — `assert.equal(1, 2, "ok 9 - b-case")` prints exactly this,
+    // and Node puts it verbatim inside `a-case`'s own `error: |-` block. That
+    // is not contrived: it is what any assertion message containing the
+    // words "ok" and a case id produces, and a suite the tester writes by
+    // accident can easily do it. `b-case`'s real result comes first in the
+    // stream, so a parser that reads a result line at any indentation reads
+    // the phantom line inside `a-case`'s block as a second, later result for
+    // `b-case` — this time passing — and `adversarialVerdict` folds by id,
+    // so the phantom overwrites the real failure with a pass. There must be
+    // exactly one row per case, and `b-case`'s must stay failed.
+    const results = parseTapResults(
+      [
+        'TAP version 13',
+        '# Subtest: b-case',
+        'not ok 1 - b-case',
+        '  ---',
+        '  duration_ms: 0.1',
+        '  error: |-',
+        '    genuine failure',
+        '  ...',
+        '# Subtest: a-case',
+        'not ok 2 - a-case',
+        '  ---',
+        '  duration_ms: 0.1',
+        '  error: |-',
+        '    ok 9 - b-case',
+        '  ...',
+        '1..2',
+      ].join('\n'),
+    );
+
+    expect(results.map((result) => result.id)).toEqual(['b-case', 'a-case']);
+    const bCase = results.find((result) => result.id === 'b-case');
+    expect(bCase?.passed).toBe(false);
+    expect(bCase?.detail).toContain('genuine failure');
+    const aCase = results.find((result) => result.id === 'a-case');
+    expect(aCase?.passed).toBe(false);
+    // The phantom line is kept — it is genuinely part of what `a-case`
+    // printed — but as inert text inside `a-case`'s own diagnostics, never
+    // as a result of its own.
+    expect(aCase?.detail).toContain('ok 9 - b-case');
   });
 });
 
@@ -486,6 +546,62 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     // — which the subject does handle — did not fire.
     expect(new Set(verdict.defects.map((row) => row.kind))).toEqual(
       new Set(['boundary', 'property']),
+    );
+  }, 30_000);
+
+  it('still catches the defect when another case’s message names the catching case', async () => {
+    // The end-to-end version of the `parseTapResults` reproduction above, run
+    // through Node's own test runner against the real planted defect rather
+    // than a hand-written TAP string: a suite the tester could write by
+    // accident must not lose a caught defect to it. `names-the-real-case`
+    // fails with a message that spells a TAP result line for
+    // `one-cent-invents-a-cent` — the case that genuinely catches the planted
+    // rounding defect — and is declared after it, which is the order a
+    // last-wins fold gets wrong.
+    const directory = sampleCheckout();
+    const named = adversarialSuiteSchema.parse({
+      subject: './split.mjs',
+      summary: 'One case names another in its own failure message.',
+      cases: [
+        {
+          id: 'one-cent-invents-a-cent',
+          kind: 'boundary',
+          about: 'the smallest amount that cannot be shared equally',
+          defect:
+            'a cent is invented: two recipients are each given the only cent there was',
+          body: 'assert.deepEqual(subject.splitEvenly(1, 2), [1, 0]);',
+        },
+        {
+          id: 'names-the-real-case',
+          kind: 'property',
+          about: 'a message that happens to read as a TAP result line',
+          defect: 'this case always fails; it exists to spell another case’s id',
+          body: "assert.ok(false, 'ok 9 - one-cent-invents-a-cent');",
+        },
+        {
+          id: 'zero-ways-is-refused',
+          kind: 'negative',
+          about: 'splitting between nobody',
+          defect: 'splitEvenly divides by zero instead of refusing an empty split',
+          body: 'assert.throws(() => subject.splitEvenly(100, 0), RangeError);',
+        },
+      ],
+    });
+
+    const verdict = await runAdversarialSuite({
+      suite: named,
+      execute: nodeTestExecutor({ projectDir: directory }),
+    });
+
+    const catcher = verdict.rows.find((row) => row.id === 'one-cent-invents-a-cent');
+    // The planted defect must still read as caught — not silently overwritten
+    // by the phantom row the other case's message produces.
+    expect(catcher?.outcome).toBe('failed');
+    expect(verdict.rows.find((row) => row.id === 'names-the-real-case')?.outcome).toBe(
+      'failed',
+    );
+    expect(verdict.rows.find((row) => row.id === 'zero-ways-is-refused')?.outcome).toBe(
+      'passed',
     );
   }, 30_000);
 
@@ -707,6 +823,53 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
       }),
     ).rejects.toThrow(AdversarialRunError);
   }, 30_000);
+
+  it('kills a case body that loops for ever, rather than hanging on it', async () => {
+    // The wall-clock bound is the only defence this module has against what
+    // it documents a case body can do: `await new Promise(() => {})` never
+    // resolves, and nothing about a generated body stops the tester writing
+    // exactly that. This is provoked for real — a live process, spawned,
+    // timed out and killed — not asserted against a hand-built
+    // `TestRunOutcome`, because a hand-built one cannot say whether the timer
+    // and the `SIGKILL` actually fire; removing them would leave a suite like
+    // this one hanging the kernel for ever and this test is what would go
+    // red first.
+    const directory = sampleCheckout();
+    const hanging = adversarialSuiteSchema.parse({
+      subject: './split.mjs',
+      summary: 'One case never returns.',
+      cases: [
+        {
+          id: 'a-case-that-never-returns',
+          kind: 'negative',
+          about: 'a body that awaits a promise nothing ever settles',
+          defect: 'the wall-clock bound stopped enforcing itself',
+          body: 'await new Promise(() => {});',
+        },
+        {
+          id: 'the-subject-still-loads',
+          kind: 'boundary',
+          about: 'the declared subject is the module the file imported',
+          defect: 'the rendered import did not resolve against the project',
+          body: "assert.equal(typeof subject.splitEvenly, 'function');",
+        },
+        {
+          id: 'the-suite-still-needs-every-kind',
+          kind: 'property',
+          about: 'a third, ordinary case, present only so the suite validates',
+          defect: 'not a real defect — the schema requires all three kinds',
+          body: 'assert.ok(true);',
+        },
+      ],
+    });
+
+    await expect(
+      runAdversarialSuite({
+        suite: hanging,
+        execute: nodeTestExecutor({ projectDir: directory, timeoutMs: 1_500 }),
+      }),
+    ).rejects.toThrow(/killed after 1500ms/);
+  }, 15_000);
 });
 
 describe('the adversarial-tester role', () => {

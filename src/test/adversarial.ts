@@ -278,12 +278,46 @@ export class AdversarialResultMismatchError extends Error {
 }
 
 /**
+ * Raised when a run reports the same declared case more than once (CONV-4).
+ *
+ * A fold that took the last result for a repeated id and called it a rerun
+ * is also exactly the shape a phantom result takes: a line inside another
+ * case's own failure diagnostics that happens to match a result line for
+ * some declared id — a case's assertion message, or anything the subject
+ * writes, can produce one by accident (see the block-boundary check on
+ * {@link parseTapResults}, which closes that particular door but is not the
+ * only way two results for one id could arrive). Folding by last-wins there
+ * means a phantom that lands after the real result silently overwrites it: a
+ * caught defect reads as a pass. Nothing in this module produces a genuine
+ * rerun inside one execution list — {@link nodeTestExecutor} runs a suite
+ * once — so refusing is the fail-closed default. A caller that does mean to
+ * merge reruns merges them into one result per id before calling this
+ * function, where doing so is a decision made on purpose rather than a rule
+ * `adversarialVerdict` applies by default.
+ */
+export class AdversarialDuplicateResultError extends Error {
+  readonly ids: readonly string[];
+
+  constructor(ids: readonly string[]) {
+    super(
+      `the test run reported the same case more than once: ${ids.join(', ')}. ` +
+        `Refusing the verdict rather than taking the last result for each, since a ` +
+        `result line found inside another case's failure diagnostics has exactly ` +
+        `this shape — a phantom row for a declared id, arriving after the real ` +
+        `result and silently overwriting it (CONV-4). If these are a genuine ` +
+        `rerun, merge them into one result per id before folding the verdict`,
+    );
+    this.name = 'AdversarialDuplicateResultError';
+    this.ids = ids;
+  }
+}
+
+/**
  * Fold executions into a per-case verdict.
  *
  * Pure, so a verdict replays from the log without re-running a suite against
  * a subject that has since been fixed (as `nfrCoverage` is, and for the same
- * reason). Where an executor reports the same case twice — a rerun folded
- * into one report — the last result wins, since it is the one that ran last.
+ * reason).
  */
 export function adversarialVerdict(
   suite: AdversarialSuite,
@@ -300,6 +334,17 @@ export function adversarialVerdict(
   ];
   if (unexpected.length > 0) {
     throw new AdversarialResultMismatchError(declared, unexpected);
+  }
+
+  const counts = new Map<string, number>();
+  for (const execution of executions) {
+    counts.set(execution.id, (counts.get(execution.id) ?? 0) + 1);
+  }
+  const duplicated = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([id]) => id);
+  if (duplicated.length > 0) {
+    throw new AdversarialDuplicateResultError(duplicated);
   }
 
   const byId = new Map(executions.map((execution) => [execution.id, execution]));
@@ -414,6 +459,21 @@ function tapDescription(rest: string): string {
  * A failing result's indented YAML block follows it, and is kept verbatim
  * rather than parsed: the point is to hand a person the assertion they need,
  * not to model the runner's report format.
+ *
+ * While that block is open, a deeper-indented line is never tried against
+ * `resultLine`, however it is shaped. Node's own report never puts a result
+ * line inside another's diagnostics, but the *subject* writes what it likes
+ * to an assertion message, and that message is exactly the block's contents —
+ * a case that fails with `assert.equal(1, 2, "ok 9 - some-other-case")` prints
+ * a line that matches `resultLine` on the nose. Matching it anyway would fold
+ * a phantom result bearing whatever id the message names, and since
+ * `adversarialVerdict` keys its fold by id and takes the last row for one, a
+ * phantom naming a case that already reported for real overwrites it — a
+ * defect the phantom's own case caught turned silently into a pass for
+ * another case entirely (CONV-4). The boundary check that closes the block —
+ * `indent <= pending.indent` — is applied before the line is ever offered to
+ * `resultLine`, not after, so a line inside an open block can only ever be
+ * diagnostics.
  */
 export function parseTapResults(output: string): AdversarialExecution[] {
   const results: AdversarialExecution[] = [];
@@ -443,6 +503,26 @@ export function parseTapResults(output: string): AdversarialExecution[] {
     // split on '\n', and `.` does not match it: left on, it stops a result
     // line being recognised at all, so a whole suite reads as `not-reported`.
     const raw = crlfLine.endsWith('\r') ? crlfLine.slice(0, -1) : crlfLine;
+
+    if (pending !== undefined && !pending.passed) {
+      const indent = /^(\s*)\S/.exec(raw)?.[1]?.length;
+      // A blank line (no `\S` at all) carries no boundary of its own — a YAML
+      // `|-` literal block may itself contain one — so it stays inside the
+      // block rather than closing it.
+      if (indent === undefined || indent > pending.indent) {
+        const trimmed = raw.trim();
+        if (trimmed !== '' && trimmed !== '---' && trimmed !== '...') {
+          pending.detail.push(trimmed);
+        }
+        continue;
+      }
+      // The block closes here, on a line no deeper than the result line that
+      // opened it. That line has not been read yet: fall through and let it
+      // be tried as a result of its own, which is how two failing cases with
+      // no blank line between their blocks are still told apart.
+      flush();
+    }
+
     const match = resultLine.exec(raw);
     if (match !== null) {
       flush();
@@ -452,18 +532,6 @@ export function parseTapResults(output: string): AdversarialExecution[] {
         indent: (match[1] ?? '').length,
         detail: [],
       };
-      continue;
-    }
-    const indent = /^(\s*)\S/.exec(raw)?.[1]?.length;
-    if (pending !== undefined && !pending.passed && indent !== undefined) {
-      if (indent <= pending.indent) {
-        flush();
-        continue;
-      }
-      const trimmed = raw.trim();
-      if (trimmed !== '---' && trimmed !== '...') {
-        pending.detail.push(trimmed);
-      }
     }
   }
   flush();
