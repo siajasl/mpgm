@@ -663,3 +663,18 @@ export {
   retestDefect,
   routeDefect,
 } from './test/defect.js';
+export type {
+  DashboardGate,
+  DashboardRun,
+  DashboardSummary,
+  DashboardTask,
+  TraceGraph,
+} from './dashboard/projection.js';
+export {
+  allSummaries,
+  runProjection,
+  summaryOf,
+  traceGraph,
+} from './dashboard/projection.js';
+export type { DashboardServerOptions } from './dashboard/server.js';
+export { DashboardServer } from './dashboard/server.js';
