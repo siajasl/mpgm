@@ -126,9 +126,11 @@ describe('the round trip: route -> fix -> re-test (TST-5)', () => {
 
     assertStatus(verified, 'verified');
     expect(verified.attempts).toBe(1);
-    // A held re-test is what turns the requirement trace into a verification
-    // (TST-2's distinction between a citation and a check).
-    expect(verified.verifies).toEqual(['LOAN-3']);
+    // A held re-test closes the defect, but does not itself become a
+    // requirement-verification claim — a closed defect must not be readable
+    // as "LOAN-3 is verified" by the trace graph (see defect.ts's module
+    // doc, and the coverage test below).
+    expect(verified).not.toHaveProperty('verifies');
     expect(verified.fix).toEqual({
       ref: 'def456',
       summary: 'actually refuse a zero amount this time',
@@ -142,6 +144,13 @@ describe('the round trip: route -> fix -> re-test (TST-5)', () => {
       'fix-pending',
       'verified',
     ]);
+    // The first, failed fix's ref is not lost once the second route replaces
+    // it — `routed` carries no `fix` field, so the only place `abc123`
+    // survives after `reRouted` is the `reopened` history entry that named
+    // it at the moment it failed.
+    expect(reRouted.history.find((entry) => entry.status === 'reopened')?.ref).toBe(
+      'abc123',
+    );
   });
 
   it('routes to Design instead, and hands ORC-6 a reopen request naming what changed', () => {
@@ -227,9 +236,26 @@ describe('lifecycle refusals (CONV-4)', () => {
       designReopenRequest(fileDefect(filing), { runId: 'run-1', reason: 'why' }),
     ).toThrow(DefectLifecycleError);
   });
+
+  it('refuses a design reopen request with no stated reason, same as routeDefect', () => {
+    const routed = routeDefect(
+      fileDefect(filing),
+      { to: 'design', phase: 'design', changed: ['C-4'] },
+      'why',
+    );
+    expect(() => designReopenRequest(routed, { runId: 'run-1', reason: '' })).toThrow(
+      DefectDataError,
+    );
+  });
 });
 
 describe('blocksGate (Test-phase gate: "no open critical/high defects")', () => {
+  // Walks the round trip exactly as far as `status` asks and no further, so
+  // each branch returns the status it was asked for rather than falling
+  // through to whichever transition happens to run last — a helper that
+  // silently answered 'verified' for 'fix-pending' or 'reopened' would make
+  // every blocksGate assertion below pass regardless of what it claims to
+  // exercise.
   const asDefect = (severity: Defect['severity'], status: Defect['status']): Defect => {
     const base = fileDefect({ ...filing, severity });
     if (status === 'open') {
@@ -240,6 +266,12 @@ describe('blocksGate (Test-phase gate: "no open critical/high defects")', () => 
       return routed;
     }
     const fixPending = recordFix(routed, { ref: 'r', summary: 's' });
+    if (status === 'fix-pending') {
+      return fixPending;
+    }
+    if (status === 'reopened') {
+      return retestDefect(fixPending, { passed: false, detail: 'still broken' });
+    }
     return retestDefect(fixPending, { passed: true, detail: 'holds' });
   };
 
@@ -256,5 +288,15 @@ describe('blocksGate (Test-phase gate: "no open critical/high defects")', () => 
   it('still blocks on a critical defect mid-round-trip (routed but not yet verified)', () => {
     const routed = asDefect('high', 'routed');
     expect(blocksGate([routed])).toEqual([routed]);
+  });
+
+  it('still blocks on a critical defect whose fix has not been retested yet', () => {
+    const fixPending = asDefect('high', 'fix-pending');
+    expect(blocksGate([fixPending])).toEqual([fixPending]);
+  });
+
+  it('still blocks on a critical defect reopened after a fix that did not hold', () => {
+    const reopened = asDefect('high', 'reopened');
+    expect(blocksGate([reopened])).toEqual([reopened]);
   });
 });
