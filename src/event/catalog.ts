@@ -329,7 +329,17 @@ export const changeReviewed = defineEvent(
     findings: z.number().int().nonnegative().default(0),
     /** Convention ids the reviewer found broken (IMP-4). */
     deviations: z.array(nonEmpty).default([]),
-    /** Of those, the ones the author never declared. */
+    /**
+     * Convention ids the change declared it departs from.
+     *
+     * Recorded because the gate's decision is a comparison of these two
+     * lists, and without both an operator can only infer what the author
+     * said from whether the merge was refused. Diagnosing why a declared
+     * deviation failed to match then means guessing, which is exactly the
+     * position a mismatch in this comparison once left one in.
+     */
+    declaredDeviations: z.array(nonEmpty).default([]),
+    /** Of those the reviewer found, the ones no declaration covered. */
     undeclaredDeviations: z.array(nonEmpty).default([]),
   }),
 );

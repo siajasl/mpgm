@@ -97,19 +97,60 @@ export function duplicateConventionIds(conventions: readonly Convention[]): stri
   return [...duplicated].sort();
 }
 
+/** The id at the front of a deviation entry, e.g. `CONV-1` in `CONV-1 (why)`. */
+const LEADING_CONVENTION_ID = /^([A-Z][A-Z0-9]*-\d+)/;
+
+/**
+ * The convention an entry names, or undefined if it names none.
+ *
+ * Both sides of a deviation comparison are prose fields that agents fill in,
+ * and they gloss the id however they please: one review wrote `CONV-1`, the
+ * next `CONV-1 (one logical change per commit)`, and a third spelled the same
+ * rule out over a sentence. The id is the only part of that both sides can
+ * agree on without coordinating.
+ */
+export function conventionIdOf(entry: string): string | undefined {
+  return LEADING_CONVENTION_ID.exec(entry.trim())?.[1];
+}
+
 /**
  * Conventions the reviewer found broken that the author never declared.
  *
  * Comparison is by id and nothing else. Matching on prose would mean deciding
  * whether two descriptions of the same rule are the same rule, which is
- * exactly the judgement call that must not be made silently here.
+ * exactly the judgement call that must not be made silently here — and
+ * comparing the whole string, which is what this used to do, is the same
+ * mistake wearing a disguise: it calls two spellings of one id two different
+ * rules. The author writes its declaration before the review exists, so it
+ * cannot spell the gloss the reviewer will choose, and a declaration that
+ * only matches by luck is not a mechanism.
+ *
+ * An entry naming no id is compared whole and so will almost never match a
+ * declaration. That is deliberate: a reviewer who described a rule without
+ * naming it has named nothing an author could have declared against, and the
+ * safe reading of that is a departure nobody excused.
+ *
+ * Returns the reviewer's own wording, not the bare id, because that wording
+ * is what tells the author which departure is meant.
  */
 export function undeclaredDeviations(
   found: readonly string[],
   declared: readonly string[],
 ): string[] {
-  const stated = new Set(declared);
-  return [...new Set(found)].filter((id) => !stated.has(id)).sort();
+  const key = (entry: string): string => conventionIdOf(entry) ?? entry.trim();
+  const stated = new Set(declared.map(key));
+  const seen = new Set<string>();
+
+  return found
+    .filter((entry) => {
+      const id = key(entry);
+      if (stated.has(id) || seen.has(id)) {
+        return false;
+      }
+      seen.add(id);
+      return true;
+    })
+    .sort();
 }
 
 /**
