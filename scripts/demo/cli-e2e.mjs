@@ -533,6 +533,38 @@ try {
     wrongDigest.output.split('\n')[0] ?? '',
   );
 
+  const placeholder = await call([
+    'approve-role',
+    proposed[0].role,
+    '--digest',
+    proposed[0].digest,
+    '--by',
+    'macg',
+    '--reason',
+    '<read the role and say why it is acceptable>',
+  ]);
+  check(
+    'approving with the placeholder still in the reason is refused',
+    !placeholder.result.ok && placeholder.output.includes('still the placeholder'),
+    placeholder.output.split('\n')[0] ?? '',
+  );
+
+  const halfFilled = await call([
+    'approve-role',
+    proposed[0].role,
+    '--digest',
+    proposed[0].digest,
+    '--by',
+    'macg',
+    '--reason',
+    'steps 30 to 90 because <say why here>',
+  ]);
+  check(
+    'and refused inside a sentence, which is how a template half-filled reads',
+    !halfFilled.result.ok && halfFilled.output.includes('still the placeholder'),
+    halfFilled.output.split('\n')[0] ?? '',
+  );
+
   for (const exemption of proposed) {
     await call([
       'approve-role',
