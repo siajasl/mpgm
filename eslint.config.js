@@ -59,6 +59,11 @@ export default tseslint.config(
         Buffer: 'readonly',
         URL: 'readonly',
         structuredClone: 'readonly',
+        // The CLI demo drives `mpgm serve` the way anything else would: start
+        // it, ask it over HTTP, stop it.
+        AbortController: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
       },
     },
   },

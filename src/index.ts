@@ -305,10 +305,12 @@ export {
   attest,
   confirm,
   chat,
+  DEFAULT_DASHBOARD_PORT,
   intervene,
   reopen,
   replay,
   run,
+  serve,
   status,
   trace,
 } from './cli/commands.js';

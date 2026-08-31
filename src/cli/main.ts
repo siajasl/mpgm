@@ -9,6 +9,7 @@ import {
   reopen,
   replay,
   run,
+  serve,
   status,
   trace,
   type CliContext,
@@ -18,7 +19,7 @@ import {
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: fifteen verbs and a handful of flags. A CLI framework would
+ * Deliberately small: sixteen verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -26,6 +27,7 @@ import {
 export const VERBS = [
   'run',
   'status',
+  'serve',
   'pause',
   'resume',
   'kill',
@@ -47,6 +49,7 @@ export const USAGE = `mpgm — agentic SDLC harness
 
   mpgm run <phase> [--run <id>]        execute a phase and present its gate
   mpgm status [--run <id>]             folded state of a run
+  mpgm serve [--port <n>]              live dashboard over that state, until ctrl-c
   mpgm pause --run <id>                stop dispatching new tasks
   mpgm resume --run <id>               resume a paused run
   mpgm kill --run <id>                 stop a run permanently
@@ -114,6 +117,9 @@ export async function runCli(
 
     case 'status':
       return status(context, flags.run);
+
+    case 'serve':
+      return serve(context, flags.port);
 
     case 'pause':
     case 'resume':

@@ -7,6 +7,7 @@ import { ArtifactStore } from '../artifact/store.js';
 import type { ArtifactSchemaRegistry } from '../artifact/schema-registry.js';
 import { DEFAULT_EGRESS_POLICY, type EgressPolicy } from '../context/egress.js';
 import { loadKnowledgeBase, type KbDocument } from '../context/knowledge-base.js';
+import { DashboardServer } from '../dashboard/server.js';
 import { openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
@@ -57,6 +58,15 @@ export interface CliContext {
   /** Defaults to `<root>/kb`, when it exists. */
   readonly kb?: readonly KbDocument[];
   readonly write: (line: string) => void;
+  /**
+   * Stops a verb that would otherwise run until the operator interrupts it.
+   *
+   * Only `serve` reads it. The binary passes none, so an operator gets the
+   * signal handling they expect; a caller embedding the console — the
+   * end-to-end script, above all — passes one, because a verb that can only
+   * be stopped by killing the process is a verb no test can exercise.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface CommandResult {
@@ -224,6 +234,109 @@ export function status(context: CliContext, runId?: string): CommandResult {
 
     return { ok: true, detail: `seq ${String(state.lastSeq)}` };
   } finally {
+    db.close();
+  }
+}
+
+/**
+ * The port `serve` binds when the operator names none.
+ *
+ * Fixed rather than ephemeral so the dashboard has an address worth
+ * bookmarking; `--port 0` still asks the kernel for a free one.
+ */
+export const DEFAULT_DASHBOARD_PORT = 4400;
+
+/** Resolves when the operator asks for the server back. */
+function untilStopped(signal: AbortSignal | undefined): Promise<string> {
+  if (signal !== undefined) {
+    return signal.aborted
+      ? Promise.resolve('aborted')
+      : new Promise((resolve) => {
+          signal.addEventListener('abort', () => {
+            resolve('aborted');
+          });
+        });
+  }
+
+  return new Promise((resolve) => {
+    const stop = (name: string) => () => {
+      process.removeListener('SIGINT', onInt);
+      process.removeListener('SIGTERM', onTerm);
+      resolve(name);
+    };
+    const onInt = stop('SIGINT');
+    const onTerm = stop('SIGTERM');
+    process.once('SIGINT', onInt);
+    process.once('SIGTERM', onTerm);
+  });
+}
+
+/**
+ * `mpgm serve` — the operator's live view of running work (OBS-3).
+ *
+ * The dashboard is a library that renders folded state; this is the verb that
+ * puts it somewhere an operator can look. Read-only all the way down: the
+ * server dispatches nothing but `GET`, and this holds the log open for reads
+ * without ever appending, so a dashboard left running through an implement
+ * task cannot change what that task does.
+ *
+ * Runs until interrupted, which is the point — a live view that exits is a
+ * report.
+ */
+export async function serve(
+  context: CliContext,
+  port: string | number = DEFAULT_DASHBOARD_PORT,
+): Promise<CommandResult> {
+  // The flag arrives as whatever the operator typed, and is parsed here rather
+  // than at the boundary so that the refusal can name it (CONV-3). Digits only:
+  // `Number` alone would take ' 80', '0x50' and '1e3', and an operator who
+  // typed one of those did not mean the port they would get.
+  const wanted =
+    typeof port === 'number' ? port : /^\d+$/.test(port) ? Number(port) : NaN;
+  // No lower bound: `^\d+$` cannot produce a negative, and a caller passing
+  // one programmatically is caught by `listen` below. A branch nothing can
+  // reach is a branch no test can fail on.
+  if (!Number.isInteger(wanted) || wanted > 65535) {
+    context.write(
+      `--port must be a whole number from 0 to 65535, not '${String(port)}'; ` +
+        `0 asks for any free port`,
+    );
+    return { ok: false, detail: 'bad port' };
+  }
+
+  const { db, projector } = open(context);
+  const server = new DashboardServer({ projector, traces: TraceIndex.attach(db) });
+  // Tracked, because closing a server that never bound throws
+  // ERR_SERVER_NOT_RUNNING — which would replace the reason the operator
+  // needs (a port already in use, or one they may not have) with a message
+  // about the cleanup.
+  let listening = false;
+  try {
+    let bound: number;
+    try {
+      bound = await server.listen(wanted);
+      listening = true;
+    } catch (cause) {
+      context.write(
+        `could not listen on port ${String(wanted)}: ` +
+          (cause instanceof Error ? cause.message : String(cause)),
+      );
+      return { ok: false, detail: 'could not listen' };
+    }
+
+    context.write(`dashboard on http://127.0.0.1:${String(bound)}`);
+    // Said out loud because none of it is visible from the page: the operator
+    // cannot tell by looking whether what they are reading is stale, nor
+    // whether anyone else can reach it.
+    context.write('  loopback only, and read-only — nothing here can change a run');
+    context.write('  the trace page shows whatever `mpgm trace` last indexed');
+    context.write('  stop with ctrl-c');
+    const reason = await untilStopped(context.signal);
+    return { ok: true, detail: `served on ${String(bound)}, stopped by ${reason}` };
+  } finally {
+    if (listening) {
+      await server.close();
+    }
     db.close();
   }
 }
