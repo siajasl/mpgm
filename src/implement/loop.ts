@@ -254,15 +254,27 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const stop = (
     reason: string,
     extra: Partial<ImplementResult> = {},
-  ): ImplementResult => ({
-    status: 'blocked',
-    taskId: task.id,
-    branch: worktree.branch,
-    worktree: worktree.path,
-    reason,
-    ...(rounds.length === 0 ? {} : { rounds: [...rounds] }),
-    ...extra,
-  });
+  ): ImplementResult => {
+    // Recorded here rather than at each `return stop(...)` for the same reason
+    // the rounds are: there are thirteen of them, and thirteen call sites each
+    // remembering to log is twelve chances not to. Without the event the fold
+    // leaves the task saying `dispatched`, which is indistinguishable from one
+    // still running (OBS-4).
+    options.log.append({
+      runId,
+      type: 'TaskBlocked',
+      payload: { taskId: task.id, reason },
+    });
+    return {
+      status: 'blocked',
+      taskId: task.id,
+      branch: worktree.branch,
+      worktree: worktree.path,
+      reason,
+      ...(rounds.length === 0 ? {} : { rounds: [...rounds] }),
+      ...extra,
+    };
+  };
 
   const context = assembleContext({
     task: {

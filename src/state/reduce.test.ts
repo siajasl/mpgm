@@ -79,6 +79,11 @@ describe('reduce', () => {
         type: 'BudgetExceeded',
         payload: { taskId: 'T1', kind: 'cost', limit: 1, observed: 2 },
       },
+      {
+        runId: RUN,
+        type: 'TaskBlocked',
+        payload: { taskId: 'T1', reason: 'the change was not usable' },
+      },
       { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
       {
         runId: RUN,
@@ -453,5 +458,78 @@ describe('reduce', () => {
     );
 
     expect(state.runs[RUN]?.tasks.T1?.status).toBe('blocked');
+  });
+
+  it('marks a task blocked when it stops for a reason no budget explains', () => {
+    // The gap this event closes. A task that gave up because its change was
+    // unusable, or its reviewer died, or the gate refused the merge, used to
+    // leave the fold saying `dispatched` — indistinguishable from one still
+    // running, and no basis for a success rate (OBS-4).
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'TaskBlocked',
+          payload: { taskId: 'T1', reason: 'the change was not usable' },
+        },
+      ]),
+    );
+
+    expect(state.runs[RUN]?.tasks.T1?.status).toBe('blocked');
+    // No budget was breached, and the fold must not invent one.
+    expect(state.runs[RUN]?.tasks.T1?.budgetBreaches).toBe(0);
+  });
+
+  it('counts one breach when a budget both blocks and stops a task', () => {
+    // The two events travel together when a budget is the cause: one says
+    // which limit was hit, the other that the task stopped. A metric counts
+    // tasks left blocked, so this must not read as two failures — nor as two
+    // breaches.
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'BudgetExceeded',
+          payload: { taskId: 'T1', kind: 'reviews', limit: 3, observed: 3 },
+        },
+        {
+          runId: RUN,
+          type: 'TaskBlocked',
+          payload: { taskId: 'T1', reason: 'the review still refuses the change' },
+        },
+      ]),
+    );
+
+    expect(state.runs[RUN]?.tasks.T1?.status).toBe('blocked');
+    expect(state.runs[RUN]?.tasks.T1?.budgetBreaches).toBe(1);
+  });
+
+  it('refuses to block a task the run never dispatched', () => {
+    // Fail closed (CONV-4). A blocked record for a task nothing started is a
+    // task that appears in a success rate having never run.
+    expect(() =>
+      fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'TaskBlocked',
+            payload: { taskId: 'never-ran', reason: 'no' },
+          },
+        ]),
+      ),
+    ).toThrow();
   });
 });
