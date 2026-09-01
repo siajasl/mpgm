@@ -381,6 +381,72 @@ describe('a review that never approves (NFR-1)', () => {
     };
   }
 
+  it('tells a resuming implementer what the checkout was handed over holding', async () => {
+    // T4.1.1 ran out of turns with every file written and staged and none
+    // committed. The prompt is built by the loop from what it reads off the
+    // checkout, so a unit test of `implementPrompt` cannot tell whether the
+    // loop looks at all — which is the way this silently stops working.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(worktree.path, 'committed.txt'), 'from an earlier round\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'work an earlier session committed']);
+    // Written and staged, never committed — exactly how T4.1.1 stopped.
+    writeFileSync(join(worktree.path, 'staged.txt'), 'never committed\n');
+    git(worktree.path, ['add', '--all']);
+
+    const provider = refusingProvider(git(worktree.path, ['rev-parse', 'HEAD']));
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 1,
+      });
+
+      const authoring = provider.requests.find((request) =>
+        request.prompt.includes('Implement T1'),
+      );
+      expect(authoring?.prompt).toContain('This checkout is not empty');
+      expect(authoring?.prompt).toContain('1 commit(s) on the branch already');
+      expect(authoring?.prompt).toContain('changes written but not committed');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
+  it('says nothing about inherited work to a session given a fresh checkout', async () => {
+    const repo = newRepo();
+    const provider = refusingProvider(git(repo, ['rev-parse', 'HEAD']));
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      const authoring = provider.requests.find((request) =>
+        request.prompt.includes('Implement T1'),
+      );
+      expect(authoring?.prompt).not.toContain('This checkout is not empty');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
   it('tells the first review of a reused checkout whose commits those are', async () => {
     // The gap the round-number version left. A checkout picked up from a run
     // that blocked already carries that run's rework, so its *first* review

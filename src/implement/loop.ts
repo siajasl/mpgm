@@ -135,8 +135,20 @@ export interface ImplementResult {
   readonly reason?: string;
 }
 
-function implementPrompt(task: ImplementTask, branch: string): string {
-  return [
+/** What a checkout handed over from an earlier session already holds. */
+export interface CarriedWork {
+  /** Commits on the branch beyond the trunk. */
+  readonly commits: number;
+  /** Changes written but never committed. */
+  readonly uncommitted: boolean;
+}
+
+export function implementPrompt(
+  task: ImplementTask,
+  branch: string,
+  carried?: CarriedWork,
+): string {
+  const lines = [
     `Implement ${task.id} — ${task.title}.`,
     '',
     'Done when:',
@@ -147,11 +159,52 @@ function implementPrompt(task: ImplementTask, branch: string): string {
     `You are in your own checkout on branch ${branch}. Commit your work there.`,
     'You cannot reach the trunk and you are not meant to: the kernel merges,',
     'after CI is green and another agent has reviewed what you wrote.',
+  ];
+
+  // A worktree outlives the session that was working in it, which is the whole
+  // point (DESIGN §6) — and until now nothing told the session that replaced
+  // it. T4.1.1 ran out of turns with every file written and staged and none of
+  // them committed; a replacement given only "implement this" would have found
+  // a tree full of changes it did not make, with no account of where they came
+  // from, and been as likely to start again as to finish.
+  //
+  // Said only when there is something to say: a checkout acquired by a session
+  // that died before writing anything holds nothing, and describing that would
+  // send an agent looking for work that is not there.
+  if (carried !== undefined && (carried.commits > 0 || carried.uncommitted)) {
+    const held = [
+      carried.commits > 0
+        ? `${String(carried.commits)} commit(s) on the branch already`
+        : undefined,
+      carried.uncommitted ? 'changes written but not committed' : undefined,
+    ].filter((entry) => entry !== undefined);
+
+    lines.push(
+      '',
+      `This checkout is not empty. An earlier session on this task stopped`,
+      `before it finished and left ${held.join(', and ')}.`,
+      '',
+      'Read what is there before you write anything. It may be finished, nearly',
+      'finished, or wrong, and you cannot tell which without looking — but it is',
+      'the work this task has already been paid for, and starting again spends',
+      "that twice. Uncommitted changes are the previous session's: judge them,",
+      'and commit them if they are right rather than discarding them because you',
+      'did not write them.',
+      '',
+      'Committing is not agreeing. What you commit is reviewed by another agent',
+      'and has to pass CI, so leaving something broken in place costs a round;',
+      'fix what is wrong, finish what is unfinished, and commit the result.',
+    );
+  }
+
+  lines.push(
     '',
     'Report the commit you ended at in `ref`, and set `complete` honestly — a',
     'partial change with an account of what remains is recoverable, and a',
     'confident claim of completion is not.',
-  ].join('\n');
+  );
+
+  return lines.join('\n');
 }
 
 export function reviewPrompt(
@@ -246,6 +299,19 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const inheritedCommits = worktree.reused
     ? ((await options.worktrees.commitsAhead(task.id, into)) ?? 0)
     : 0;
+  // Read before the session starts, for the same reason: what the checkout was
+  // handed over holding, not what this run went on to do to it.
+  //
+  // Not gated on `reused`, though only a reused checkout can hold anything. A
+  // fresh one is created from the trunk and is clean, so it answers zero and
+  // false and the prompt says nothing — which makes the flag a branch no test
+  // could fail on. Deciding on what the checkout actually holds is also the
+  // more robust of the two: if acquiring ever left something behind, the
+  // session would be told rather than the flag saying it could not have.
+  const carried: CarriedWork = {
+    commits: inheritedCommits,
+    uncommitted: await options.worktrees.isDirty(task.id),
+  };
   // Rounds are attached by the helper rather than by each caller: a task that
   // blocked in its second round should say so wherever it stopped, and
   // thirteen call sites each remembering to pass them is twelve chances not
@@ -279,7 +345,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const context = assembleContext({
     task: {
       description: `${task.id} — ${task.title} (${task.milestone})`,
-      prompt: implementPrompt(task, worktree.branch),
+      prompt: implementPrompt(task, worktree.branch, carried),
     },
     upstream: [],
     kb: options.kb,
