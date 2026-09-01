@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.28 — a refused review goes back to its author (§4.7, §9) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-25
+**Status:** v0.29 — the deploy substrate is containers, for now (§8, §9) · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-01
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals
@@ -160,6 +160,7 @@ Revisit as the system grows:
 - **Parallelism:** single-machine worktrees → remote execution (cloud sessions) if implementation throughput binds.
 - **Multi-operator (v2):** gate manager already isolates approval identity in events; add role-based approvers without kernel changes.
 - **Provider portability:** agent runtime is the only SDK-coupled module; a second runtime implementation is the EXT-2 escape hatch.
+- **Deploy substrate:** local containers → a hosted provider (fly.io, Render) when a container on the operator's machine stops being an honest pre-production environment. The trigger is DEP-2: staging exists to catch what production would suffer, and a staging that shares nothing with production — no network boundary, no cold start, no resource limit, no separate identity — catches less each time the service grows. Revisit before the first release that must be trusted rather than demonstrated. The `env.provision` contract is what makes this a configuration change (EXT-2/3).
 
 ## 9. Resolved Decisions
 
@@ -170,4 +171,5 @@ Revisit as the system grows:
 5. **A ref nothing watches is reported in minutes, not in half an hour:** the checks wait distinguishes *pending* from *never reported*. A ref with runs in flight is one CI is working on; a ref that has reported nothing after a grace period is one CI was never asked about — a branch outside the workflow's triggers, or a pull request never opened. Both block, since absence is not success, but only one of them is worth waiting out (§4.7, IMP-2).
 6. **Bootstrap work is attested, not faked:** a plan task completed outside the harness is recorded as `TaskAttested` — an operator's claim, with required evidence, distinct in the log from a task the kernel dispatched and merged. It counts as done for scheduling, because the scheduler's question is whether the work exists; it is never folded into `TaskCompleted`, because one is a person's word and the other is a run (§4.4, ADR-1).
 7. **Steps bound a session, not a task:** the kernel enforces totals only for quantities it can measure in the units it caps, and the SDK's turn counters do not meet that test; cost is the task-level bound on retrying (§4.1, AGT-4).
-8. **Unlabelled content is restricted, not internal:** the egress default fails closed, and the harness classifies what it writes rather than relying on a permissive default to carry its own output forward (§3, SAF-6).
+8. **The deploy substrate is containers, for now:** environments are described by compose files in the repository, which is what DEP-1 and DEP-4 ask for — an environment that comes up and down from versioned configuration, with no manual mutation. Chosen ahead of a hosted provider because it is the cheapest way to prove the *shape* of the pipeline: T4.1.2's release path, T4.1.3's health verification and rollback, and T4.1.4's approval gate are all testable offline, at no cost, with no credential to hold. What it does not give is a staging environment that resembles production in the ways production hurts, so it is a decision with a stated expiry rather than a settled one (§8) (§4, DEP-1, DEP-4).
+9. **Unlabelled content is restricted, not internal:** the egress default fails closed, and the harness classifies what it writes rather than relying on a permissive default to carry its own output forward (§3, SAF-6).
