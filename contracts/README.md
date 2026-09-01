@@ -64,3 +64,4 @@ not passed through — the placeholder is never quietly resolved to nothing.
 | `ci.checks` | [ci.checks.md](ci.checks.md) | T3.1.2a |
 | `pm.github` | [pm.github.md](pm.github.md) | T3.1.7 |
 | `test.nfr` | [test.nfr.md](test.nfr.md) | T3.2.1 |
+| `env.provision` | [env.provision.md](env.provision.md) | T4.1.1 |

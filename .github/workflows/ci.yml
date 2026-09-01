@@ -105,6 +105,12 @@ jobs:
       - name: Switchover
         run: npm run demo:switchover
 
+      # T4.1.1: the `test` environment comes up and down from the committed
+      # IaC alone (DEP-1, DEP-4). `ubuntu-latest` ships a Docker daemon, so
+      # this needs no extra setup step.
+      - name: env.provision against the committed IaC
+        run: npm run demo:env
+
   scan:
     name: scan
     runs-on: ubuntu-latest

@@ -1,0 +1,22 @@
+# The `staging` environment (DEP-1, DEP-4, `env.provision`).
+#
+# Same shape as `test`'s (`deploy/environments/test/compose.yaml`) — a
+# separate compose project and a separate port, so the two can be up at once
+# without colliding. See that file's header for `MPGM_SERVICE_IMAGE`.
+name: mpgm-staging
+services:
+  service:
+    image: ${MPGM_SERVICE_IMAGE:-nginx:1.27-alpine}
+    ports:
+      - '8082:80'
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+    environment:
+      MPGM_ENV: staging
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--spider', 'http://localhost/']
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped

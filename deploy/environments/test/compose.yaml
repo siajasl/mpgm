@@ -1,0 +1,23 @@
+# The `test` environment (DEP-1, DEP-4, `env.provision`).
+#
+# `${MPGM_SERVICE_IMAGE:-...}` lets a release (DEP-3, T4.1.2) point this at a
+# built image without editing this file; absent one, the default below runs —
+# which is what lets this environment come up from the committed IaC alone,
+# ahead of a real deployable service landing in a later task.
+name: mpgm-test
+services:
+  service:
+    image: ${MPGM_SERVICE_IMAGE:-nginx:1.27-alpine}
+    ports:
+      - '8081:80'
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+    environment:
+      MPGM_ENV: test
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--spider', 'http://localhost/']
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
