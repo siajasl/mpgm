@@ -132,6 +132,31 @@ describe('EventLog append and read', () => {
     log.close();
   });
 
+  it('refuses to record a task blocked for no stated reason', () => {
+    // A block with an empty reason is a task that stopped and cannot say why.
+    // The operator reads that reason to decide what to do next, so the schema
+    // will not take one — CONV-3, enforced where it cannot be forgotten rather
+    // than asked of thirteen call sites.
+    const log = openMemoryLog();
+
+    expect(() =>
+      log.append({
+        runId: 'r',
+        type: 'TaskBlocked',
+        payload: { taskId: 'T1', reason: '' },
+      }),
+    ).toThrow(EventValidationError);
+    expect(() =>
+      log.append({
+        runId: 'r',
+        type: 'TaskBlocked',
+        payload: { taskId: '', reason: 'no' },
+      }),
+    ).toThrow(EventValidationError);
+    expect(log.lastSeq).toBe(0);
+    log.close();
+  });
+
   it('appendMany is atomic — one bad event writes none of the batch', () => {
     const log = openMemoryLog();
 

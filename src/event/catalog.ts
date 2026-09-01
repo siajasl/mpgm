@@ -207,6 +207,31 @@ export const budgetExceeded = defineEvent(
 );
 
 /**
+ * A task stopped without finishing, and why.
+ *
+ * The fold had no way to record this. A task became `blocked` only through
+ * {@link budgetExceeded}, so the many other ways the implement loop gives up
+ * — an unusable change, a review session that died, a merge the gate refused
+ * — left the log saying `dispatched`, indistinguishable from a task still
+ * running. Success rates cannot be computed from a log that cannot tell a
+ * failure from work in progress (OBS-4), and the log is the authority (ADR-1).
+ *
+ * Recorded alongside {@link budgetExceeded} rather than instead of it, when
+ * the cause is a budget: that one says which limit was hit, this one says the
+ * task stopped. Nothing double-counts, because what a metric counts is a task
+ * left in the blocked state, not the events that put it there.
+ *
+ * `reason` is free text on purpose. Every place the loop gives up already
+ * writes a sentence for the operator, and a category enum would mean
+ * classifying thirteen call sites — thirteen chances to file a failure under
+ * the wrong heading, which is worse for a metric than no heading at all.
+ */
+export const taskBlocked = defineEvent(
+  'TaskBlocked',
+  z.object({ taskId: nonEmpty, reason: nonEmpty }),
+);
+
+/**
  * Intent-before-effect (DESIGN §6).
  *
  * A side-effectful step records its intention *before* acting, so a crash
@@ -442,6 +467,7 @@ export const kernelEvents = [
   runStarted,
   sessionUsage,
   taskAttested,
+  taskBlocked,
   taskCompleted,
   taskDispatched,
   toolCallLogged,

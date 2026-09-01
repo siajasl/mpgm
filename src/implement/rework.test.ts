@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MEMORY } from '../database.js';
+import { fold } from '../state/reduce.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
 import { SessionRunner } from '../agent/runner.js';
@@ -550,6 +551,72 @@ describe('a review that never approves (NFR-1)', () => {
       log.close();
     }
   }, 20_000);
+
+  it('records the block in the log, whatever gave up', async () => {
+    // Two different paths, because the block used to be recorded only where a
+    // budget ran out. Every other way the loop gives up left the fold saying
+    // `dispatched`, which reads as a task still running rather than one that
+    // failed — and a success rate cannot be computed from that (OBS-4).
+    const exhausted = await refusedForever(1);
+    try {
+      const blocked = exhausted.log
+        .read()
+        .filter((event) => event.type === 'TaskBlocked')
+        .map((event) => event.payload as { taskId: string; reason: string });
+      expect(blocked).toHaveLength(1);
+      expect(blocked[0]?.taskId).toBe('T1');
+      expect(blocked[0]?.reason).toMatch(/still refuses the change/);
+    } finally {
+      exhausted.log.close();
+    }
+
+    // Nothing about a budget here: the reviewer returns something the schema
+    // will not take, so the loop gives up on the first round.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      // Repeated, because a session that returns something the schema will not
+      // take is retried before the runner gives up (AGT-3).
+      ...Array.from({ length: 8 }, () =>
+        scriptedSuccess({ nonsense: 'not a review at all' }),
+      ),
+    ]);
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 3,
+      });
+      expect(result.status).toBe('blocked');
+
+      const events = log.read();
+      const blocked = events
+        .filter((event) => event.type === 'TaskBlocked')
+        .map((event) => event.payload as { reason: string });
+      expect(blocked).toHaveLength(1);
+      expect(blocked[0]?.reason).toMatch(/review/);
+      // No budget was involved, so nothing may claim one was.
+      expect(events.some((event) => event.type === 'BudgetExceeded')).toBe(false);
+      expect(fold(events).runs.r?.tasks.T1?.status).toBe('blocked');
+    } finally {
+      log.close();
+    }
+  }, 30_000);
 
   it('takes DEFAULT_REVIEW_ATTEMPTS reviews when the caller names no bound', async () => {
     // Asserted against the constant rather than against a literal: what would

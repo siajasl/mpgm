@@ -24,6 +24,7 @@ import type {
   runStarted,
   sessionUsage,
   taskAttested,
+  taskBlocked,
   taskCompleted,
   taskDispatched,
   toolCallLogged,
@@ -316,6 +317,13 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         }),
         seq,
       );
+    }
+
+    case 'TaskBlocked': {
+      const payload = event.payload as PayloadOf<typeof taskBlocked>;
+      const run = requireRun(state, event.runId, type);
+      const task = requireTask(run, payload.taskId, type);
+      return withRun(state, withTask(run, { ...task, status: 'blocked' }), seq);
     }
 
     case 'GatePresented': {
