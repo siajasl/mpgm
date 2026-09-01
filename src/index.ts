@@ -688,3 +688,36 @@ export {
   runListPage,
   traceGraphPage,
 } from './dashboard/render.js';
+export type {
+  EnvRequestInput,
+  EnvUpInput,
+  EnvStatusOutput,
+  ServiceHealth,
+  ServiceState,
+  ServiceStatus,
+} from './env/provision.js';
+export {
+  environmentUp,
+  envProvisionContract,
+  envRequestInput,
+  envStatusOutput,
+  envUpInput,
+  serviceHealths,
+  serviceStates,
+  serviceStatusSchema,
+} from './env/provision.js';
+export type {
+  ComposeCli,
+  ComposeCliResult,
+  ComposeProviderOptions,
+  EnvironmentEntry,
+} from './env/compose-provider.js';
+export {
+  composeProvider,
+  ComposeProviderError,
+  DEFAULT_MANIFEST_PATH,
+  dockerComposeCli,
+  loadDeclaredEnvironments,
+  parseComposePs,
+  UndeclaredEnvironmentError,
+} from './env/compose-provider.js';

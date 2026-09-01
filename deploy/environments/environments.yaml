@@ -1,0 +1,15 @@
+# Environments this project declares (DEP-1, DEP-4, `env.provision`).
+#
+# What `env.provision` operates on and nothing more: a provider MUST refuse an
+# environment name not listed here rather than infer one from a directory
+# existing under `deploy/environments/` (contracts/env.provision.md,
+# `src/env/compose-provider.ts`). `production` is deliberately absent — DEP-4
+# asks the harness to be *able* to provision it, but the hard approval gate
+# that must stand in front of it (DEP-2, HIL-2) is T4.1.4's, not yet landed.
+environments:
+  - name: test
+    compose: deploy/environments/test/compose.yaml
+    project: mpgm-test
+  - name: staging
+    compose: deploy/environments/staging/compose.yaml
+    project: mpgm-staging
