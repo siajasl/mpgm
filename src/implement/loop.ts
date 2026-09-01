@@ -158,7 +158,12 @@ export function reviewPrompt(
   task: ImplementTask,
   ref: string,
   base: string,
-  round = 1,
+  /**
+   * True when the loop is responsible for the branch carrying more than one
+   * commit — this round is a rework, or the checkout was picked up from an
+   * earlier run that already had them.
+   */
+  loopAddedCommits = false,
 ): string {
   const lines = [
     `Review the change for ${task.id} — ${task.title}.`,
@@ -170,24 +175,33 @@ export function reviewPrompt(
     `\`git log ${base}..${ref}\`.`,
   ];
 
-  // Said only from the second round, because on the first there is one commit
-  // and nothing to explain — and a note about rework rounds would invite a
-  // reviewer to look for a shape that is not there.
+  // Said only when the loop is the reason there is more than one commit.
   //
   // T3.2.6 is why this exists. Its third review approved the change and
   // refused it anyway, over a one-commit-per-change convention it saw broken
   // by the four commits the loop had itself made. That was the last attempt,
   // so the author was never even given the chance to declare a departure it
-  // had not made. Phrased about commit structure rather than naming a
-  // convention id: which id that is belongs to a project's knowledge base,
-  // and the project being reviewed here may have no such convention at all.
-  if (round > 1) {
+  // had not made.
+  //
+  // The condition is who made the commits, not which round this is. Saying it
+  // on every round after the first missed a reused checkout, whose *first*
+  // round already carries an earlier run's rework — which is exactly what
+  // T3.2.6 hit on the re-run. Saying it unconditionally would be worse: an
+  // author who split a fresh change into three commits made that choice
+  // themselves, and excusing it would throw away a real finding.
+  //
+  // Phrased about commit structure rather than naming a convention id: which
+  // id that is belongs to a project's knowledge base, and the project being
+  // reviewed here may have no such convention at all.
+  if (loopAddedCommits) {
     lines.push(
       '',
       'This branch carries one commit per review round: the change, and then one',
-      "for each time it came back from review. That shape is the loop's doing",
-      "rather than the author's, and the author cannot collapse it — rewriting a",
-      'published commit discards the review already given to it.',
+      'for each time it came back from review — including rounds from an earlier',
+      'run of this task, if the checkout was picked up where it left off. That',
+      "shape is the loop's doing rather than the author's, and the author cannot",
+      'collapse it — rewriting a published commit discards the review already',
+      'given to it.',
       '',
       'So do not report the number of commits as a departure this change made.',
       "What each commit *says* is still the author's: a rework commit whose",
@@ -225,6 +239,13 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   }
 
   const worktree = await options.worktrees.acquire(task.id);
+  // Asked before any session runs, so it is a fact about what the checkout was
+  // handed over carrying rather than about anything this run did. A reused
+  // worktree with commits on it was left mid-task by an earlier run, and those
+  // commits are the loop's for the same reason this run's rework commits are.
+  const inheritedCommits = worktree.reused
+    ? ((await options.worktrees.commitsAhead(task.id, into)) ?? 0)
+    : 0;
   // Rounds are attached by the helper rather than by each caller: a task that
   // blocked in its second round should say so wherever it stopped, and
   // thirteen call sites each remembering to pass them is twelve chances not
@@ -376,7 +397,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       runId,
       taskId: reviewTaskId,
       role: reviewerRole,
-      prompt: reviewPrompt(task, repair.ref, into, round),
+      prompt: reviewPrompt(task, repair.ref, into, round > 1 || inheritedCommits > 0),
       policyRoot: worktree.path,
     });
 

@@ -103,6 +103,36 @@ describe('WorktreeManager', () => {
     }
   });
 
+  it('counts what a branch carries beyond the trunk', async () => {
+    // Read at acquire time to tell a checkout picked up mid-task from a fresh
+    // one, which is what decides whether a review is told the extra commits
+    // are the loop's rather than the author's.
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('counted');
+
+    expect(await manager.commitsAhead('counted', 'main')).toBe(0);
+
+    for (const index of [1, 2, 3]) {
+      writeFileSync(join(worktree.path, `${String(index)}.txt`), 'work\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', `commit ${String(index)}`]);
+      expect(await manager.commitsAhead('counted', 'main')).toBe(index);
+    }
+  });
+
+  it('cannot count a branch that is not checked out, and says so', async () => {
+    // Undefined rather than zero: "there is no such worktree" is not "it has
+    // no commits", and a caller that treated them alike would claim the loop
+    // made commits it knows nothing about.
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    await manager.acquire('present');
+
+    expect(await manager.commitsAhead('absent', 'main')).toBeUndefined();
+    expect(await manager.commitsAhead('present', 'no-such-ref')).toBeUndefined();
+  });
+
   it('hands back the existing checkout when a task is re-acquired', async () => {
     const repo = newRepo();
     const manager = new WorktreeManager({ repo });

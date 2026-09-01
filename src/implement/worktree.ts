@@ -403,6 +403,33 @@ export class WorktreeManager {
     return (await this.#git(['status', '--porcelain'], found.path)) !== '';
   }
 
+  /**
+   * How many commits a task's branch carries beyond `base`.
+   *
+   * Asked at acquire time, before any session runs, so that a reused checkout
+   * can say whether it was picked up mid-task. A branch that already carries
+   * commits was left there by an earlier run of this task, and those commits
+   * are the loop's rather than anything the author about to work on it did.
+   *
+   * `undefined` when the question cannot be answered — an unknown base, or a
+   * checkout that is not there. The callers treat that as "cannot tell" and
+   * claim nothing, because the alternative is excusing a commit structure the
+   * author may have chosen deliberately.
+   */
+  async commitsAhead(taskId: string, base: string): Promise<number | undefined> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return undefined;
+    }
+    try {
+      const count = await this.#git(['rev-list', '--count', `${base}..HEAD`], found.path);
+      const parsed = Number(count);
+      return Number.isInteger(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   release(taskId: string, options: ReleaseOptions = {}): Promise<ReleaseResult> {
     assertUsableTaskId(taskId);
     return this.#serial(() => this.#release(taskId, options));

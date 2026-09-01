@@ -327,6 +327,212 @@ describe('a review that never approves (NFR-1)', () => {
     }
   }, 20_000);
 
+  /** An implementer that says it is done, and a reviewer that refuses. */
+  function refusingProvider(ref: string): ScriptedProvider {
+    return new ScriptedProvider([
+      scriptedSuccess({
+        ref,
+        summary: 'done',
+        files: ['earlier.txt'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref,
+        verdict: 'request-changes',
+        summary: 'no',
+        findings: [
+          { file: 'earlier.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+        ],
+        deviations: [],
+      }),
+    ]);
+  }
+
+  /** Everything `implementTask` needs that these tests do not vary. */
+  function baseOptions(repo: string, provider: ScriptedProvider, log: EventLog) {
+    return {
+      runId: 'r',
+      task: {
+        id: 'T1',
+        title: 'A task picked up where it was left',
+        completionCriteria: ['It is done.'],
+        tracesTo: ['IMP-1'],
+        milestone: 'M1',
+      },
+      repo,
+      worktrees: new WorktreeManager({ repo }),
+      sessions: new SessionRunner({
+        log,
+        provider,
+        schemas: projectOutputSchemas(),
+        policyRoot: repo,
+      }),
+      roles: RoleRegistry.fromDirectory(
+        join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+      ),
+      log,
+      kb: [],
+      policy: { maxClass: 'internal' as const, unlabelled: 'internal' as const },
+      checks: (ref: string) => Promise.resolve(mergeVerdict({ ref, runs: GREEN })),
+    };
+  }
+
+  it('tells the first review of a reused checkout whose commits those are', async () => {
+    // The gap the round-number version left. A checkout picked up from a run
+    // that blocked already carries that run's rework, so its *first* review
+    // sees several commits — and T3.2.6's re-run duly reported the departure
+    // again, on the one round that was not being told anything.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(worktree.path, 'earlier.txt'), 'from a run that blocked\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'left behind by an earlier round']);
+    const head = git(worktree.path, ['rev-parse', 'HEAD']);
+
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['earlier.txt'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'request-changes',
+        summary: 'no',
+        findings: [
+          { file: 'earlier.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+        ],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      await implementTask({
+        runId: 'r',
+        task: {
+          id: 'T1',
+          title: 'A task picked up where it was left',
+          completionCriteria: ['It is done.'],
+          tracesTo: ['IMP-1'],
+          milestone: 'M1',
+        },
+        repo,
+        worktrees,
+        sessions: new SessionRunner({
+          log,
+          provider,
+          schemas: projectOutputSchemas(),
+          policyRoot: repo,
+        }),
+        roles: RoleRegistry.fromDirectory(
+          join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+        ),
+        log,
+        kb: [],
+        policy: { maxClass: 'internal', unlabelled: 'internal' },
+        checks: (ref) => Promise.resolve(mergeVerdict({ ref, runs: GREEN })),
+        maxReviewAttempts: 1,
+      });
+
+      const reviews = provider.requests.filter((request) =>
+        request.prompt.includes('Review the change for'),
+      );
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]?.prompt).toContain('one commit per review round');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
+  it('does not blame the loop for a trunk the branch was simply taken past', async () => {
+    // A fresh checkout is based on the repository's HEAD, which need not be
+    // the branch the change merges into. Counting `main..HEAD` there returns
+    // commits nobody in this loop made, so the count alone is not the signal —
+    // whether the checkout was handed over from an earlier run is.
+    const repo = newRepo();
+    git(repo, ['checkout', '-q', '-b', 'ahead']);
+    writeFileSync(join(repo, 'ahead.txt'), 'past main\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'a commit main does not have']);
+
+    const provider = refusingProvider(git(repo, ['rev-parse', 'HEAD']));
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      const reviews = provider.requests.filter((request) =>
+        request.prompt.includes('Review the change for'),
+      );
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]?.prompt).not.toContain('one commit per review round');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
+  it('claims nothing when it cannot tell what the checkout was carrying', async () => {
+    // `commitsAhead` answers undefined when it cannot say — an unreadable
+    // checkout, an unknown base. Undefined must not become "several": excusing
+    // a commit structure on a guess is how a real finding gets waved through.
+    const repo = newRepo();
+    const worktrees = new (class extends WorktreeManager {
+      override commitsAhead(): Promise<number | undefined> {
+        return Promise.resolve(undefined);
+      }
+    })({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(worktree.path, 'earlier.txt'), 'from a run that blocked\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'left behind by an earlier round']);
+
+    const provider = refusingProvider(git(worktree.path, ['rev-parse', 'HEAD']));
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 1,
+      });
+
+      const reviews = provider.requests.filter((request) =>
+        request.prompt.includes('Review the change for'),
+      );
+      expect(reviews[0]?.prompt).not.toContain('one commit per review round');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
   it('tells the second review that the extra commits are the loop’s', async () => {
     // The unit tests over `reviewPrompt` cannot see whether the loop passes it
     // the round, and without the round every review would be told it is the
