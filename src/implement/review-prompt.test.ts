@@ -10,7 +10,7 @@ const TASK: ImplementTask = {
 };
 
 const first = reviewPrompt(TASK, 'abc123', 'main');
-const later = reviewPrompt(TASK, 'def456', 'main', 3);
+const later = reviewPrompt(TASK, 'def456', 'main', true);
 
 describe('what every review is told', () => {
   it('names the task, what it had to satisfy, and the commit to review', () => {
@@ -31,14 +31,24 @@ describe('what every review is told', () => {
 });
 
 describe('whose the branch’s commit structure is', () => {
-  it('says nothing about rework rounds on the first review', () => {
-    // There is one commit at that point. A note about rework rounds would
-    // invite a reviewer to look for a shape that is not there.
+  it('says nothing when the loop did not make the extra commits', () => {
+    // An author who split a fresh change into three commits made that choice
+    // themselves. Excusing it would throw away a real finding, so the prompt
+    // claims nothing unless the loop is the reason.
     expect(first).not.toContain('one commit per review round');
     expect(first).not.toContain('came back from review');
   });
 
-  it('tells a later review that the extra commits are the loop’s', () => {
+  it('covers rework inherited from an earlier run of the task', () => {
+    // The first version of this keyed on the round number, which missed a
+    // reused checkout: its *first* round already carries an earlier run's
+    // rework commits. T3.2.6's re-run hit exactly that, and its first review
+    // reported the departure again.
+    expect(later).toContain('including rounds from an earlier');
+    expect(later).toMatch(/picked up where it left off/);
+  });
+
+  it('tells a review whose commits they are', () => {
     // T3.2.6's third review approved the change and refused it anyway, over a
     // one-commit-per-change convention it saw broken by the four commits the
     // loop had itself made — on the last attempt, so the author never got the
