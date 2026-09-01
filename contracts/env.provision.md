@@ -14,6 +14,9 @@ for the reasons stated there: an environment that comes up and down from
 versioned configuration, testable offline, at no cost, holding no credential.
 **IaC.** `deploy/environments/<env>/compose.yaml`, declared in
 [`deploy/environments/environments.yaml`](../deploy/environments/environments.yaml).
+Resolved from the `repo` on each call, the same shape as `ci.checks` and
+`pm.github` — a provider takes no checkout of its own, so a caller naming one
+repo can never be answered from another's IaC.
 
 ## What the contract does not do
 
@@ -126,6 +129,16 @@ all, all read as **not up**. The dangerous version of this component is the
 one that reports an environment ready because it found nothing obviously
 wrong; `starting` in particular is not "probably fine" — it is "ask again", so
 it is refused exactly as `unhealthy` is.
+
+This is not a promise a provider is trusted to keep: `envStatusOutput` itself
+refuses any `up` that disagrees with `environmentUp(services)`, so a provider
+reached over MCP cannot assert `up: true` past the boundary while reporting
+empty or unhealthy `services` — the mismatch is something the output schema
+cannot represent, not merely something a caller could check and forget to.
+`composeProvider`'s own `ps` call passes `--all`, for the same reason: without
+it, a stopped container disappears from `docker compose ps` entirely instead
+of being reported as not running, which would let `environmentUp` see an
+all-running set for an environment that is actually half down.
 
 ## Consumers
 

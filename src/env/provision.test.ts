@@ -118,6 +118,40 @@ describe('envUpInput / envRequestInput', () => {
   });
 });
 
+describe('envStatusOutput', () => {
+  it('rejects up: true when services disagree — a provider never asserts it independently', () => {
+    const parsed = envStatusOutput.safeParse({ env: 'test', up: true, services: [] });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects up: true when a reported service is unhealthy', () => {
+    const parsed = envStatusOutput.safeParse({
+      env: 'test',
+      up: true,
+      services: [service({ health: 'unhealthy' })],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects up: false when every reported service is actually up', () => {
+    const parsed = envStatusOutput.safeParse({
+      env: 'test',
+      up: false,
+      services: [service()],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('accepts up agreeing with environmentUp(services)', () => {
+    expect(
+      envStatusOutput.safeParse({ env: 'test', up: true, services: [service()] }).success,
+    ).toBe(true);
+    expect(
+      envStatusOutput.safeParse({ env: 'test', up: false, services: [] }).success,
+    ).toBe(true);
+  });
+});
+
 describe('envProvisionContract', () => {
   it('declares up, down and status with their DESIGN §6 effect semantics', () => {
     const names = envProvisionContract.operations.map((operation) => operation.name);
@@ -150,6 +184,37 @@ describe('envProvisionContract', () => {
     const registry = new CapabilityRegistry();
     const bound = registry.bind(envProvisionContract, {
       up: () => Promise.resolve({ env: 'test', up: 'yes', services: [] }),
+      down: () => Promise.resolve({ env: 'test', up: false, services: [] }),
+      status: () => Promise.resolve({ env: 'test', up: false, services: [] }),
+    });
+
+    await expect(bound.invoke('up', { repo: 'org/repo', env: 'test' })).rejects.toThrow(
+      ContractError,
+    );
+  });
+
+  it('refuses a provider that claims up: true with no services to back it — an MCP provider cannot assert its way past the boundary', async () => {
+    const registry = new CapabilityRegistry();
+    const bound = registry.bind(envProvisionContract, {
+      up: () => Promise.resolve({ env: 'test', up: true, services: [] }),
+      down: () => Promise.resolve({ env: 'test', up: false, services: [] }),
+      status: () => Promise.resolve({ env: 'test', up: false, services: [] }),
+    });
+
+    await expect(bound.invoke('up', { repo: 'org/repo', env: 'test' })).rejects.toThrow(
+      ContractError,
+    );
+  });
+
+  it('refuses a provider that claims up: true with an unhealthy service', async () => {
+    const registry = new CapabilityRegistry();
+    const bound = registry.bind(envProvisionContract, {
+      up: () =>
+        Promise.resolve({
+          env: 'test',
+          up: true,
+          services: [service({ health: 'unhealthy' })],
+        }),
       down: () => Promise.resolve({ env: 'test', up: false, services: [] }),
       status: () => Promise.resolve({ env: 'test', up: false, services: [] }),
     });

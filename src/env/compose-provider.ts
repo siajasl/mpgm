@@ -241,7 +241,17 @@ async function servicesOf(
   repo: string,
   entry: EnvironmentEntry,
 ): Promise<ServiceStatus[]> {
-  const result = await cli(composeArgs(entry, ['ps', '--format', 'json']), { cwd: repo });
+  // `--all`: without it, `ps` lists only running containers, so a service
+  // that has stopped simply disappears from the output instead of reading as
+  // not-up — verified against a live daemon, a two-service stack with one
+  // container stopped reports as fully up without this flag. That is exactly
+  // the "provider cannot account for a service" case `environmentUp` and
+  // `contracts/env.provision.md`'s "Failing closed" section both require to
+  // read as **not up** (CONV-4), and it is also what makes the `exited`,
+  // `dead` and `created` states in `serviceStates` reachable at all.
+  const result = await cli(composeArgs(entry, ['ps', '--all', '--format', 'json']), {
+    cwd: repo,
+  });
   if (result.code !== 0) {
     throw new ComposeProviderError(
       `'docker compose ps' for '${entry.name}' failed: ${result.stderr || result.stdout}`,
@@ -255,21 +265,27 @@ export interface ComposeProviderOptions {
   readonly cli?: ComposeCli;
 }
 
-/** A provider satisfying `envProvisionContract` against Docker Compose. */
-export function composeProvider(
-  repo: string,
-  options: ComposeProviderOptions = {},
-): Provider {
+/**
+ * A provider satisfying `envProvisionContract` against Docker Compose.
+ *
+ * Takes no `repo` at construction, and reads it from every input instead —
+ * the same shape as `githubChecksProvider` and `githubPmProvider`. A
+ * constructor-bound checkout would let a caller invoke `up` naming one repo
+ * and silently get another's IaC standing up in its place, with no signal
+ * that anything went wrong; reading `repo` per call is what
+ * `envRequestInput.repo` being declared on every operation is for.
+ */
+export function composeProvider(options: ComposeProviderOptions = {}): Provider {
   const cli = options.cli ?? dockerComposeCli;
   const manifestPath = options.manifestPath ?? DEFAULT_MANIFEST_PATH;
 
-  const entryFor = (env: string): EnvironmentEntry =>
+  const entryFor = (repo: string, env: string): EnvironmentEntry =>
     declaredEntry(loadDeclaredEnvironments(repo, manifestPath), manifestPath, env);
 
   return {
     up: async (input: never): Promise<unknown> => {
-      const { env, image } = input as EnvUpInput;
-      const entry = entryFor(env);
+      const { repo, env, image } = input as EnvUpInput;
+      const entry = entryFor(repo, env);
       const cliOptions =
         image === undefined
           ? { cwd: repo }
@@ -285,8 +301,8 @@ export function composeProvider(
     },
 
     down: async (input: never): Promise<unknown> => {
-      const { env } = input as EnvRequestInput;
-      const entry = entryFor(env);
+      const { repo, env } = input as EnvRequestInput;
+      const entry = entryFor(repo, env);
       const result = await cli(composeArgs(entry, ['down']), { cwd: repo });
       if (result.code !== 0) {
         throw new ComposeProviderError(
@@ -298,8 +314,8 @@ export function composeProvider(
     },
 
     status: async (input: never): Promise<unknown> => {
-      const { env } = input as EnvRequestInput;
-      const entry = entryFor(env);
+      const { repo, env } = input as EnvRequestInput;
+      const entry = entryFor(repo, env);
       const services = await servicesOf(cli, repo, entry);
       return { env, up: environmentUp(services), services };
     },

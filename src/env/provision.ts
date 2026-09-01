@@ -64,16 +64,42 @@ export const envUpInput = envRequestInput.extend({
 
 export type EnvUpInput = z.infer<typeof envUpInput>;
 
-export const envStatusOutput = z.object({
-  env: z.string().min(1),
-  /**
-   * Whether the environment is actually reachable — see
-   * {@link environmentUp}. Never asserted independently by a provider; every
-   * operation computes it the same way, from the same `services`.
-   */
-  up: z.boolean(),
-  services: z.array(serviceStatusSchema),
-});
+/**
+ * A provider is somebody else's process reached over MCP (`BoundContract`,
+ * `contract/capability.ts`), and `up` is exactly the claim this boundary
+ * exists to police: `contracts/env.provision.md` and {@link environmentUp}
+ * both promise `up` is never asserted independently, only computed from
+ * `services`. Refining the output schema — rather than trusting a provider to
+ * honour that promise — makes a mismatched claim something that cannot be
+ * represented as valid output at all, not merely something a caller could
+ * check and forget to (CONV-5). A provider that returns `up: true` with an
+ * empty or unhealthy `services` fails contract validation the same way a
+ * malformed shape does, closed rather than open (CONV-4).
+ */
+export const envStatusOutput = z
+  .object({
+    env: z.string().min(1),
+    /**
+     * Whether the environment is actually reachable — see
+     * {@link environmentUp}. Never asserted independently by a provider; every
+     * operation computes it the same way, from the same `services`.
+     */
+    up: z.boolean(),
+    services: z.array(serviceStatusSchema),
+  })
+  .superRefine((value, ctx) => {
+    const expected = environmentUp(value.services);
+    if (value.up !== expected) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['up'],
+        message:
+          `'up: ${String(value.up)}' disagrees with the services reported — ` +
+          `environmentUp(services) is ${String(expected)}; a provider must never ` +
+          `assert 'up' independently of 'services'`,
+      });
+    }
+  });
 
 export type EnvStatusOutput = z.infer<typeof envStatusOutput>;
 

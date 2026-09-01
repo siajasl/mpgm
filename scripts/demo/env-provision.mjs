@@ -33,7 +33,7 @@ function check(label, condition, detail = '') {
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const registry = new CapabilityRegistry();
-const bound = registry.bind(envProvisionContract, composeProvider(repo));
+const bound = registry.bind(envProvisionContract, composeProvider());
 
 try {
   process.stdout.write('\n1. Up from the committed IaC alone\n');

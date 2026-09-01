@@ -134,7 +134,7 @@ describe('composeProvider', () => {
 
   it('up brings the environment up, waits, and reports it up', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     const result = (await operation(provider, 'up')({ repo, env: 'test' } as never)) as {
       env: string;
@@ -163,7 +163,7 @@ describe('composeProvider', () => {
 
   it('up passes an image override through MPGM_SERVICE_IMAGE', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     await operation(
       provider,
@@ -175,7 +175,7 @@ describe('composeProvider', () => {
 
   it('up without an image override passes no compose env at all', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     await operation(provider, 'up')({ repo, env: 'test' } as never);
 
@@ -184,7 +184,7 @@ describe('composeProvider', () => {
 
   it('up throws when docker compose never becomes healthy — a partial success is never reported', async () => {
     const { cli } = scriptedCli([fail('container mpgm-test-service-1 is unhealthy')]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     await expect(
       operation(provider, 'up')({ repo, env: 'test' } as never),
@@ -193,7 +193,7 @@ describe('composeProvider', () => {
 
   it('down tears the environment down and reports it not up, with no services', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     const result = await operation(provider, 'down')({ repo, env: 'test' } as never);
 
@@ -212,7 +212,7 @@ describe('composeProvider', () => {
     // docker compose exits 0 on `down` even with nothing running (verified
     // against a real daemon; contracts/env.provision.md).
     const { cli } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     await expect(
       operation(provider, 'down')({ repo, env: 'test' } as never),
@@ -225,7 +225,7 @@ describe('composeProvider', () => {
 
   it('status reports the current services without invoking up or down', async () => {
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     const result = await operation(provider, 'status')({ repo, env: 'test' } as never);
 
@@ -238,11 +238,36 @@ describe('composeProvider', () => {
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args).toContain('ps');
+    // Without `--all`, `docker compose ps` lists only running containers, so a
+    // stopped service simply disappears from the output instead of reading as
+    // not-up (verified against a live daemon; contracts/env.provision.md's
+    // "Failing closed" section, CONV-4).
+    expect(calls[0]?.args).toContain('--all');
+  });
+
+  it('reports not up when one of several services has stopped — a service the CLI still lists as exited must not disappear from the up decision (fail closed)', async () => {
+    const twoServicesOneExited = [
+      '{"Service":"web","State":"running","Health":"healthy","ID":"abc123"}',
+      '{"Service":"worker","State":"exited","Health":"","ID":"def456"}',
+    ].join('\n');
+    const { cli } = scriptedCli([ok(twoServicesOneExited)]);
+    const provider = composeProvider({ cli });
+
+    const result = (await operation(
+      provider,
+      'status',
+    )({ repo, env: 'test' } as never)) as {
+      up: boolean;
+      services: unknown[];
+    };
+
+    expect(result.up).toBe(false);
+    expect(result.services).toHaveLength(2);
   });
 
   it('refuses an environment the manifest does not declare (fail closed)', async () => {
     const { cli } = scriptedCli([ok()]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     await expect(
       operation(provider, 'up')({ repo, env: 'production' } as never),
@@ -251,7 +276,7 @@ describe('composeProvider', () => {
 
   it('uses the environment-specific compose file and project for staging, not test', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider(repo, { cli });
+    const provider = composeProvider({ cli });
 
     await operation(provider, 'up')({ repo, env: 'staging' } as never);
 
@@ -263,6 +288,39 @@ describe('composeProvider', () => {
         'mpgm-staging',
       ]),
     );
+  });
+
+  it('reads the manifest and IaC named by each call, not one bound at construction', async () => {
+    // The same provider instance is invoked once per checkout, each with its
+    // own manifest declaring a differently-projected 'test' environment — a
+    // constructor-bound repo would answer both calls from whichever checkout
+    // it was built with, silently provisioning the wrong repo's IaC.
+    const otherRepo = mkdtempSync(join(tmpdir(), 'mpgm-env-provision-other-'));
+    try {
+      const otherManifest = join(otherRepo, 'deploy/environments/environments.yaml');
+      mkdirSync(dirname(otherManifest), { recursive: true });
+      writeFileSync(
+        otherManifest,
+        [
+          'environments:',
+          '  - name: test',
+          '    compose: deploy/environments/test/compose.yaml',
+          '    project: other-test',
+          '',
+        ].join('\n'),
+      );
+
+      const { cli, calls } = scriptedCli([ok(), ok(''), ok(), ok('')]);
+      const provider = composeProvider({ cli });
+
+      await operation(provider, 'up')({ repo, env: 'test' } as never);
+      await operation(provider, 'up')({ repo: otherRepo, env: 'test' } as never);
+
+      expect(calls[0]?.args).toEqual(expect.arrayContaining(['-p', 'mpgm-test']));
+      expect(calls[2]?.args).toEqual(expect.arrayContaining(['-p', 'other-test']));
+    } finally {
+      rmSync(otherRepo, { recursive: true, force: true });
+    }
   });
 });
 
