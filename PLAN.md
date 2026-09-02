@@ -1,7 +1,7 @@
 # PLAN — mpgm Build Plan
 
 **Status:** v0.4 — adds per-task model recommendations · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.30. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.31. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 
