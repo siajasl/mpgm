@@ -749,3 +749,28 @@ export {
   dockerReleaseProvider,
   ReleaseProviderError,
 } from './release/docker-provider.js';
+export type {
+  CheckResult,
+  Fetcher,
+  HealthPolicy,
+  ReleaseDecision,
+  ReleaseOutcome,
+  RunSmokeChecksDeps,
+  SmokeCheck,
+  SmokeResponse,
+  VerifyReleaseDeps,
+  VerifyReleaseInput,
+} from './release/verify.js';
+export {
+  checkResultSchema,
+  DEFAULT_HEALTH_POLICY,
+  healthPolicySchema,
+  isHealthy,
+  releaseDecisions,
+  releaseOutcomeSchema,
+  runSmokeChecks,
+  smokeCheckSchema,
+  verifyRelease,
+  verifyReleaseInput,
+} from './release/verify.js';
+export { readOutcomes, recordOutcome } from './release/outcome-log.js';

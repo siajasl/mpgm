@@ -29,8 +29,9 @@ rollout mechanics." `release.deliver` is the "supplies release artifacts" and
 
 - **Decide whether to deliver or roll back.** That is DEP-2/DEP-5 policy —
   health verification, promote/rollback decisions, and outcome artifacts —
-  landing at T4.1.3. This contract executes a delivery or a rollback once
-  something else (a playbook, an operator, T4.1.3's policy) has decided which.
+  [`src/release/verify.ts`](../src/release/verify.ts) (T4.1.3), not this
+  contract. This contract executes a delivery or a rollback once something
+  else (a playbook, an operator, `verifyRelease`) has decided which.
 - **Run progressive delivery.** Canary or percentage rollout is DEP-2's SHOULD
   half. The reference provider delegates through `env.provision`, whose
   reference substrate is Docker Compose (DESIGN §9 decision 8) — an
@@ -167,3 +168,7 @@ represent (CONV-4, CONV-5).
 - `scripts/demo/release-deliver.mjs` — this task's own verification: two
   releases of the sample service delivered in turn, and a rollback to the
   first, all confirmed against what the environment actually serves.
+- [`src/release/verify.ts`](../src/release/verify.ts) (T4.1.3) — health
+  verification and promote/rollback decisions, calling this contract's
+  `rollback` once its own smoke checks decide a delivered release is not
+  what it should be.
