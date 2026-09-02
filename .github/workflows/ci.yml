@@ -111,6 +111,12 @@ jobs:
       - name: env.provision against the committed IaC
         run: npm run demo:env
 
+      # T4.1.2: two real releases of the sample service, delivered in turn,
+      # and a rollback to the first — a staged release with a tested
+      # rollback path (DEP-2, DEP-3). Same Docker daemon as demo:env above.
+      - name: release.deliver — staged release with a tested rollback
+        run: npm run demo:release
+
   scan:
     name: scan
     runs-on: ubuntu-latest
