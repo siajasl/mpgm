@@ -92,10 +92,18 @@ one place every provider MUST build the artifact through, so a provider's own
 idea of what came before can never diverge from what the caller actually
 asked to supersede.
 
-Rebuilding an unchanged tree under the same build args reproduces the same
-digest (DESIGN §9 decision 9), so a repeated `assemble` call does not mint a
-second, competing artifact for what is really one build — that is what makes
-`idempotent` an honest label here rather than a hopeful one.
+Rebuilding an unchanged tree under the same build args reuses the cached
+image on the machine that built it — but only while that cache is warm. A
+cold rebuild (a fresh runner, or a cache that has been pruned) produces a
+*different* digest for the same tree and build args; `docker build` makes no
+reproducibility promise across machines or cache states, and DESIGN §9
+decision 9 does not claim one either — it says only that a digest names one
+build of one tree. `effects: 'idempotent'` here is therefore the kernel's own
+definition (`src/effect/contract.ts`: re-running is harmless, so retry
+without asking), not digest equality: a resumed `assemble` either lands the
+same artifact (warm cache) or mints a new one for the same version and
+changelog (cold cache) — either is a safe outcome of retrying, which is what
+the label actually promises.
 
 ### `deliver`
 

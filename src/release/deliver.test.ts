@@ -137,6 +137,7 @@ describe('releaseAssembleInput', () => {
         image: 'mpgm-sample-service',
         version: '1.0.0',
         changelog: '',
+        previous: null,
       }).success,
     ).toBe(false);
   });

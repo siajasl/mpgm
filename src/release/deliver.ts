@@ -187,9 +187,14 @@ export const releaseDeliverContract: ContractSpec = {
         'versioned release artifact a caller can deliver or roll back to.',
       input: releaseAssembleInput,
       output: releaseArtifactSchema,
-      // Rebuilding an unchanged tree under the same build args reproduces
-      // the same digest (decision 9) — re-running does not mint a second,
-      // competing artifact for what is really one build.
+      // 'idempotent' on the kernel's definition (re-running is harmless),
+      // not on digest equality: a rebuild reuses the cached image on the
+      // machine that built it, but a cold rebuild (no local cache — a fresh
+      // runner, or one after a prune) produces a different digest for an
+      // unchanged tree. A resumed `assemble` therefore either lands the same
+      // artifact (warm cache) or a new one naming the same version and
+      // changelog (cold cache) — never a caller-visible failure, and never a
+      // reason to withhold the retry.
       effects: 'idempotent',
     },
     {
