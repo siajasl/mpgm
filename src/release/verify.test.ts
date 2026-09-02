@@ -250,4 +250,69 @@ describe('verifyRelease', () => {
     expect(outcome.decision).toBe('rollback-failed');
     expect(outcome.rolledBackTo).toBeNull();
   });
+
+  it('reports rollback-failed, with the underlying error, rather than throwing when rollback itself rejects', async () => {
+    // The ordinary failure mode of a real release.deliver#rollback provider
+    // (a docker/compose failure, or releaseStatusOutput's own superRefine
+    // refusing an inconsistent 'up') is a thrown error. Nothing should
+    // escape verifyRelease as an unhandled rejection here — the whole point
+    // of 'rollback-failed' is to give this exact case a recorded outcome
+    // (DEP-5), not let it vanish before one is produced.
+    const fetcher: Fetcher = () => Promise.resolve(response(200, 'still serving 1.0.0'));
+    const rollback = vi.fn(() =>
+      Promise.reject(new Error('compose up: connection refused')),
+    );
+    const outcome = await verifyRelease(
+      {
+        env: 'test',
+        release,
+        checks: [check()],
+        previous: { artifact: previousArtifact, checks: previousChecks },
+        policy: { attempts: 1, intervalMs: 0 },
+      },
+      { fetcher, sleep: noSleep, rollback },
+    );
+
+    expect(rollback).toHaveBeenCalledWith(previousArtifact);
+    expect(outcome.decision).toBe('rollback-failed');
+    expect(outcome.rolledBackTo).toBeNull();
+    expect(outcome.reason).toContain('compose up: connection refused');
+    expect(releaseOutcomeSchema.safeParse(outcome).success).toBe(true);
+  });
+
+  it('re-verifies the previous release against the environment the rollback actually left behind, not before', async () => {
+    // The candidate check (expects '2.0.0') is never satisfied by either
+    // response below, so it fails regardless of ordering — that part alone
+    // cannot tell a correct implementation from one that re-verifies too
+    // early. The previous release's check (expects '1.0.0') is what pins
+    // the ordering: it only passes once `rollback` has actually been
+    // called. An implementation that ran `previous.checks` before calling
+    // `rollback` (or against a stale response) would see the environment
+    // still broken and report 'rollback-failed' instead.
+    let rolledBack = false;
+    const rollback = vi.fn(() => {
+      rolledBack = true;
+      return Promise.resolve({ up: true });
+    });
+    const fetcher: Fetcher = () =>
+      Promise.resolve(
+        rolledBack
+          ? response(200, 'restored: now serving 1.0.0 again')
+          : response(200, 'broken: serving neither version'),
+      );
+    const outcome = await verifyRelease(
+      {
+        env: 'test',
+        release,
+        checks: [check()], // expects '2.0.0'
+        previous: { artifact: previousArtifact, checks: previousChecks }, // expects '1.0.0'
+        policy: { attempts: 1, intervalMs: 0 },
+      },
+      { fetcher, sleep: noSleep, rollback },
+    );
+
+    expect(rollback).toHaveBeenCalledWith(previousArtifact);
+    expect(outcome.decision).toBe('rolled-back');
+    expect(outcome.rolledBackTo).toEqual({ version: '1.0.0', digest: 'sha256:aaa' });
+  });
 });

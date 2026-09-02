@@ -297,7 +297,33 @@ export async function verifyRelease(
     });
   }
 
-  await deps.rollback(parsed.previous.artifact);
+  try {
+    await deps.rollback(parsed.previous.artifact);
+  } catch (cause) {
+    // The ordinary failure mode of a `release.deliver#rollback` provider
+    // (a compose/docker failure, or `releaseStatusOutput`'s own superRefine
+    // refusing an inconsistent 'up') is a thrown error, not a rejected
+    // status. Left unguarded that error would propagate out of
+    // `verifyRelease` itself, so the one case DEP-5's record matters most —
+    // rollback did not work either — would produce no outcome at all
+    // instead of the `rollback-failed` decision that exists for it
+    // (CONV-4: fail closed toward a recorded decision, never toward
+    // silence). `cause`'s message is folded into `reason` so an operator
+    // reading the outcome log can act on why the rollback failed without
+    // having to go find and re-run it themselves (CONV-3).
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return releaseOutcomeSchema.parse({
+      env: parsed.env,
+      release: parsed.release,
+      decision: 'rollback-failed',
+      reason:
+        `smoke check(s) failed (${failing}); rolling back to ` +
+        `${parsed.previous.artifact.version} failed before it could even be verified: ${message}`,
+      checks: results,
+      rolledBackTo: null,
+      verifiedAt: now(),
+    });
+  }
   const rollbackResults = await runSmokeChecks(
     parsed.previous.checks,
     parsed.policy,

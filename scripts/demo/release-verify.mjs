@@ -9,12 +9,16 @@
  * checks a real SLO would use, against a real `docker compose` stack the
  * same way `demo:release` is.
  *
- * The regression is real, not simulated: the second release is built and
- * delivered exactly like the first, but its image still serves the first
- * release's content — a packaging bug that leaves `env.provision` fully
- * healthy (the container runs fine) while the service itself is wrong,
- * which is exactly the gap DEP-5's smoke checks exist to catch that a
- * container healthcheck cannot.
+ * The regression is real, not simulated: the second release is a genuinely
+ * distinct image (a different `APP_VERSION` build arg, so a different
+ * digest — never docker's build cache handing back v1's own image id) that
+ * is tagged 2.0.0 but never actually serves 2.0.0 content, a real packaging
+ * bug that leaves `env.provision` fully healthy (the container runs fine)
+ * while the service itself is wrong — exactly the gap DEP-5's smoke checks
+ * exist to catch that a container healthcheck cannot. Because v2 is a real,
+ * distinct image, delivering it and rolling back from it are real state
+ * changes on the environment, not no-ops the assertions below could not
+ * tell from doing nothing.
  *
  * Requires a Docker daemon, the same as `demo:env` and `demo:release`.
  */
@@ -98,19 +102,28 @@ try {
   process.stdout.write(
     '\n2. Deliver a second release that never actually took effect (the induced regression)\n',
   );
-  // Built and tagged as 2.0.0, but its content still says 1.0.0 — a real
-  // packaging bug, not a flag this script flips. `env.provision` reports the
-  // container running and healthy either way; only a content-level smoke
-  // check can tell the difference.
+  // Tagged 2.0.0, but a real packaging bug — not a flag this script flips —
+  // means the content baked in is 'regressed', not '2.0.0'. `APP_VERSION`
+  // differs from v1's build arg (v1 used '1.0.0') on purpose: an unchanged
+  // build arg would let docker's build cache hand back v1's own image id, so
+  // v2 would never be a distinct image and rolling back to v1 would be a
+  // no-op the environment could not tell from doing nothing (asserted below).
+  // `env.provision` reports the container running and healthy either way;
+  // only a content-level smoke check can tell the difference.
   const v2 = await release.invoke('assemble', {
     repo,
     context: 'deploy/sample-service',
     image: 'mpgm-sample-service',
     version: '2.0.0',
     changelog: 'Second release of the sample service.',
-    buildArgs: { APP_VERSION: '1.0.0' },
+    buildArgs: { APP_VERSION: 'regressed' },
     previous: { version: v1.version, digest: v1.digest },
   });
+  check(
+    'v2 is a genuinely different image, not v1 handed back under a new tag',
+    v2.digest !== v1.digest,
+    `${v1.digest} vs ${v2.digest}`,
+  );
   const delivered2 = await release.invoke('deliver', { repo, env: 'test', release: v2 });
   check(
     'env.provision reports the regressed release up — its container is fine',
@@ -120,8 +133,10 @@ try {
 
   const servedRegressed = await content();
   check(
-    'the environment is serving the regression right now, before verification runs',
-    servedRegressed.ok && servedRegressed.text.includes('1.0.0'),
+    'the environment is serving the regression right now, before verification runs — not 1.0.0',
+    servedRegressed.ok &&
+      servedRegressed.text.includes('regressed') &&
+      !servedRegressed.text.includes('1.0.0'),
     servedRegressed.text.slice(0, 80),
   );
 
@@ -159,7 +174,9 @@ try {
   const servedAfterRollback = await content();
   check(
     'the environment is actually serving 1.0.0 again, not merely reported as such',
-    servedAfterRollback.ok && servedAfterRollback.text.includes('1.0.0'),
+    servedAfterRollback.ok &&
+      servedAfterRollback.text.includes('1.0.0') &&
+      !servedAfterRollback.text.includes('regressed'),
     servedAfterRollback.text.slice(0, 80),
   );
 
