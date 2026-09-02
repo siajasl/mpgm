@@ -116,6 +116,41 @@ describe('runSmokeChecks', () => {
     expect(results[0]?.ok).toBe(false);
     expect(results[0]?.detail).toContain('ECONNREFUSED');
   });
+
+  it('carries the check URL and the underlying cause into detail — undici reports only "fetch failed" itself (CONV-3)', async () => {
+    const transportError = new Error('fetch failed', {
+      cause: new Error('connect ECONNREFUSED 127.0.0.1:8099'),
+    });
+    const fetcher: Fetcher = () => Promise.reject(transportError);
+    const results = await runSmokeChecks(
+      [check({ url: 'http://127.0.0.1:8099/' })],
+      { attempts: 1, intervalMs: 0 },
+      { fetcher, sleep: noSleep },
+    );
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.detail).toContain('http://127.0.0.1:8099/');
+    expect(results[0]?.detail).toContain('fetch failed');
+    expect(results[0]?.detail).toContain('connect ECONNREFUSED 127.0.0.1:8099');
+  });
+
+  it('names the timeout and the check URL when a check is aborted, not just "This operation was aborted" (CONV-3)', async () => {
+    const fetcher: Fetcher = (_url, options) =>
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          const abortError = new Error('This operation was aborted');
+          abortError.name = 'AbortError';
+          reject(abortError);
+        });
+      });
+    const results = await runSmokeChecks(
+      [check({ url: 'http://127.0.0.1:8099/', timeoutMs: 5 })],
+      { attempts: 1, intervalMs: 0 },
+      { fetcher, sleep: noSleep },
+    );
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.detail).toContain('http://127.0.0.1:8099/');
+    expect(results[0]?.detail).toContain('5ms');
+  });
 });
 
 describe('isHealthy', () => {
@@ -135,6 +170,58 @@ describe('isHealthy', () => {
         { name: 'a', ok: true, detail: '' },
         { name: 'b', ok: false, detail: 'nope' },
       ]),
+    ).toBe(false);
+  });
+});
+
+describe('releaseOutcomeSchema', () => {
+  function outcome(
+    overrides: Partial<Record<string, unknown>> = {},
+  ): Record<string, unknown> {
+    return {
+      env: 'test',
+      release: { version: '2.0.0', digest: 'sha256:bbb' },
+      decision: 'promoted',
+      reason: 'all 1 smoke check(s) passed',
+      checks: [{ name: 'homepage', ok: true, detail: '' }],
+      rolledBackTo: null,
+      verifiedAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('accepts a self-consistent promoted outcome', () => {
+    expect(releaseOutcomeSchema.safeParse(outcome()).success).toBe(true);
+  });
+
+  it('rejects an empty checks array — nothing verified backs no decision (CONV-4, CONV-5)', () => {
+    expect(releaseOutcomeSchema.safeParse(outcome({ checks: [] })).success).toBe(false);
+  });
+
+  it("rejects decision: 'rolled-back' with rolledBackTo: null — a rollback that names nothing did not happen (CONV-5)", () => {
+    expect(
+      releaseOutcomeSchema.safeParse(
+        outcome({ decision: 'rolled-back', rolledBackTo: null }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects decision: 'promoted' with a non-null rolledBackTo — promotion and rollback cannot both be true (CONV-5)", () => {
+    expect(
+      releaseOutcomeSchema.safeParse(
+        outcome({
+          decision: 'promoted',
+          rolledBackTo: { version: '1.0.0', digest: 'sha256:aaa' },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects decision: 'promoted' alongside a failing check — the outcome would contradict its own evidence (CONV-5)", () => {
+    expect(
+      releaseOutcomeSchema.safeParse(
+        outcome({ checks: [{ name: 'homepage', ok: false, detail: 'boom' }] }),
+      ).success,
     ).toBe(false);
   });
 });

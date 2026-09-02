@@ -99,17 +99,59 @@ export type ReleaseDecision = (typeof releaseDecisions)[number];
 /**
  * DEP-5's "record the outcome as a release artifact" — the single record a
  * verification run produces, whichever way it went.
+ *
+ * The three fields that carry the decision's own claim — `checks`,
+ * `decision`, `rolledBackTo` — are cross-checked by `superRefine` rather than
+ * left for a caller to keep consistent by convention (CONV-5): an empty
+ * `checks` cannot back any decision, `rolledBackTo` can be non-null only
+ * when `decision` is `'rolled-back'` (and must be, when it is), and
+ * `'promoted'` cannot coexist with a failing check. Without this a producer
+ * other than `verifyRelease` — `recordOutcome` is exported for exactly that —
+ * could construct an outcome that asserts a rollback independently of what
+ * `checks` shows, the same class of self-contradiction
+ * `releaseStatusOutput`'s own `superRefine` refuses for `up`/`services`
+ * (CONV-4).
  */
-export const releaseOutcomeSchema = z.object({
-  env: z.string().min(1),
-  release: releaseRefSchema,
-  decision: z.enum(releaseDecisions),
-  reason: z.string().min(1),
-  checks: z.array(checkResultSchema),
-  /** The release now live, if a rollback happened; `null` otherwise. */
-  rolledBackTo: releaseRefSchema.nullable(),
-  verifiedAt: z.string().min(1),
-});
+export const releaseOutcomeSchema = z
+  .object({
+    env: z.string().min(1),
+    release: releaseRefSchema,
+    decision: z.enum(releaseDecisions),
+    reason: z.string().min(1),
+    checks: z.array(checkResultSchema).min(1),
+    /** The release now live, if a rollback happened; `null` otherwise. */
+    rolledBackTo: releaseRefSchema.nullable(),
+    verifiedAt: z.string().min(1),
+  })
+  .superRefine((value, ctx) => {
+    if (value.decision === 'rolled-back' && value.rolledBackTo === null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['rolledBackTo'],
+        message:
+          "decision: 'rolled-back' requires 'rolledBackTo' to name the release now live — " +
+          'an outcome cannot claim a rollback happened without saying what it rolled back to',
+      });
+    }
+    if (value.decision !== 'rolled-back' && value.rolledBackTo !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['rolledBackTo'],
+        message:
+          `'rolledBackTo' is set but decision is '${value.decision}', not 'rolled-back' — ` +
+          'only a rollback that actually happened may name what it rolled back to',
+      });
+    }
+    if (value.decision === 'promoted' && !isHealthy(value.checks)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['decision'],
+        message:
+          "decision: 'promoted' disagrees with 'checks' — at least one check did not pass, " +
+          'so this outcome cannot also claim promotion',
+      });
+    }
+  });
 
 export type ReleaseOutcome = z.infer<typeof releaseOutcomeSchema>;
 
@@ -129,6 +171,31 @@ const defaultFetcher: Fetcher = (url, options) => fetch(url, { signal: options.s
 
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Turns a thrown `fetch` failure into something an operator can act on
+ * without reading this module (CONV-3). Bare `cause.message` is not that:
+ * undici reports an unreachable host as exactly `fetch failed`, with the
+ * actionable part (`connect ECONNREFUSED ...`) only on `cause.cause`, and a
+ * `timeoutMs` abort reports `This operation was aborted`, naming neither the
+ * URL nor the timeout that triggered it. `check.url` is always included;
+ * `check.timeoutMs` is added for an abort specifically, since that is the
+ * one failure mode this function itself causes and the message otherwise
+ * gives no reason for it.
+ */
+function describeFetchFailure(check: SmokeCheck, cause: unknown): string {
+  if (!(cause instanceof Error)) {
+    return `GET ${check.url} failed: ${String(cause)}`;
+  }
+  const underlying = cause.cause instanceof Error ? `: ${cause.cause.message}` : '';
+  if (cause.name === 'AbortError') {
+    return (
+      `GET ${check.url} timed out after ${String(check.timeoutMs)}ms: ` +
+      `${cause.message}${underlying}`
+    );
+  }
+  return `GET ${check.url} failed: ${cause.message}${underlying}`;
+}
 
 async function attemptOnce(check: SmokeCheck, fetcher: Fetcher): Promise<CheckResult> {
   const controller = new AbortController();
@@ -157,7 +224,7 @@ async function attemptOnce(check: SmokeCheck, fetcher: Fetcher): Promise<CheckRe
     return {
       name: check.name,
       ok: false,
-      detail: cause instanceof Error ? cause.message : String(cause),
+      detail: describeFetchFailure(check, cause),
     };
   } finally {
     clearTimeout(timeout);
