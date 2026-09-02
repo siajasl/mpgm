@@ -1,0 +1,5 @@
+# Same shape as `test`'s (`deploy/environments/test/compose.release.yaml`) —
+# see that file for why this exists.
+services:
+  service:
+    volumes: !override []

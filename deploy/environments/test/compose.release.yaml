@@ -1,0 +1,15 @@
+# Applied on top of `compose.yaml` only when `env.provision#up` is given an
+# explicit `image` (`environments.yaml`'s `releaseOverride`, DEP-3,
+# `release.deliver`, T4.1.2).
+#
+# `compose.yaml`'s bind mount of `./html` exists so the *default* placeholder
+# nginx image has something to serve; left in place under a delivered
+# release, it would keep serving that placeholder over whatever the
+# delivered image actually contains, and a release could report `up: true`
+# while nothing about what it changed was observable. `!override` (the
+# Compose specification's merge-override tag) replaces the base file's
+# `volumes` list rather than concatenating into it — verified against a live
+# daemon: without it, compose keeps the mount and the placeholder wins.
+services:
+  service:
+    volumes: !override []

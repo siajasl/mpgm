@@ -55,6 +55,20 @@ const environmentEntrySchema = z.object({
   compose: z.string().min(1),
   /** The `docker compose` project name — what keys the stack (DEP-1, DEP-4). */
   project: z.string().min(1),
+  /**
+   * A compose file applied *in addition to* `compose`, only on `up` calls
+   * that carry an explicit `image` (DEP-3, `release.deliver`, T4.1.2).
+   *
+   * `compose`'s own default service bind-mounts a placeholder page over
+   * whatever the container image serves, which is exactly right for an
+   * environment nobody has pointed at a real release yet but would silently
+   * keep serving the placeholder underneath a delivered image otherwise — a
+   * release reporting `up: true` while nothing about what it changed is
+   * observable. This file's job is narrow: undo just that mount (Compose's
+   * `!override` tag) when a caller actually supplied an image to run.
+   * Optional — an environment with nothing to undo declares none.
+   */
+  releaseOverride: z.string().min(1).optional(),
 });
 
 export type EnvironmentEntry = z.infer<typeof environmentEntrySchema>;
@@ -232,8 +246,21 @@ export function parseComposePs(stdout: string): ServiceStatus[] {
   });
 }
 
-function composeArgs(entry: EnvironmentEntry, extra: readonly string[]): string[] {
-  return ['compose', '-f', entry.compose, '-p', entry.project, ...extra];
+function composeArgs(
+  entry: EnvironmentEntry,
+  extra: readonly string[],
+  options: { readonly includeReleaseOverride?: boolean } = {},
+): string[] {
+  const files = ['-f', entry.compose];
+  // `ps`/`down` never need the override (a project's containers are found by
+  // `-p`, not by which compose files last described them — verified against
+  // a live daemon, `docker compose down` with only the base file tears down
+  // a stack `up` brought up with the override applied) — only `up` decides
+  // what should be running, so only `up` opts in.
+  if (options.includeReleaseOverride === true && entry.releaseOverride !== undefined) {
+    files.push('-f', entry.releaseOverride);
+  }
+  return ['compose', ...files, '-p', entry.project, ...extra];
 }
 
 async function servicesOf(
@@ -290,7 +317,12 @@ export function composeProvider(options: ComposeProviderOptions = {}): Provider 
         image === undefined
           ? { cwd: repo }
           : { cwd: repo, env: { MPGM_SERVICE_IMAGE: image } };
-      const result = await cli(composeArgs(entry, ['up', '-d', '--wait']), cliOptions);
+      const result = await cli(
+        composeArgs(entry, ['up', '-d', '--wait'], {
+          includeReleaseOverride: image !== undefined,
+        }),
+        cliOptions,
+      );
       if (result.code !== 0) {
         throw new ComposeProviderError(
           `'docker compose up' for '${env}' did not become healthy: ${result.stderr || result.stdout}`,
