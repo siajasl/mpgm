@@ -74,12 +74,18 @@ export const releaseAssembleInput = z.object({
    */
   buildArgs: z.record(z.string(), z.string()).default({}),
   /**
-   * The release this one supersedes, if any. Absent only for an
-   * environment's very first release — `assemble` copies it straight into
-   * the output's `rollbackTo` (see {@link nextRelease}), it does not
-   * reconstruct it independently.
+   * The release this one supersedes, or `null` if there is none — a caller
+   * MUST say which, explicitly. `null` is not a default a forgotten field
+   * falls into; it is an assertion the caller makes, the same way a first
+   * release's `rollbackTo: null` is an assertion in the output artifact
+   * (CONV-5). A schema default here would make "no rollback path" the
+   * outcome of omitting a field rather than of stating one is actually
+   * absent, which is exactly the DEP-3 obligation this field exists to
+   * cover — so there is no default, and parsing without it fails.
+   * `assemble` copies this straight into the output's `rollbackTo` (see
+   * {@link nextRelease}); it does not reconstruct it independently.
    */
-  previous: releaseRefSchema.nullable().default(null),
+  previous: releaseRefSchema.nullable(),
 });
 
 export type ReleaseAssembleInput = z.infer<typeof releaseAssembleInput>;
