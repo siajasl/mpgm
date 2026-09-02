@@ -71,7 +71,7 @@ there is nothing yet to name.
 
 | | |
 |---|---|
-| Input | `{ repo, context, dockerfile?, image, version, changelog, buildArgs, previous? }` |
+| Input | `{ repo, context, dockerfile?, image, version, changelog, buildArgs, previous }` |
 | Output | the release artifact above |
 | Effects | `idempotent` |
 
@@ -83,10 +83,14 @@ Dockerfile's build args are called, the same boundary `env.provision`'s
 `image` override draws around what actually runs (`contracts/
 env.provision.md`).
 
-`previous`, when given, is copied straight into the output's `rollbackTo` —
-see `nextRelease` in `src/release/deliver.ts`, the one place every provider
-MUST build the artifact through, so a provider's own idea of what came before
-can never diverge from what the caller actually asked to supersede.
+`previous` is required — `null` for an environment's first release, the ref
+being superseded otherwise — and has no default, so a caller cannot omit it
+and land a release with no rollback path by accident; forgetting it is a
+validation error, not a silent `rollbackTo: null`. It is copied straight into
+the output's `rollbackTo` — see `nextRelease` in `src/release/deliver.ts`, the
+one place every provider MUST build the artifact through, so a provider's own
+idea of what came before can never diverge from what the caller actually
+asked to supersede.
 
 Rebuilding an unchanged tree under the same build args reproduces the same
 digest (DESIGN §9 decision 9), so a repeated `assemble` call does not mint a

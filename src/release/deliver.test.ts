@@ -92,16 +92,41 @@ describe('nextRelease', () => {
 });
 
 describe('releaseAssembleInput', () => {
-  it('defaults buildArgs to empty and previous to null', () => {
+  it('defaults buildArgs to empty', () => {
     const parsed = releaseAssembleInput.parse({
       repo: 'org/repo',
       context: 'deploy/sample-service',
       image: 'mpgm-sample-service',
       version: '1.0.0',
       changelog: 'Initial release.',
+      previous: null,
     });
     expect(parsed.buildArgs).toEqual({});
+  });
+
+  it('accepts an explicit previous: null for a first release', () => {
+    const parsed = releaseAssembleInput.parse({
+      repo: 'org/repo',
+      context: 'deploy/sample-service',
+      image: 'mpgm-sample-service',
+      version: '1.0.0',
+      changelog: 'Initial release.',
+      previous: null,
+    });
     expect(parsed.previous).toBeNull();
+  });
+
+  it('rejects an omitted previous — a rollback path is stated, not defaulted (CONV-5)', () => {
+    expect(
+      releaseAssembleInput.safeParse({
+        repo: 'org/repo',
+        context: 'deploy/sample-service',
+        image: 'mpgm-sample-service',
+        version: '1.0.0',
+        changelog: 'Initial release.',
+        // previous omitted deliberately — must fail, not default to null.
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects a request with no changelog', () => {
