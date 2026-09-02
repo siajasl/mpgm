@@ -65,3 +65,4 @@ not passed through — the placeholder is never quietly resolved to nothing.
 | `pm.github` | [pm.github.md](pm.github.md) | T3.1.7 |
 | `test.nfr` | [test.nfr.md](test.nfr.md) | T3.2.1 |
 | `env.provision` | [env.provision.md](env.provision.md) | T4.1.1 |
+| `release.deliver` | [release.deliver.md](release.deliver.md) | T4.1.2 |

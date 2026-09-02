@@ -721,3 +721,31 @@ export {
   parseComposePs,
   UndeclaredEnvironmentError,
 } from './env/compose-provider.js';
+export type {
+  ReleaseArtifact,
+  ReleaseAssembleInput,
+  ReleaseDeliverInput,
+  ReleaseRef,
+  ReleaseRollbackInput,
+  ReleaseStatusOutput,
+} from './release/deliver.js';
+export {
+  nextRelease,
+  releaseArtifactSchema,
+  releaseAssembleInput,
+  releaseDeliverContract,
+  releaseDeliverInput,
+  releaseRefSchema,
+  releaseRollbackInput,
+  releaseStatusOutput,
+} from './release/deliver.js';
+export type {
+  DockerCli,
+  DockerCliResult,
+  DockerReleaseProviderOptions,
+} from './release/docker-provider.js';
+export {
+  dockerCli,
+  dockerReleaseProvider,
+  ReleaseProviderError,
+} from './release/docker-provider.js';
