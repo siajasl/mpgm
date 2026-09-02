@@ -73,7 +73,16 @@ every operation by something stable.
 `image`, when given, overrides whatever image the environment's compose file
 defaults to. Absent, the default runs — which is what lets the IaC alone
 stand up a real environment before any release artifact exists to point it at
-(this task's own completion criterion).
+(this task's own completion criterion). This project's own manifest declares
+a `releaseOverride` compose file per environment, applied on top of the base
+one only when `image` is given (`environments.yaml`,
+`deploy/environments/*/compose.release.yaml`) — the reference provider's own
+default service bind-mounts a placeholder page that would otherwise keep
+serving itself over whatever a delivered image contains. That mapping is
+project configuration, the same way which environment names are legal is
+(EXT-2/3): the contract itself only ever asks for `image` to be honoured,
+never for a particular way of arranging a compose file to honour it. See
+`contracts/release.deliver.md` for the delivery this makes observable.
 
 `services` is one entry per service the environment's compose file declares:
 `{ name, state, health, containerId }`. `state` is one of `running`,

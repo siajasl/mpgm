@@ -55,6 +55,7 @@ function seedManifest(): void {
       '  - name: test',
       '    compose: deploy/environments/test/compose.yaml',
       '    project: mpgm-test',
+      '    releaseOverride: deploy/environments/test/compose.release.yaml',
       '  - name: staging',
       '    compose: deploy/environments/staging/compose.yaml',
       '    project: mpgm-staging',
@@ -71,6 +72,7 @@ describe('loadDeclaredEnvironments', () => {
         name: 'test',
         compose: 'deploy/environments/test/compose.yaml',
         project: 'mpgm-test',
+        releaseOverride: 'deploy/environments/test/compose.release.yaml',
       },
       {
         name: 'staging',
@@ -180,6 +182,68 @@ describe('composeProvider', () => {
     await operation(provider, 'up')({ repo, env: 'test' } as never);
 
     expect(calls[0]?.env).toBeUndefined();
+  });
+
+  it('up with an image override applies the declared releaseOverride compose file too', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({ cli });
+
+    await operation(
+      provider,
+      'up',
+    )({ repo, env: 'test', image: 'registry/app:7' } as never);
+
+    expect(calls[0]?.args).toEqual([
+      'compose',
+      '-f',
+      'deploy/environments/test/compose.yaml',
+      '-f',
+      'deploy/environments/test/compose.release.yaml',
+      '-p',
+      'mpgm-test',
+      'up',
+      '-d',
+      '--wait',
+    ]);
+  });
+
+  it('up without an image override never applies the releaseOverride file', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({ cli });
+
+    await operation(provider, 'up')({ repo, env: 'test' } as never);
+
+    expect(calls[0]?.args).not.toContain('deploy/environments/test/compose.release.yaml');
+  });
+
+  it('up with an image override but no declared releaseOverride still runs, on the base file alone', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({ cli });
+
+    await operation(
+      provider,
+      'up',
+    )({ repo, env: 'staging', image: 'registry/app:7' } as never);
+
+    expect(calls[0]?.args).toEqual([
+      'compose',
+      '-f',
+      'deploy/environments/staging/compose.yaml',
+      '-p',
+      'mpgm-staging',
+      'up',
+      '-d',
+      '--wait',
+    ]);
+  });
+
+  it('down never applies the releaseOverride file — a project is torn down by name, not by config', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok('')]);
+    const provider = composeProvider({ cli });
+
+    await operation(provider, 'down')({ repo, env: 'test' } as never);
+
+    expect(calls[0]?.args).not.toContain('deploy/environments/test/compose.release.yaml');
   });
 
   it('up throws when docker compose never becomes healthy — a partial success is never reported', async () => {
