@@ -128,8 +128,16 @@ try {
   );
 
   process.stdout.write(
-    '\n6. Reassembling an unchanged release reproduces the same digest\n',
+    '\n6. Reassembling with a warm build cache reuses the same digest\n',
   );
+  // This is a warm-cache observation, not a reproducibility guarantee: it
+  // shows only that `docker build` reused its own cached layers on *this*
+  // machine, which is why `assemble` is safe to retry (`effects:
+  // 'idempotent'`). A cold cache (a fresh runner, or one after a prune)
+  // would rebuild this same tree and args to a *different* digest — see
+  // `contracts/release.deliver.md` — so this step is not proof of the
+  // stronger, false claim that an unchanged tree always reproduces its
+  // digest.
   const v1Again = await release.invoke('assemble', {
     repo,
     context: 'deploy/sample-service',
@@ -140,7 +148,7 @@ try {
     previous: null,
   });
   check(
-    'the same tree and build args produce the same immutable digest',
+    'the same tree and build args reuse the same digest with a warm cache',
     v1Again.digest === v1.digest,
     `${v1.digest} vs ${v1Again.digest}`,
   );
