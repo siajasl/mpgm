@@ -8,6 +8,7 @@ import {
   intervene,
   reopen,
   replay,
+  rollback,
   run,
   serve,
   status,
@@ -19,7 +20,7 @@ import {
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: sixteen verbs and a handful of flags. A CLI framework would
+ * Deliberately small: seventeen verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -39,6 +40,7 @@ export const VERBS = [
   'implement',
   'reopen',
   'chat',
+  'rollback',
   'trace',
   'replay',
 ] as const;
@@ -61,6 +63,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm implement <task> --repo <owner/name> [--into <path>] [--run <id>]
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
+  mpgm rollback <artifact> --repo <path> --env <e> --by <who> [--reason <s>] [--run <id>]
   mpgm trace <id> | --coverage | --dangling
   mpgm replay [--run <id>]             re-derive state from the log alone
 `;
@@ -197,6 +200,17 @@ export async function runCli(
         require('--by', flags.by),
         require('--evidence', flags.evidence),
         flags.note ?? '',
+      );
+
+    case 'rollback':
+      return rollback(
+        context,
+        runId,
+        require('a release artifact path', positional[0]),
+        require('--repo', flags.repo),
+        require('--env', flags.env),
+        require('--by', flags.by),
+        flags.reason ?? '',
       );
 
     case 'trace':

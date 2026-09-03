@@ -20,6 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ArtifactStore,
+  deployFingerprint,
   EventLog,
   fingerprint,
   kernelRegistry,
@@ -518,6 +519,131 @@ try {
     'a simulated call can be confirmed, and says by whom',
     confirmed.result.ok && confirmed.output.includes('confirmed by macg'),
     confirmed.output,
+  );
+
+  // rollback — DESIGN §9 decision 10/11, HIL-2, T4.1.4. `production` is
+  // gated the same fingerprint/dry-run/confirm way a destructive tool call
+  // is, reused directly in front of `release.deliver#rollback` rather than
+  // through the `PreToolUse` hook — a deploy never arrives as a tool call.
+  // This workspace declares no `deploy/environments/environments.yaml` at
+  // all, which is deliberate: it means a confirmed call reaching the real
+  // provider fails for a *different*, docker-shaped reason than the gate's
+  // own refusal, which is what proves control actually passed the gate
+  // rather than the test asserting on the gate's own message twice.
+  const releaseArtifact = {
+    version: '1.0.0',
+    image: 'mpgm-sample-service:1.0.0',
+    digest: `sha256:${'a'.repeat(64)}`,
+    changelog: 'Initial release.',
+    rollbackTo: null,
+  };
+  const artifactPath = join(workspace, 'release-1.0.0.json');
+  writeFileSync(artifactPath, JSON.stringify(releaseArtifact));
+  const deployTarget = { repo: workspace, env: 'production', release: releaseArtifact };
+  const deployPrint = deployFingerprint(deployTarget);
+
+  const rollbackArgs = [
+    'rollback',
+    artifactPath,
+    '--repo',
+    workspace,
+    '--env',
+    'production',
+    '--by',
+    'macg',
+    '--run',
+    'r1',
+  ];
+
+  const rollbackNoDryRun = await call(rollbackArgs);
+  check(
+    'rollback to production is refused without a recorded dry run',
+    !rollbackNoDryRun.result.ok &&
+      rollbackNoDryRun.output.includes('has not been simulated') &&
+      rollbackNoDryRun.output.includes(deployPrint),
+    rollbackNoDryRun.output,
+  );
+
+  {
+    const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
+    const log = EventLog.attach(db, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r1',
+      type: 'DryRunRecorded',
+      payload: {
+        // Any task this run already knows about — `state/reduce.js` checks a
+        // `DryRunRecorded` event names a real task, the same as `confirm`'s
+        // fixture above; a deploy gate confirmation is not itself a task, so
+        // it borrows one that already ran rather than inventing an id the
+        // fold would reject.
+        taskId: 'draft-brief',
+        tool: 'release.deliver#deliver',
+        fingerprint: deployPrint,
+        summary: 'would deliver 1.0.0 to production',
+      },
+    });
+    db.close();
+  }
+
+  const rollbackNotConfirmed = await call(rollbackArgs);
+  check(
+    'rollback to production is refused once simulated but still unconfirmed',
+    !rollbackNotConfirmed.result.ok &&
+      rollbackNotConfirmed.output.includes('simulated but not confirmed'),
+    rollbackNotConfirmed.output,
+  );
+
+  const confirmDeploy = await call([
+    'confirm',
+    deployPrint,
+    '--run',
+    'r1',
+    '--by',
+    'macg',
+    '--reason',
+    'the exact release named was already delivered to production',
+  ]);
+  check(
+    'the same confirm verb that clears a destructive tool call also clears a deploy',
+    confirmDeploy.result.ok && confirmDeploy.output.includes('confirmed by macg'),
+    confirmDeploy.output,
+  );
+
+  const rollbackConfirmed = await call(rollbackArgs);
+  check(
+    'once confirmed, rollback reaches the real provider instead of the gate',
+    !rollbackConfirmed.result.ok &&
+      !rollbackConfirmed.output.includes('has not been simulated') &&
+      !rollbackConfirmed.output.includes('simulated but not confirmed') &&
+      rollbackConfirmed.output.includes('no environments manifest'),
+    rollbackConfirmed.output,
+  );
+
+  // A rollback naming a release that was never confirmed for production must
+  // not become a second, ungated door into it — the same fingerprint is not
+  // on record for a different version, so this is refused exactly as an
+  // unconfirmed `deliver` would be.
+  const neverConfirmedArtifact = { ...releaseArtifact, version: '2.0.0' };
+  const neverConfirmedPath = join(workspace, 'release-2.0.0.json');
+  writeFileSync(neverConfirmedPath, JSON.stringify(neverConfirmedArtifact));
+  const rollbackNeverConfirmed = await call([
+    'rollback',
+    neverConfirmedPath,
+    '--repo',
+    workspace,
+    '--env',
+    'production',
+    '--by',
+    'macg',
+    '--run',
+    'r1',
+  ]);
+  check(
+    'rollback cannot smuggle in a release production never had confirmed',
+    !rollbackNeverConfirmed.result.ok &&
+      rollbackNeverConfirmed.output.includes('has not been simulated') &&
+      !rollbackNeverConfirmed.output.includes(deployPrint),
+    rollbackNeverConfirmed.output,
   );
 
   // approve-role — the half of a role exemption an agent cannot write.

@@ -541,6 +541,19 @@ export {
   stateLedger,
 } from './policy/destructive.js';
 export type {
+  ConfirmationNeeded,
+  DeployGateOptions,
+  DeployLedger,
+  DeployTarget,
+  DryRunNeeded,
+} from './policy/deploy-gate.js';
+export {
+  DEFAULT_PRODUCTION_ENV,
+  DeployGateError,
+  deployFingerprint,
+  gateProductionRelease,
+} from './policy/deploy-gate.js';
+export type {
   DesiredIssue,
   DesiredLabel,
   DesiredMilestone,

@@ -98,13 +98,23 @@ try {
     JSON.stringify(downAgain),
   );
 
+  // `production` was this check's example environment through T4.1.1..3 —
+  // deliberately undeclared until T4.1.4 landed the hard approval gate that
+  // has to stand in front of it (`src/policy/deploy-gate.ts`). It is declared
+  // now (`environments.yaml`), so the example moved to a name nothing ever
+  // declares; the point being verified — an undeclared environment is
+  // refused, not guessed at — is unchanged.
   process.stdout.write('\n7. An undeclared environment is refused, not guessed at\n');
   try {
-    await bound.invoke('up', { repo, env: 'production' });
-    check('production is refused', false, 'the call resolved instead of throwing');
+    await bound.invoke('up', { repo, env: 'canary' });
+    check(
+      'an undeclared environment is refused',
+      false,
+      'the call resolved instead of throwing',
+    );
   } catch (cause) {
     check(
-      'production is refused',
+      'an undeclared environment is refused',
       cause instanceof Error && /not declared/.test(cause.message),
       cause instanceof Error ? cause.message : String(cause),
     );

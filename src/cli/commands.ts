@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AgentSessionProvider } from '../agent/session.js';
 import { SessionRunner } from '../agent/runner.js';
 import type { OutputSchemaRegistry } from '../agent/output-registry.js';
 import { ArtifactStore } from '../artifact/store.js';
 import type { ArtifactSchemaRegistry } from '../artifact/schema-registry.js';
+import { CapabilityRegistry } from '../contract/capability.js';
 import { DEFAULT_EGRESS_POLICY, type EgressPolicy } from '../context/egress.js';
 import { loadKnowledgeBase, type KbDocument } from '../context/knowledge-base.js';
 import { DashboardServer } from '../dashboard/server.js';
@@ -13,6 +14,8 @@ import { openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
 import { elicit, type OperatorIo } from '../elicit/session.js';
+import { composeProvider } from '../env/compose-provider.js';
+import { envProvisionContract } from '../env/provision.js';
 import { GateManager, gateOracleFromState } from '../gate/manager.js';
 import { isGitRepository, tagGate } from '../git/tag.js';
 import { runPhase } from '../phase/runner.js';
@@ -20,6 +23,8 @@ import { TraceIndex } from '../trace/index-store.js';
 import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
+import { gateProductionRelease } from '../policy/deploy-gate.js';
+import { stateLedger } from '../policy/destructive.js';
 import { RoleRegistry } from '../role/loader.js';
 import {
   approvalKey,
@@ -37,6 +42,8 @@ import { implementTask } from '../implement/loop.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
+import { dockerReleaseProvider } from '../release/docker-provider.js';
+import { releaseArtifactSchema, releaseDeliverContract } from '../release/deliver.js';
 import { Projector } from '../state/projector.js';
 import { fold } from '../state/reduce.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
@@ -627,6 +634,107 @@ export function confirm(
     });
     context.write(`${call.tool} (${fingerprint.slice(0, 12)}) confirmed by ${by}`);
     return { ok: true, detail: 'confirmed' };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `mpgm rollback <artifact> --repo <path> --env <env> --by <who> [--reason <s>]`
+ * — restore a previously-delivered release (DESIGN §4.4, §9 decision 11).
+ *
+ * `<artifact>` is a path to a release artifact `release.deliver#assemble`
+ * (or an earlier `deliver`/`rollback`) produced — `{version, image, digest,
+ * changelog, rollbackTo}` — read from disk rather than reconstructed from
+ * flags, the same reason `release.deliver#rollback`'s own input takes a full
+ * artifact rather than a bare ref: a rollback's own record then carries the
+ * changelog and rollback path of what it restores.
+ *
+ * Not gated: HIL-2's approval was already given to this exact digest when it
+ * was first delivered (`src/policy/deploy-gate.ts`). It is still an
+ * outward-facing act and is still recorded, like any other intervention
+ * (HIL-5) — and for `env: production` specifically, the gate itself is still
+ * in the loop: a release that was never confirmed for production is refused
+ * here exactly as `deliver` would refuse it, so `rollback` cannot become a
+ * second, ungated door into that environment.
+ */
+export async function rollback(
+  context: CliContext,
+  runId: string,
+  artifactPath: string,
+  repo: string,
+  env: string,
+  by: string,
+  reason = '',
+): Promise<CommandResult> {
+  const { db, log, projector } = open(context);
+  try {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(artifactPath, 'utf8'));
+    } catch (cause) {
+      context.write(
+        `could not read a release artifact from '${artifactPath}': ` +
+          (cause instanceof Error ? cause.message : String(cause)),
+      );
+      return { ok: false, detail: 'unreadable artifact' };
+    }
+    const parsed = releaseArtifactSchema.safeParse(raw);
+    if (!parsed.success) {
+      context.write(
+        `'${artifactPath}' is not a release artifact: ${parsed.error.message}`,
+      );
+      return { ok: false, detail: 'invalid artifact' };
+    }
+    const to = parsed.data;
+
+    if (projector.project().runs[runId] === undefined) {
+      log.append({
+        runId,
+        type: 'RunStarted',
+        payload: { project: context.root, operator: by },
+      });
+    }
+
+    const registry = new CapabilityRegistry();
+    const envContract = registry.bind(envProvisionContract, composeProvider());
+    const gated = gateProductionRelease(
+      dockerReleaseProvider({ envProvision: envContract }),
+      {
+        ledger: stateLedger(() => projector.project().runs[runId]),
+      },
+    );
+    const release = registry.bind(releaseDeliverContract, gated);
+
+    let status;
+    try {
+      status = await release.invoke<{ up: boolean; services: readonly unknown[] }>(
+        'rollback',
+        { repo, env, to },
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      context.write(`rollback of ${env} to ${to.version} refused: ${message}`);
+      return { ok: false, detail: 'rollback refused' };
+    }
+
+    log.append({
+      runId,
+      type: 'OperatorIntervened',
+      payload: {
+        action: 'rollback',
+        detail:
+          `${env} -> ${to.version} (${to.digest}) by ${by}` +
+          (reason === '' ? '' : `: ${reason}`) +
+          ` — up=${String(status.up)}`,
+      },
+    });
+
+    context.write(
+      `rolled back ${env} to ${to.version} (${to.digest.slice(0, 12)}) — ` +
+        `up=${String(status.up)}`,
+    );
+    return { ok: status.up, detail: status.up ? 'rolled back' : 'not up' };
   } finally {
     db.close();
   }

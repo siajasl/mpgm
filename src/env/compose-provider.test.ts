@@ -334,7 +334,7 @@ describe('composeProvider', () => {
     const provider = composeProvider({ cli });
 
     await expect(
-      operation(provider, 'up')({ repo, env: 'production' } as never),
+      operation(provider, 'up')({ repo, env: 'canary' } as never),
     ).rejects.toThrow(UndeclaredEnvironmentError);
   });
 
