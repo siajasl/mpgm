@@ -29,6 +29,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run scan:secrets && npm run demo:crash && npm run demo:cli && npm run demo:trace && npm run demo:ingest && npm run demo:switchover && npm run demo:env && npm run demo:release && npm run demo:verify",
+    "check:fast": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run scan:secrets",
     "scan:secrets": "node scripts/scan-secrets.mjs",
     "demo:crash": "node scripts/demo/crash-restart.mjs",
     "demo:agent": "node scripts/demo/agent-session.mjs",
