@@ -23,7 +23,7 @@ import { TraceIndex } from '../trace/index-store.js';
 import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
-import { stateLedger } from '../policy/destructive.js';
+import { crossRunLedger } from '../policy/deploy-gate.js';
 import { RoleRegistry } from '../role/loader.js';
 import {
   approvalKey,
@@ -710,7 +710,14 @@ export async function rollback(
       dockerReleaseProvider({
         envProvision: envContract,
         gate: {
-          ledger: stateLedger(() => projector.project().runs[runId]),
+          // Cross-run, not `stateLedger(() => projector.project().runs[runId])`:
+          // an operator's confirmation of `{repo, env, release}` has to
+          // outlive the one run that happened to make this call, or
+          // restoring a release production already ran (decision 11) would
+          // ask for a fresh approval whenever the asking run differs from
+          // the confirming one — exactly the delay DEP-2's automatic
+          // rollback exists to avoid (`deploy-gate.ts`'s `crossRunLedger`).
+          ledger: crossRunLedger(() => projector.project()),
           onDryRunNeeded: (record) => {
             log.append({
               runId,

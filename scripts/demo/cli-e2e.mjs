@@ -605,6 +605,34 @@ try {
     rollbackConfirmed.output,
   );
 
+  // The confirmation above lives in run 'r1' — DESIGN §9 decision 11 claims
+  // it "asks nothing new of HIL-2" to restore that release later, and DEP-2's
+  // automatic rollback fires in whatever run notices a regression, never
+  // guaranteed to be 'r1' itself. A fresh run naming the same release must
+  // reach the real provider too, with no new dry run or confirm — proving
+  // the gate's ledger is read across the whole log (`crossRunLedger`,
+  // T4.1.4 rework), not just the run that happens to be asking.
+  const rollbackOtherRun = await call([
+    'rollback',
+    artifactPath,
+    '--repo',
+    workspace,
+    '--env',
+    'production',
+    '--by',
+    'macg',
+    '--run',
+    'r2',
+  ]);
+  check(
+    'a run that never saw the dry run or confirm still finds an earlier run’s approval',
+    !rollbackOtherRun.result.ok &&
+      !rollbackOtherRun.output.includes('has not been simulated') &&
+      !rollbackOtherRun.output.includes('simulated but not confirmed') &&
+      rollbackOtherRun.output.includes('no environments manifest'),
+    rollbackOtherRun.output,
+  );
+
   // A rollback naming a release that was never confirmed for production must
   // not become a second, ungated door into it — the same fingerprint is not
   // on record for a different version, so this is refused exactly as an

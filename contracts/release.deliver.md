@@ -60,9 +60,16 @@ first place — a deploy the kernel makes itself passes through no tool call,
 the same way a merge does. The gate therefore reuses that guard's *shape*
 rather than its wiring: a fingerprint over `{repo, env, release}`, a dry run
 that records intent without effect, and a confirmation keyed to that exact
-fingerprint — read from the same ledger SAF-4 already has (`stateLedger`), so
-the same `mpgm confirm <fingerprint> --by <who>` an operator uses for a
-destructive tool call is what confirms a production deploy.
+fingerprint — read from the same `destructiveCalls` state SAF-4's guard
+already writes, so the same `mpgm confirm <fingerprint> --by <who>` an
+operator uses for a destructive tool call is what confirms a production
+deploy. It is not read the same way SAF-4 reads it, though: SAF-4's
+`stateLedger` is scoped to the one run a tool call happened in, which is
+right for a call that lives inside a session, but a production
+confirmation has to outlive the run that asked for it — `deploy-gate.ts`'s
+`crossRunLedger` looks across every run for a match instead, which is what
+makes the next paragraph's "asks nothing new of HIL-2" literally true
+rather than true only until the confirming run ends.
 
 The gate is applied inside `dockerReleaseProvider`'s own construction, not
 left for a caller to wrap on afterward: its `gate` option is required, so
@@ -83,7 +90,12 @@ confirmed for this environment — restoring a release production already ran
 asks nothing new of HIL-2 (DESIGN §9 decision 11: approval was given to that
 exact digest earlier), but `rollback` naming a release that was never
 confirmed would otherwise be a second, ungated door into production that
-`deliver`'s own refusal never sees.
+`deliver`'s own refusal never sees. That earlier approval is found by
+`crossRunLedger` regardless of which run gave it, which is what lets DEP-2's
+automatic rollback — invoked from whatever later run notices the
+regression, never guaranteed to be the run that delivered and got the
+release confirmed in the first place — proceed on that same earlier
+approval instead of stalling for a fresh one.
 
 `assemble` and delivery to any environment other than `production` are
 ungated, exactly as before this section existed.

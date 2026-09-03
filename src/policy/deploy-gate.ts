@@ -4,6 +4,7 @@ import {
   releaseRollbackInput,
   type ReleaseArtifact,
 } from '../release/deliver.js';
+import type { DestructiveCallState, KernelState } from '../state/kernel-state.js';
 import { fingerprint } from './destructive.js';
 
 /**
@@ -76,15 +77,55 @@ export function deployFingerprint(target: DeployTarget): string {
 
 /**
  * The two predicates the gate needs, read from wherever confirmations are
- * recorded. `stateLedger` in `policy/destructive.ts` already reads both from
- * folded kernel state and satisfies this shape exactly — the gate does not
- * mint a second ledger for deploys, it reuses the one SAF-4 already has, so
- * the *same* `mpgm confirm <fingerprint>` an operator uses for a destructive
- * tool call is what confirms a production deploy.
+ * recorded. `destructiveCalls` — the folded state both `DryRunRecorded` and
+ * `DestructiveOpConfirmed` write to — is the same table SAF-4's guard reads,
+ * so the *same* `mpgm confirm <fingerprint>` an operator uses for a
+ * destructive tool call is what confirms a production deploy; the gate does
+ * not mint a second event vocabulary for deploys. What the gate does not
+ * reuse as-is is *how* that state gets read: `stateLedger` reads one run,
+ * right for a tool call that lives inside a session, and wrong for a
+ * production confirmation that has to outlive it. See {@link crossRunLedger}.
  */
 export interface DeployLedger {
   readonly dryRunSeen: (print: string) => boolean;
   readonly confirmed: (print: string) => boolean;
+}
+
+/**
+ * A {@link DeployLedger} that reads every run in {@link KernelState}, not one
+ * caller-chosen run — what decision 11 actually needs.
+ *
+ * `stateLedger` (`policy/destructive.ts`) is scoped to a single `RunState`,
+ * which is right for SAF-4's ordinary destructive-tool guard: a confirmation
+ * only ever has to outlive the one session an agent's tool call happened in.
+ * A production deploy's confirmation has to outlive more than that. DEP-2's
+ * automatic rollback fires in whatever kernel run notices the regression,
+ * which is never guaranteed to be the run that first delivered the release
+ * and got it confirmed — an operator approving a digest for production does
+ * not stop approving it because the kernel process that asked was later
+ * restarted, or a new run began. `deployFingerprint` already names the same
+ * call — `{repo, env, release}` — no matter which run's ledger it is found
+ * in, so a lookup scoped to one run is scoped by an accident of when the
+ * call happens to arrive, not by anything HIL-2 cares about; this makes the
+ * gate consult the whole log instead, so a confirmation, once given, is
+ * still there for `rollback` (or a later `deliver` of the identical digest)
+ * to find in any run that asks.
+ */
+export function crossRunLedger(state: () => KernelState): DeployLedger {
+  const calls = (print: string): readonly DestructiveCallState[] =>
+    Object.values(state().runs)
+      .map((run) => run.destructiveCalls[print])
+      .filter((call): call is DestructiveCallState => call !== undefined);
+
+  return {
+    dryRunSeen: (print) => calls(print).some((call) => call.dryRun),
+    confirmed: (print) =>
+      // Both, not either, on some run's record of it — the same rule
+      // `stateLedger` applies within one run: an operator cannot approve
+      // their way past a simulation SAF-4/HIL-2 both require to have
+      // actually happened somewhere.
+      calls(print).some((call) => call.dryRun && call.confirmedBy !== null),
+  };
 }
 
 export interface DryRunNeeded {

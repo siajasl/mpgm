@@ -550,6 +550,7 @@ export type {
 export {
   DEFAULT_PRODUCTION_ENV,
   DeployGateError,
+  crossRunLedger,
   deployFingerprint,
   gateProductionRelease,
 } from './policy/deploy-gate.js';

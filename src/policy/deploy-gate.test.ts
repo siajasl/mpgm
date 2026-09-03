@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Provider } from '../contract/capability.js';
+import { MEMORY } from '../database.js';
+import { kernelRegistry } from '../event/catalog.js';
+import type { EventInput } from '../event/envelope.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
+import { EventLog } from '../event/store.js';
+import { fold } from '../state/reduce.js';
 import {
+  crossRunLedger,
   DeployGateError,
   deployFingerprint,
   gateProductionRelease,
@@ -259,6 +265,101 @@ describe('gateProductionRelease — rollback', () => {
     const gated = gate(provider, { ledger: ledger() });
 
     await gated.rollback({ repo: 'r', env: 'staging', to: release('1.0.0') } as never);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+/**
+ * DESIGN §9 decision 11 claims that restoring a release production already
+ * ran "asks nothing new of HIL-2" — true only if that earlier approval is
+ * still findable, no matter which kernel run asks (T4.1.4 rework: a
+ * `RunState`-scoped ledger made this false across runs, which is the normal
+ * shape of a deploy history — DEP-2's automatic rollback fires in whatever
+ * run notices the regression, not the run that confirmed the release).
+ */
+describe('crossRunLedger', () => {
+  function stateWith(inputs: readonly EventInput[]) {
+    const log = EventLog.open(MEMORY, {
+      registry: kernelRegistry(),
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+    try {
+      log.appendMany(inputs);
+      return fold(log.read());
+    } finally {
+      log.close();
+    }
+  }
+
+  const target = { repo: 'r', env: 'production', release: release('1.0.0') };
+  const print = deployFingerprint(target);
+
+  it('finds a dry run and confirmation recorded in a different run', () => {
+    const state = stateWith([
+      { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+      {
+        runId: 'run-a',
+        type: 'DryRunRecorded',
+        payload: { taskId: '', tool: 'release.deliver#deliver', fingerprint: print },
+      },
+      {
+        runId: 'run-a',
+        type: 'DestructiveOpConfirmed',
+        payload: {
+          taskId: '',
+          tool: 'release.deliver#deliver',
+          fingerprint: print,
+          by: 'macg',
+        },
+      },
+      { runId: 'run-b', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+    ]);
+    const ledger = crossRunLedger(() => state);
+
+    // Asked of the run that recorded nothing at all — still true, because
+    // the ledger reads the whole log, not one run's slice of it.
+    expect(state.runs['run-b']?.destructiveCalls[print]).toBeUndefined();
+    expect(ledger.dryRunSeen(print)).toBe(true);
+    expect(ledger.confirmed(print)).toBe(true);
+  });
+
+  it('does not confirm a fingerprint nothing has ever recorded', () => {
+    const state = stateWith([
+      { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+    ]);
+    const ledger = crossRunLedger(() => state);
+
+    expect(ledger.dryRunSeen(print)).toBe(false);
+    expect(ledger.confirmed(print)).toBe(false);
+  });
+
+  it('lets rollback in a later run proceed on an earlier run’s confirmation', async () => {
+    const state = stateWith([
+      { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+      {
+        runId: 'run-a',
+        type: 'DryRunRecorded',
+        payload: { taskId: '', tool: 'release.deliver#deliver', fingerprint: print },
+      },
+      {
+        runId: 'run-a',
+        type: 'DestructiveOpConfirmed',
+        payload: {
+          taskId: '',
+          tool: 'release.deliver#deliver',
+          fingerprint: print,
+          by: 'macg',
+        },
+      },
+      { runId: 'run-b', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+    ]);
+    const { provider, calls } = fakeProvider();
+    const gated = gate(provider, { ledger: crossRunLedger(() => state) });
+
+    // `run-b` is the run acting here — DEP-2's automatic rollback, or an
+    // operator's `mpgm rollback`, invoked from a run that never itself saw
+    // the original `deliver`'s dry run or confirmation.
+    await gated.rollback({ repo: 'r', env: 'production', to: release('1.0.0') } as never);
     expect(calls).toHaveLength(1);
   });
 });
