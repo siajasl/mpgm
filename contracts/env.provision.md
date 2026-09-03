@@ -45,12 +45,18 @@ from a directory-naming convention — DEP-4 asks for environments the harness
 provisions from configuration it was given, not ones it infers, and guessing
 would provision infrastructure nothing wrote down.
 
-This project declares `test` and `staging`. `production` is deliberately
-undeclared: DEP-4 asks the harness to be *able* to provision production, but
-the hard approval gate that must stand in front of it (DEP-2, HIL-2) is
-T4.1.4's, not yet landed — an IaC file for an environment nothing can gate is
-an environment a compose command could bring up unreviewed. Declaring it is a
-one-line addition to the manifest once the gate exists to sit in front of it.
+This project declares `test`, `staging` and `production`
+(`deploy/environments/environments.yaml`). `env.provision` itself carries no
+notion of "production" — `up`/`down`/`status` treat it exactly like any other
+declared name, per DEP-4. The hard approval gate DEP-2/HIL-2 ask for in front
+of it lives one layer up, at `release.deliver#deliver`/`#rollback`
+(`src/policy/deploy-gate.ts`, T4.1.4): a caller reaching production through
+*that* contract is refused unless an operator has confirmed the exact release
+named. This contract's own `up` was never what needed gating — nothing stops
+an operator running `docker compose up` against this environment's compose
+file directly, the same as any of the others — what the gate makes
+impossible is *`release.deliver` landing an unapproved release there*, which
+is the path DEP-2 actually cares about.
 
 ## Operations
 

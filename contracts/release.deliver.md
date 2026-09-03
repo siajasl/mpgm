@@ -44,9 +44,61 @@ rollout mechanics." `release.deliver` is the "supplies release artifacts" and
   and therefore no credential to hold. It does not outlive the machine that
   built it — the same gap §8's "release distribution" revisit trigger names
   for the substrate as a whole, and it moves at the same time.
-- **Enforce an approval gate.** Production is not a declared `env.provision`
-  environment yet (`deploy/environments/environments.yaml`), and the hard
-  approval gate DEP-2/HIL-2 ask for in front of it is T4.1.4's.
+
+`assemble` and delivery to `test`/`staging` are otherwise exactly as before —
+the approval gate below is additive, not a change to what already worked.
+
+## The production deploy gate (DEP-2, HIL-2, T4.1.4)
+
+`deliver` and `rollback` are both refused for `env: 'production'` unless an
+operator has confirmed the exact call — `src/policy/deploy-gate.ts`'s
+`gateProductionRelease`. HIL-2 asks for explicit approval on an irreversible,
+outward-facing action *regardless of gate settings*, which a phase gate
+cannot promise (HIL-1 lets one be auto-approved) and which the `PreToolUse`
+destructive-tool guard (`src/policy/destructive.ts`, SAF-4) never sees in the
+first place — a deploy the kernel makes itself passes through no tool call,
+the same way a merge does. The gate therefore reuses that guard's *shape*
+rather than its wiring: a fingerprint over `{repo, env, release}`, a dry run
+that records intent without effect, and a confirmation keyed to that exact
+fingerprint — read from the same `destructiveCalls` state SAF-4's guard
+already writes, so the same `mpgm confirm <fingerprint> --by <who>` an
+operator uses for a destructive tool call is what confirms a production
+deploy. It is not read the same way SAF-4 reads it, though: SAF-4's
+`stateLedger` is scoped to the one run a tool call happened in, which is
+right for a call that lives inside a session, but a production
+confirmation has to outlive the run that asked for it — `deploy-gate.ts`'s
+`crossRunLedger` looks across every run for a match instead, which is what
+makes the next paragraph's "asks nothing new of HIL-2" literally true
+rather than true only until the confirming run ends.
+
+The gate is applied inside `dockerReleaseProvider`'s own construction, not
+left for a caller to wrap on afterward: its `gate` option is required, so
+there is no way to obtain an unguarded `deliver`/`rollback` bound to this
+contract at all (DESIGN §9 decision 10). `mpgm rollback` wires the gate's
+`onDryRunNeeded` to append the `DryRunRecorded` event its own refusal names
+— the gate has no separate dry-run mode to call first, so a refusal for want
+of one *is* the simulation, and this records it the instant that happens.
+The first `mpgm rollback` of a given `{repo, env, release}` is therefore
+always refused, but leaves that exact fingerprint confirmable; `mpgm confirm
+<fingerprint> --by <who>` and the same command again then proceeds. Whatever
+else comes to call `deliver` for production (no such caller exists in this
+repository yet — see "Left open" in the T4.1.4 commit) would need to wire
+`onDryRunNeeded` the same way to be usable at all.
+
+`rollback` is refused the same way *unless* the release it names was already
+confirmed for this environment — restoring a release production already ran
+asks nothing new of HIL-2 (DESIGN §9 decision 11: approval was given to that
+exact digest earlier), but `rollback` naming a release that was never
+confirmed would otherwise be a second, ungated door into production that
+`deliver`'s own refusal never sees. That earlier approval is found by
+`crossRunLedger` regardless of which run gave it, which is what lets DEP-2's
+automatic rollback — invoked from whatever later run notices the
+regression, never guaranteed to be the run that delivered and got the
+release confirmed in the first place — proceed on that same earlier
+approval instead of stalling for a fresh one.
+
+`assemble` and delivery to any environment other than `production` are
+ungated, exactly as before this section existed.
 
 ## The release artifact (DEP-3)
 

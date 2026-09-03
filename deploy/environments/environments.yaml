@@ -3,9 +3,13 @@
 # What `env.provision` operates on and nothing more: a provider MUST refuse an
 # environment name not listed here rather than infer one from a directory
 # existing under `deploy/environments/` (contracts/env.provision.md,
-# `src/env/compose-provider.ts`). `production` is deliberately absent — DEP-4
-# asks the harness to be *able* to provision it, but the hard approval gate
-# that must stand in front of it (DEP-2, HIL-2) is T4.1.4's, not yet landed.
+# `src/env/compose-provider.ts`). `env.provision` carries no notion of
+# "production" at all — declaring it here only makes it something DEP-4's
+# `up`/`down`/`status` can reach, the same as `test` and `staging`. What
+# stands in front of it is one layer up, at `release.deliver#deliver`/
+# `#rollback`: `src/policy/deploy-gate.ts` refuses either call for `env:
+# production` unless an operator has confirmed the exact release named
+# (HIL-2, DESIGN §9 decision 10/11) — T4.1.4, landed.
 # `releaseOverride` is applied only on an `up` carrying an explicit `image`
 # (DEP-3, `release.deliver`, T4.1.2) — see the compose file it names.
 environments:
@@ -17,3 +21,7 @@ environments:
     compose: deploy/environments/staging/compose.yaml
     project: mpgm-staging
     releaseOverride: deploy/environments/staging/compose.release.yaml
+  - name: production
+    compose: deploy/environments/production/compose.yaml
+    project: mpgm-production
+    releaseOverride: deploy/environments/production/compose.release.yaml

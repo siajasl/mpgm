@@ -59,7 +59,13 @@ const registry = new CapabilityRegistry();
 const env = registry.bind(envProvisionContract, composeProvider());
 const release = registry.bind(
   releaseDeliverContract,
-  dockerReleaseProvider({ envProvision: env }),
+  // See `release-deliver.mjs`: the gate is required construction as of
+  // T4.1.4 (DESIGN §9 decision 10); this script only ever names `env:
+  // 'test'`, so the ledger below is never consulted.
+  dockerReleaseProvider({
+    envProvision: env,
+    gate: { ledger: { dryRunSeen: () => false, confirmed: () => false } },
+  }),
 );
 
 const policy = { attempts: 8, intervalMs: 1000 };

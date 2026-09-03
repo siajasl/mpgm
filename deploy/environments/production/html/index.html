@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mpgm — production environment</title>
+  </head>
+  <body>
+    <p>
+      This is the <code>production</code> environment, provisioned from
+      <code>deploy/environments/production/compose.yaml</code> alone (DEP-1, DEP-4). What
+      is delivered here goes through the deploy gate first
+      (<code>src/policy/deploy-gate.ts</code>, HIL-2) — this placeholder page is what
+      `env.provision#up` shows before any release has been confirmed.
+    </p>
+  </body>
+</html>

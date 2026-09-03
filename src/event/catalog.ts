@@ -414,22 +414,31 @@ export const changeMerged = defineEvent(
  * confirmation is for the call that was simulated rather than for the
  * operation in general — otherwise one approved deploy would approve every
  * later one.
+ *
+ * `taskId` names the task whose tool call this was — empty only for the
+ * production deploy gate (`policy/deploy-gate.ts`, T4.1.4), which guards a
+ * call the kernel makes itself rather than a tool call inside a task, the
+ * same reason `OperatorIntervened` carries no `taskId` either.
  */
 export const dryRunRecorded = defineEvent(
   'DryRunRecorded',
   z.object({
-    taskId: nonEmpty,
+    taskId: z.string().default(''),
     tool: nonEmpty,
     fingerprint: nonEmpty,
     summary: z.string().default(''),
   }),
 );
 
-/** An operator confirmed a simulated destructive call may proceed (SAF-4, HIL-2). */
+/**
+ * An operator confirmed a simulated destructive call may proceed (SAF-4,
+ * HIL-2). `taskId` echoes the `DryRunRecorded` it confirms (see above) —
+ * empty for the same reason there.
+ */
 export const destructiveOpConfirmed = defineEvent(
   'DestructiveOpConfirmed',
   z.object({
-    taskId: nonEmpty,
+    taskId: z.string().default(''),
     tool: nonEmpty,
     fingerprint: nonEmpty,
     by: nonEmpty,
