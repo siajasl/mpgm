@@ -52,24 +52,31 @@ the approval gate below is additive, not a change to what already worked.
 
 `deliver` and `rollback` are both refused for `env: 'production'` unless an
 operator has confirmed the exact call — `src/policy/deploy-gate.ts`'s
-`gateProductionRelease`, wrapping whatever provider this contract is bound
-to. HIL-2 asks for explicit approval on an irreversible, outward-facing
-action *regardless of gate settings*, which a phase gate cannot promise (HIL-1
-lets one be auto-approved) and which the `PreToolUse` destructive-tool guard
-(`src/policy/destructive.ts`, SAF-4) never sees in the first place — a deploy
-the kernel makes itself passes through no tool call, the same way a merge
-does. The gate therefore reuses that guard's *shape* rather than its wiring:
-a fingerprint over `{repo, env, release}`, a dry run that records intent
-without effect, and a confirmation keyed to that exact fingerprint — read
-from the same ledger SAF-4 already has (`stateLedger`), so the same
-`mpgm confirm <fingerprint> --by <who>` an operator uses for a destructive
-tool call is what confirms a production deploy. A call refused for want of a
-dry run always names the exact fingerprint in its refusal, so nothing here
-has to be computed by hand — but the gate itself performs no side effect
-(`onDryRunNeeded` is a hook, not a guarantee), and `mpgm rollback` does not
-wire it: an operator (or whatever drives the delivery) records a
-`DryRunRecorded` event for that fingerprint before it can be confirmed, the
-same as a destructive tool call's own dry run is recorded.
+`gateProductionRelease`. HIL-2 asks for explicit approval on an irreversible,
+outward-facing action *regardless of gate settings*, which a phase gate
+cannot promise (HIL-1 lets one be auto-approved) and which the `PreToolUse`
+destructive-tool guard (`src/policy/destructive.ts`, SAF-4) never sees in the
+first place — a deploy the kernel makes itself passes through no tool call,
+the same way a merge does. The gate therefore reuses that guard's *shape*
+rather than its wiring: a fingerprint over `{repo, env, release}`, a dry run
+that records intent without effect, and a confirmation keyed to that exact
+fingerprint — read from the same ledger SAF-4 already has (`stateLedger`), so
+the same `mpgm confirm <fingerprint> --by <who>` an operator uses for a
+destructive tool call is what confirms a production deploy.
+
+The gate is applied inside `dockerReleaseProvider`'s own construction, not
+left for a caller to wrap on afterward: its `gate` option is required, so
+there is no way to obtain an unguarded `deliver`/`rollback` bound to this
+contract at all (DESIGN §9 decision 10). `mpgm rollback` wires the gate's
+`onDryRunNeeded` to append the `DryRunRecorded` event its own refusal names
+— the gate has no separate dry-run mode to call first, so a refusal for want
+of one *is* the simulation, and this records it the instant that happens.
+The first `mpgm rollback` of a given `{repo, env, release}` is therefore
+always refused, but leaves that exact fingerprint confirmable; `mpgm confirm
+<fingerprint> --by <who>` and the same command again then proceeds. Whatever
+else comes to call `deliver` for production (no such caller exists in this
+repository yet — see "Left open" in the T4.1.4 commit) would need to wire
+`onDryRunNeeded` the same way to be usable at all.
 
 `rollback` is refused the same way *unless* the release it names was already
 confirmed for this environment — restoring a release production already ran

@@ -532,4 +532,69 @@ describe('reduce', () => {
       ),
     ).toThrow();
   });
+
+  it('records a deploy gate dry run and confirmation with no task at all (T4.1.4)', () => {
+    // The production deploy gate guards a call the kernel makes itself, not
+    // a task's tool call (`policy/deploy-gate.ts`) — its `DryRunRecorded` and
+    // `DestructiveOpConfirmed` events carry taskId: '' rather than naming a
+    // task the run never dispatched, which `requireTask` would otherwise
+    // refuse (CONV-4 still applies to every *other* taskId, checked below).
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'DryRunRecorded',
+          payload: {
+            taskId: '',
+            tool: 'release.deliver#deliver',
+            fingerprint: 'deploy-1',
+            summary: 'would deliver 1.0.0 to production',
+          },
+        },
+        {
+          runId: RUN,
+          type: 'DestructiveOpConfirmed',
+          payload: {
+            taskId: '',
+            tool: 'release.deliver#deliver',
+            fingerprint: 'deploy-1',
+            by: 'macg',
+            reason: 'approved',
+          },
+        },
+      ]),
+    );
+
+    const call = state.runs[RUN]?.destructiveCalls['deploy-1'];
+    expect(call).toEqual({
+      fingerprint: 'deploy-1',
+      tool: 'release.deliver#deliver',
+      taskId: '',
+      dryRun: true,
+      confirmedBy: 'macg',
+    });
+  });
+
+  it('still refuses a DryRunRecorded naming a real, unknown task', () => {
+    // A non-empty taskId is still held to CONV-4 — only the empty,
+    // deploy-gate sentinel skips the check.
+    expect(() =>
+      fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'DryRunRecorded',
+            payload: {
+              taskId: 'never-ran',
+              tool: 'mcp__deploy__release',
+              fingerprint: 'f1',
+              summary: '',
+            },
+          },
+        ]),
+      ),
+    ).toThrow();
+  });
 });

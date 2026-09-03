@@ -76,6 +76,32 @@ describe('gateProductionRelease — deliver', () => {
     expect(calls).toEqual([]);
   });
 
+  /**
+   * CONV-3: an operator reading this refusal has to know whether the next
+   * command really is `mpgm confirm`, or whether nothing was recorded at
+   * all — telling them to run a command that will itself fail is worse than
+   * telling them nothing was recorded (T4.1.4 rework).
+   */
+  it('tells the caller whether this refusal actually recorded the dry run', async () => {
+    const { provider: unwired } = fakeProvider();
+    await expect(
+      gate(unwired, { ledger: ledger() }).deliver({
+        repo: 'r',
+        env: 'production',
+        release: release('1.0.0'),
+      } as never),
+    ).rejects.toThrow(/Nothing recorded it/);
+
+    const { provider: wired } = fakeProvider();
+    await expect(
+      gate(wired, { ledger: ledger(), onDryRunNeeded: () => undefined }).deliver({
+        repo: 'r',
+        env: 'production',
+        release: release('1.0.0'),
+      } as never),
+    ).rejects.toThrow(/This refusal has recorded it as a dry run/);
+  });
+
   it('refuses production once simulated but still unconfirmed', async () => {
     const { provider, calls } = fakeProvider();
     const target = { repo: 'r', env: 'production', release: release('1.0.0') };

@@ -555,35 +555,21 @@ try {
     'r1',
   ];
 
+  // `mpgm rollback` has no separate dry-run mode to call first — a refusal
+  // for want of one *is* the simulation, and the CLI wires the gate's
+  // `onDryRunNeeded` to record it as a real `DryRunRecorded` event the
+  // instant that happens (`src/cli/commands.ts`, DESIGN §9 decision 10) —
+  // this first call both is refused *and* leaves `deployPrint` confirmable,
+  // through the CLI verb alone, with nothing appended to the log by hand.
   const rollbackNoDryRun = await call(rollbackArgs);
   check(
-    'rollback to production is refused without a recorded dry run',
+    'rollback to production is refused without a recorded dry run, and records one',
     !rollbackNoDryRun.result.ok &&
       rollbackNoDryRun.output.includes('has not been simulated') &&
-      rollbackNoDryRun.output.includes(deployPrint),
+      rollbackNoDryRun.output.includes(deployPrint) &&
+      rollbackNoDryRun.output.includes('recorded it as a dry run'),
     rollbackNoDryRun.output,
   );
-
-  {
-    const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
-    const log = EventLog.attach(db, { registry: kernelRegistry() });
-    log.append({
-      runId: 'r1',
-      type: 'DryRunRecorded',
-      payload: {
-        // Any task this run already knows about — `state/reduce.js` checks a
-        // `DryRunRecorded` event names a real task, the same as `confirm`'s
-        // fixture above; a deploy gate confirmation is not itself a task, so
-        // it borrows one that already ran rather than inventing an id the
-        // fold would reject.
-        taskId: 'draft-brief',
-        tool: 'release.deliver#deliver',
-        fingerprint: deployPrint,
-        summary: 'would deliver 1.0.0 to production',
-      },
-    });
-    db.close();
-  }
 
   const rollbackNotConfirmed = await call(rollbackArgs);
   check(

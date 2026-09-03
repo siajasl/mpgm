@@ -23,7 +23,6 @@ import { TraceIndex } from '../trace/index-store.js';
 import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
-import { gateProductionRelease } from '../policy/deploy-gate.js';
 import { stateLedger } from '../policy/destructive.js';
 import { RoleRegistry } from '../role/loader.js';
 import {
@@ -657,6 +656,14 @@ export function confirm(
  * in the loop: a release that was never confirmed for production is refused
  * here exactly as `deliver` would refuse it, so `rollback` cannot become a
  * second, ungated door into that environment.
+ *
+ * The gate has no separate dry-run mode to call first (`deploy-gate.ts`): a
+ * refusal for want of one *is* the simulation, so `onDryRunNeeded` is wired
+ * here to record it as a `DryRunRecorded` event the instant that happens.
+ * Without this, `mpgm confirm` would have nothing in this run to confirm and
+ * a production rollback could never proceed through this verb at all — the
+ * first call always names the fingerprint and records it; an operator
+ * confirms that fingerprint; the same command run again then proceeds.
  */
 export async function rollback(
   context: CliContext,
@@ -698,13 +705,29 @@ export async function rollback(
 
     const registry = new CapabilityRegistry();
     const envContract = registry.bind(envProvisionContract, composeProvider());
-    const gated = gateProductionRelease(
-      dockerReleaseProvider({ envProvision: envContract }),
-      {
-        ledger: stateLedger(() => projector.project().runs[runId]),
-      },
+    const release = registry.bind(
+      releaseDeliverContract,
+      dockerReleaseProvider({
+        envProvision: envContract,
+        gate: {
+          ledger: stateLedger(() => projector.project().runs[runId]),
+          onDryRunNeeded: (record) => {
+            log.append({
+              runId,
+              type: 'DryRunRecorded',
+              payload: {
+                taskId: '',
+                tool: record.tool,
+                fingerprint: record.fingerprint,
+                summary:
+                  `rollback ${record.target.env} to ${record.target.release.version} ` +
+                  `(${record.target.release.digest.slice(0, 12)})`,
+              },
+            });
+          },
+        },
+      }),
     );
-    const release = registry.bind(releaseDeliverContract, gated);
 
     let status;
     try {

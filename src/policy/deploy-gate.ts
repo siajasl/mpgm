@@ -139,14 +139,24 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
 
   if (!options.ledger.dryRunSeen(print)) {
     options.onDryRunNeeded?.({ tool: DEPLOY_TOOL, fingerprint: print, target });
+    // Whether this refusal itself made the fingerprint confirmable is known
+    // here, not left for the operator to guess (CONV-3): a caller that wired
+    // 'onDryRunNeeded' — `mpgm rollback` does, since T4.1.4 — has already
+    // recorded it by the time this throws, so the next command really is
+    // 'mpgm confirm'; a caller that did not wire it is told that instead of
+    // being handed instructions that would fail.
+    const recorded = options.onDryRunNeeded !== undefined;
     throw new DeployGateError(
       `deploying ${describe(target)} has not been simulated. This call's ` +
-        `fingerprint is ${print} — record it (as a 'DryRunRecorded' event for ` +
-        `this run) and an operator can then confirm it with 'mpgm confirm ` +
-        `${print} --by <who>' (HIL-2, SAF-4). Whether this refusal recorded it ` +
-        `for you depends on how the caller wired 'onDryRunNeeded' — this ` +
-        `message gives you the fingerprint either way, so nothing here has to ` +
-        `be reproduced by hand.`,
+        `fingerprint is ${print}. ` +
+        (recorded
+          ? `This refusal has recorded it as a dry run for this run, so an ` +
+            `operator can confirm it now with 'mpgm confirm ${print} --by ` +
+            `<who>' (HIL-2, SAF-4).`
+          : `Nothing recorded it — this caller did not wire 'onDryRunNeeded' — ` +
+            `so there is nothing yet for 'mpgm confirm ${print} --by <who>' to ` +
+            `find; a 'DryRunRecorded' event for this fingerprint must exist in ` +
+            `this run before it can be confirmed (HIL-2, SAF-4).`),
     );
   }
 
