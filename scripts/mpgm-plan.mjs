@@ -316,6 +316,16 @@ export const MPGM_PLAN = {
               dependsOn: ['T4.2.1'],
               tracesTo: ['OBS-4'],
             },
+            {
+              id: 'T4.2.3',
+              title: 'Progress output from a running verb',
+              completionCriteria: [
+                'A long-running verb reports each session as it starts and ' +
+                  'finishes, on the terminal that started it, before the run ends.',
+              ],
+              dependsOn: [],
+              tracesTo: ['OBS-3', 'NFR-2'],
+            },
           ],
         },
       ],
