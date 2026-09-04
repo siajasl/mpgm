@@ -773,4 +773,5 @@ export {
   verifyRelease,
   verifyReleaseInput,
 } from './release/verify.js';
-export { readOutcomes, recordOutcome } from './release/outcome-log.js';
+export type { RecordOutcomeOptions } from './release/outcome-log.js';
+export { outcomeBasePath, readOutcomes, recordOutcome } from './release/outcome-log.js';

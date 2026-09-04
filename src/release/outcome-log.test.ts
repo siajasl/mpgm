@@ -1,16 +1,33 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readOutcomes, recordOutcome } from './outcome-log.js';
-import type { ReleaseOutcome } from './verify.js';
+import { ArtifactStore } from '../artifact/store.js';
+import {
+  ArtifactSchemaRegistry,
+  defineArtifactSchema,
+} from '../artifact/schema-registry.js';
+import { outcomeBasePath, readOutcomes, recordOutcome } from './outcome-log.js';
+import { releaseOutcomeSchema, type ReleaseOutcome } from './verify.js';
+
+const provenance = {
+  task: 'release-verify',
+  role: 'harness',
+  model: 'n/a',
+  runId: 'run-1',
+};
 
 const tempDirs: string[] = [];
 
-function outcomePath(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'mpgm-outcome-'));
-  tempDirs.push(dir);
-  return join(dir, 'nested', 'test.jsonl');
+function newStore(): ArtifactStore {
+  const root = mkdtempSync(join(tmpdir(), 'mpgm-outcomes-'));
+  tempDirs.push(root);
+  return new ArtifactStore({
+    root,
+    schemas: new ArtifactSchemaRegistry([
+      defineArtifactSchema('release-outcome', releaseOutcomeSchema),
+    ]),
+  });
 }
 
 afterEach(() => {
@@ -33,36 +50,107 @@ function outcome(overrides: Partial<ReleaseOutcome> = {}): ReleaseOutcome {
 }
 
 describe('recordOutcome / readOutcomes', () => {
-  it('reads an absent log as no outcomes yet, not an error', () => {
-    expect(readOutcomes(outcomePath())).toEqual([]);
+  it('reads an environment with no outcome artifact yet as no outcomes, not an error', () => {
+    const store = newStore();
+    expect(readOutcomes(store, 'test')).toEqual([]);
   });
 
-  it('creates parent directories and appends a validated outcome', () => {
-    const path = outcomePath();
-    recordOutcome(path, outcome());
-    expect(readOutcomes(path)).toEqual([outcome()]);
+  it('records a validated outcome as a versioned artifact under artifacts/deploy', () => {
+    const store = newStore();
+    const artifact = recordOutcome(store, {
+      env: 'test',
+      outcome: outcome(),
+      producedBy: provenance,
+    });
+
+    expect(artifact.version).toBe(1);
+    expect(artifact.path).toBe(
+      join(store.root, outcomeBasePath('test').replace('.md', '.v1.md')),
+    );
+    expect(readOutcomes(store, 'test')).toEqual([outcome()]);
   });
 
-  it('appends rather than overwrites — every outcome stays, oldest first', () => {
-    const path = outcomePath();
-    recordOutcome(path, outcome({ release: { version: '1.0.0', digest: 'sha256:aaa' } }));
-    recordOutcome(
-      path,
-      outcome({
+  it('survives the run that produced it: the file is on disk, not under .mpgm', () => {
+    const store = newStore();
+    const artifact = recordOutcome(store, {
+      env: 'test',
+      outcome: outcome(),
+      producedBy: provenance,
+    });
+
+    expect(existsSync(artifact.path)).toBe(true);
+    expect(artifact.path).not.toMatch(/\.mpgm/);
+    expect(artifact.path.startsWith(join(store.root, 'artifacts', 'deploy'))).toBe(true);
+
+    // Real markdown with frontmatter, readable without going through this
+    // module — the point of an artifact over a JSONL line (DESIGN §9.12).
+    const raw = readFileSync(artifact.path, 'utf8');
+    expect(raw.startsWith('---\n')).toBe(true);
+    expect(raw).toContain('schema: release-outcome');
+    expect(raw).toContain('decision: promoted');
+  });
+
+  it('each recorded outcome is its own immutable version — appended, never overwritten', () => {
+    const store = newStore();
+    recordOutcome(store, {
+      env: 'test',
+      outcome: outcome({ release: { version: '1.0.0', digest: 'sha256:aaa' } }),
+      producedBy: provenance,
+    });
+    const second = recordOutcome(store, {
+      env: 'test',
+      outcome: outcome({
         release: { version: '2.0.0', digest: 'sha256:bbb' },
         decision: 'rolled-back',
         reason: 'smoke checks failed; rolled back',
         rolledBackTo: { version: '1.0.0', digest: 'sha256:aaa' },
       }),
-    );
+      producedBy: provenance,
+    });
 
-    const recorded = readOutcomes(path);
+    expect(second.version).toBe(2);
+    const recorded = readOutcomes(store, 'test');
     expect(recorded).toHaveLength(2);
     expect(recorded[0]?.release.version).toBe('1.0.0');
     expect(recorded[1]?.decision).toBe('rolled-back');
+
+    // The first version's file is untouched — still readable on its own.
+    const first = store.read(outcomeBasePath('test'), 1);
+    expect((first.data as ReleaseOutcome).release.version).toBe('1.0.0');
+  });
+
+  it('keeps different environments in separate artifacts', () => {
+    const store = newStore();
+    recordOutcome(store, { env: 'test', outcome: outcome(), producedBy: provenance });
+    recordOutcome(store, {
+      env: 'staging',
+      outcome: outcome({ env: 'staging' }),
+      producedBy: provenance,
+    });
+
+    expect(readOutcomes(store, 'test')).toHaveLength(1);
+    expect(readOutcomes(store, 'staging')).toHaveLength(1);
   });
 
   it('refuses to record something releaseOutcomeSchema does not allow (fail closed)', () => {
-    expect(() => recordOutcome(outcomePath(), outcome({ reason: '' }))).toThrow();
+    const store = newStore();
+    expect(() =>
+      recordOutcome(store, {
+        env: 'test',
+        outcome: outcome({ reason: '' }),
+        producedBy: provenance,
+      }),
+    ).toThrow();
+    expect(readOutcomes(store, 'test')).toEqual([]);
+  });
+
+  it('traces to DEP-5 by default', () => {
+    const store = newStore();
+    const artifact = recordOutcome(store, {
+      env: 'test',
+      outcome: outcome(),
+      producedBy: provenance,
+    });
+    expect(artifact.tracesTo).toEqual(['DEP-5']);
   });
 });

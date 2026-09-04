@@ -1,6 +1,8 @@
 /**
  * T4.1.3 verification — an induced regression auto-rolls back, and the
- * outcome is recorded (DEP-2, DEP-5).
+ * outcome is recorded (DEP-2, DEP-5). T4.1.6 verification — that recording
+ * lands as a versioned artifact under `artifacts/deploy/`, not a JSONL line
+ * under `.mpgm/`, so it survives past this process (DESIGN §9.12).
  *
  * `demo:release` (T4.1.2) proves a release *can* be delivered and rolled
  * back when something else decides to. This script proves the part T4.1.2
@@ -22,16 +24,21 @@
  *
  * Requires a Docker daemon, the same as `demo:env` and `demo:release`.
  */
-import { readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import {
+  ArtifactSchemaRegistry,
+  ArtifactStore,
   CapabilityRegistry,
   composeProvider,
+  defineArtifactSchema,
   dockerReleaseProvider,
   envProvisionContract,
+  outcomeBasePath,
   readOutcomes,
   recordOutcome,
   releaseDeliverContract,
+  releaseOutcomeSchema,
   verifyRelease,
 } from '../../dist/index.js';
 
@@ -52,8 +59,31 @@ async function content() {
 }
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
-const outcomesPath = join(repo, '.mpgm', 'demo', 'release-outcomes-test.jsonl');
-rmSync(outcomesPath, { force: true });
+
+// Start clean: a previous local run of this script left its own versions
+// behind (they are real, committable files now — see §4 below), and this
+// run's assertions expect to see exactly the two it produces.
+const deployDir = join(repo, 'artifacts', 'deploy');
+if (existsSync(deployDir)) {
+  for (const entry of readdirSync(deployDir)) {
+    if (/^test\.v\d+\.md$/.test(entry)) {
+      rmSync(join(deployDir, entry));
+    }
+  }
+}
+
+const outcomeArtifacts = new ArtifactStore({
+  root: repo,
+  schemas: new ArtifactSchemaRegistry([
+    defineArtifactSchema('release-outcome', releaseOutcomeSchema),
+  ]),
+});
+const producedBy = {
+  task: 'demo-release-verify',
+  role: 'harness',
+  model: 'n/a',
+  runId: 'demo-release-verify',
+};
 
 const registry = new CapabilityRegistry();
 const env = registry.bind(envProvisionContract, composeProvider());
@@ -92,7 +122,11 @@ try {
     },
     { rollback: rollbackTo },
   );
-  recordOutcome(outcomesPath, outcome1);
+  const artifact1 = recordOutcome(outcomeArtifacts, {
+    env: 'test',
+    outcome: outcome1,
+    producedBy,
+  });
   check(
     'the first release verifies healthy and promotes — nothing to roll back to yet',
     outcome1.decision === 'promoted',
@@ -153,7 +187,11 @@ try {
     },
     { rollback: rollbackTo },
   );
-  recordOutcome(outcomesPath, outcome2);
+  const artifact2 = recordOutcome(outcomeArtifacts, {
+    env: 'test',
+    outcome: outcome2,
+    producedBy,
+  });
 
   check(
     'the harness decided to roll back — nobody told it to',
@@ -180,17 +218,44 @@ try {
     servedAfterRollback.text.slice(0, 80),
   );
 
-  process.stdout.write('\n4. The outcome is recorded — durably, not just returned\n');
-  const recorded = readOutcomes(outcomesPath);
+  process.stdout.write(
+    '\n4. The outcome is recorded as a versioned artifact — durably, not just returned\n',
+  );
+  const recorded = readOutcomes(outcomeArtifacts, 'test');
   check('both verification runs are on disk, oldest first', recorded.length === 2);
   check(
     'the recorded rollback outcome matches what verifyRelease returned',
     JSON.stringify(recorded[1]) === JSON.stringify(outcome2),
   );
-  // A second process reading the file back sees exactly what the raw JSON
-  // says — proof this is a real file, not the in-memory object reused.
-  const rawLines = readFileSync(outcomesPath, 'utf8').trim().split('\n');
-  check('one JSON line per outcome', rawLines.length === 2);
+  // Each run got its own immutable version, under `artifacts/`, not `.mpgm/`
+  // (which ADR-2 gitignores) — this is what "survives the run that produced
+  // it" means (DESIGN §9.12): the file is still here after this process
+  // exits, ready to be committed like any other artifact. Checked relative
+  // to `repo`, not by substring on the absolute path — the checkout itself
+  // can legitimately sit under a `.mpgm/worktrees/...` directory (as this
+  // one does), which a bare `.includes('.mpgm')` would mistake for the
+  // artifact living there.
+  const relative1 = relative(repo, artifact1.path);
+  const relative2 = relative(repo, artifact2.path);
+  check(
+    'each outcome landed under artifacts/deploy/, never under .mpgm/',
+    existsSync(artifact1.path) &&
+      existsSync(artifact2.path) &&
+      relative1 === outcomeBasePath('test').replace('.md', '.v1.md') &&
+      relative2 === outcomeBasePath('test').replace('.md', '.v2.md'),
+    `${relative1} / ${relative2}`,
+  );
+  // A second process reading the file back sees exactly what the raw
+  // frontmatter says — proof this is a real, self-describing file, not the
+  // in-memory object reused.
+  const raw = readFileSync(artifact2.path, 'utf8');
+  check(
+    'the file is versioned markdown with frontmatter, not a JSONL line',
+    raw.startsWith('---\n') &&
+      raw.includes('schema: release-outcome') &&
+      raw.includes('version: 2'),
+    raw.slice(0, 200),
+  );
 } finally {
   await env.invoke('down', { repo, env: 'test' }).catch(() => undefined);
 }

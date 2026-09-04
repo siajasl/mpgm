@@ -22,8 +22,9 @@ import {
  * never toward "probably fine" (CONV-4) — executes the rollback through the
  * very `release.deliver#rollback` operation T4.1.2 built and tested,
  * confirms *that* actually worked, and returns the outcome as a single
- * validated record a caller persists (`recordOutcome`/`readOutcomes` in
- * `outcome-log.ts`) — DEP-5's "record the outcome".
+ * validated record a caller persists as a versioned artifact
+ * (`recordOutcome`/`readOutcomes` in `outcome-log.ts`) — DEP-5's "record the
+ * outcome as a release artifact" (DESIGN §9.12).
  *
  * What this module does not do: implement rollout mechanics (still
  * `release.deliver`/`env.provision`'s job), or decide what a project's smoke
