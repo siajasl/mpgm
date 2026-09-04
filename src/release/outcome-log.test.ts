@@ -1,16 +1,50 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readOutcomes, recordOutcome } from './outcome-log.js';
-import type { ReleaseOutcome } from './verify.js';
+import { ArtifactStore } from '../artifact/store.js';
+import {
+  ArtifactSchemaRegistry,
+  defineArtifactSchema,
+} from '../artifact/schema-registry.js';
+import { outcomeBasePath, readOutcomes, recordOutcome } from './outcome-log.js';
+import { releaseOutcomeSchema, type ReleaseOutcome } from './verify.js';
+
+const provenance = {
+  task: 'release-verify',
+  role: 'harness',
+  model: 'n/a',
+  runId: 'run-1',
+};
 
 const tempDirs: string[] = [];
 
-function outcomePath(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'mpgm-outcome-'));
+function newStore(): ArtifactStore {
+  // `root` is nested one level inside the mkdtemp dir (rather than being the
+  // mkdtemp dir itself) so that `store.root`'s *parent* — where a traversal
+  // that escapes the store would land — is still inside the directory
+  // `afterEach` removes. Otherwise an escape assertion built from
+  // `join(store.root, '..', ...)` points at the shared, machine-global
+  // tmpdir, which `afterEach` never cleans and which can fail against
+  // unmodified code if a stray file from a prior run (or a failed mutation
+  // check) is still sitting there.
+  const dir = mkdtempSync(join(tmpdir(), 'mpgm-outcomes-'));
   tempDirs.push(dir);
-  return join(dir, 'nested', 'test.jsonl');
+  const root = join(dir, 'repo');
+  mkdirSync(root);
+  return new ArtifactStore({
+    root,
+    schemas: new ArtifactSchemaRegistry([
+      defineArtifactSchema('release-outcome', releaseOutcomeSchema),
+    ]),
+  });
 }
 
 afterEach(() => {
@@ -33,36 +67,182 @@ function outcome(overrides: Partial<ReleaseOutcome> = {}): ReleaseOutcome {
 }
 
 describe('recordOutcome / readOutcomes', () => {
-  it('reads an absent log as no outcomes yet, not an error', () => {
-    expect(readOutcomes(outcomePath())).toEqual([]);
+  it('reads an environment with no outcome artifact yet as no outcomes, not an error', () => {
+    const store = newStore();
+    expect(readOutcomes(store, 'test')).toEqual([]);
   });
 
-  it('creates parent directories and appends a validated outcome', () => {
-    const path = outcomePath();
-    recordOutcome(path, outcome());
-    expect(readOutcomes(path)).toEqual([outcome()]);
+  it('records a validated outcome as a versioned artifact under artifacts/deploy', () => {
+    const store = newStore();
+    const artifact = recordOutcome(store, {
+      outcome: outcome(),
+      producedBy: provenance,
+    });
+
+    expect(artifact.version).toBe(1);
+    expect(artifact.path).toBe(
+      join(store.root, outcomeBasePath('test').replace('.md', '.v1.md')),
+    );
+    expect(readOutcomes(store, 'test')).toEqual([outcome()]);
   });
 
-  it('appends rather than overwrites — every outcome stays, oldest first', () => {
-    const path = outcomePath();
-    recordOutcome(path, outcome({ release: { version: '1.0.0', digest: 'sha256:aaa' } }));
-    recordOutcome(
-      path,
-      outcome({
+  it('survives the run that produced it: the file is on disk, not under .mpgm', () => {
+    const store = newStore();
+    const artifact = recordOutcome(store, {
+      outcome: outcome(),
+      producedBy: provenance,
+    });
+
+    // Computed independently of `artifact.path` (which is, by construction,
+    // exactly the path `store.write` just wrote to — asserting `existsSync`
+    // on it could never fail regardless of where that path actually is).
+    // This asserts the file exists at the location the contract promises.
+    const expectedPath = join(
+      store.root,
+      outcomeBasePath('test').replace('.md', '.v1.md'),
+    );
+    expect(artifact.path).toBe(expectedPath);
+    expect(existsSync(expectedPath)).toBe(true);
+    expect(expectedPath).not.toMatch(/\.mpgm/);
+    expect(expectedPath.startsWith(join(store.root, 'artifacts', 'deploy'))).toBe(true);
+
+    // Real markdown with frontmatter, readable without going through this
+    // module — the point of an artifact over a JSONL line (DESIGN §9.12).
+    const raw = readFileSync(expectedPath, 'utf8');
+    expect(raw.startsWith('---\n')).toBe(true);
+    expect(raw).toContain('schema: release-outcome');
+    expect(raw).toContain('decision: promoted');
+  });
+
+  it('each recorded outcome is its own immutable version — appended, never overwritten', () => {
+    const store = newStore();
+    recordOutcome(store, {
+      outcome: outcome({ release: { version: '1.0.0', digest: 'sha256:aaa' } }),
+      producedBy: provenance,
+    });
+    const second = recordOutcome(store, {
+      outcome: outcome({
         release: { version: '2.0.0', digest: 'sha256:bbb' },
         decision: 'rolled-back',
         reason: 'smoke checks failed; rolled back',
         rolledBackTo: { version: '1.0.0', digest: 'sha256:aaa' },
       }),
-    );
+      producedBy: provenance,
+    });
 
-    const recorded = readOutcomes(path);
+    expect(second.version).toBe(2);
+    const recorded = readOutcomes(store, 'test');
     expect(recorded).toHaveLength(2);
     expect(recorded[0]?.release.version).toBe('1.0.0');
     expect(recorded[1]?.decision).toBe('rolled-back');
+
+    // The first version's file is untouched — still readable on its own.
+    const first = store.read(outcomeBasePath('test'), 1);
+    expect((first.data as ReleaseOutcome).release.version).toBe('1.0.0');
   });
 
+  it('keeps different environments in separate artifacts', () => {
+    const store = newStore();
+    recordOutcome(store, { outcome: outcome(), producedBy: provenance });
+    recordOutcome(store, {
+      outcome: outcome({ env: 'staging' }),
+      producedBy: provenance,
+    });
+
+    expect(readOutcomes(store, 'test')).toHaveLength(1);
+    expect(readOutcomes(store, 'staging')).toHaveLength(1);
+  });
+
+  it(
+    'refuses to read a history with a gap in its version sequence, rather than ' +
+      'silently returning only the versions present (fail closed, CONV-4)',
+    () => {
+      const store = newStore();
+      recordOutcome(store, {
+        outcome: outcome({ release: { version: '1.0.0', digest: 'sha256:aaa' } }),
+        producedBy: provenance,
+      });
+      recordOutcome(store, {
+        outcome: outcome({ release: { version: '2.0.0', digest: 'sha256:bbb' } }),
+        producedBy: provenance,
+      });
+      // Delete v1 out from under the store — an old file removed, or never
+      // committed by whoever produced it. v2 (the latest) still exists, so
+      // readOutcomes must not silently report "just v2" as the environment's
+      // whole history: a gap means the history cannot be trusted.
+      unlinkSync(store.pathFor(outcomeBasePath('test'), 1));
+      expect(() => readOutcomes(store, 'test')).toThrow(/not found/);
+    },
+  );
+
   it('refuses to record something releaseOutcomeSchema does not allow (fail closed)', () => {
-    expect(() => recordOutcome(outcomePath(), outcome({ reason: '' }))).toThrow();
+    const store = newStore();
+    expect(() =>
+      recordOutcome(store, {
+        outcome: outcome({ reason: '' }),
+        producedBy: provenance,
+      }),
+    ).toThrow();
+    expect(readOutcomes(store, 'test')).toEqual([]);
+  });
+
+  it('traces to DEP-5 by default', () => {
+    const store = newStore();
+    const artifact = recordOutcome(store, {
+      outcome: outcome(),
+      producedBy: provenance,
+    });
+    expect(artifact.tracesTo).toEqual(['DEP-5']);
+  });
+
+  it(
+    "the artifact is always filed under the outcome's own env — there is no " +
+      'separate env option a caller could disagree with it',
+    () => {
+      const store = newStore();
+      // A previous version of `recordOutcome` took an independent `env` option
+      // and used it to build the path, so `{ env: 'test', outcome: { ...,
+      // env: 'prod' } }` filed a prod outcome under test's artifact and
+      // `readOutcomes(store, 'test')` read it back as test's own history — the
+      // "deploy gate deciding blind" DESIGN §9.12 exists to prevent. There is
+      // no `env` option any more (TS refuses to compile one), so this asserts
+      // the only path left: the outcome always lands under its own `env`.
+      const artifact = recordOutcome(store, {
+        outcome: outcome({ env: 'prod' }),
+        producedBy: provenance,
+      });
+      expect(artifact.path).toBe(
+        join(store.root, outcomeBasePath('prod').replace('.md', '.v1.md')),
+      );
+      expect(readOutcomes(store, 'prod')).toEqual([outcome({ env: 'prod' })]);
+      expect(readOutcomes(store, 'test')).toEqual([]);
+    },
+  );
+
+  it('refuses an env that could escape artifacts/deploy, e.g. a path traversal (fail closed)', () => {
+    const store = newStore();
+    // `artifacts/deploy/` is two segments below the store root, so an env of
+    // only `../..` normalises back to the root itself (confirmed with
+    // node's own `path.join`) — an assertion phrased against "outside the
+    // store's root" would pass whether or not the guard exists. `../../..`
+    // is the shallowest traversal that actually leaves the root, landing at
+    // `dirname(store.root)/escaped.v1.md`; that is the file this asserts
+    // never appears, which only holds if the guard actually ran.
+    expect(() =>
+      recordOutcome(store, {
+        outcome: outcome({ env: '../../../escaped' }),
+        producedBy: provenance,
+      }),
+    ).toThrow(/not a valid environment name/);
+    // Nothing escaped: no file landed anywhere outside the store's own root.
+    expect(existsSync(join(store.root, '..', 'escaped.v1.md'))).toBe(false);
+    expect(existsSync(join(store.root, 'artifacts', 'deploy'))).toBe(false);
+  });
+
+  it('refuses an env with the same escape by way of readOutcomes, not only recordOutcome', () => {
+    const store = newStore();
+    expect(() => readOutcomes(store, '../../escaped')).toThrow(
+      /not a valid environment name/,
+    );
   });
 });

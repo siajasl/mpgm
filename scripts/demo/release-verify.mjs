@@ -1,6 +1,8 @@
 /**
  * T4.1.3 verification — an induced regression auto-rolls back, and the
- * outcome is recorded (DEP-2, DEP-5).
+ * outcome is recorded (DEP-2, DEP-5). T4.1.6 verification — that recording
+ * lands as a versioned artifact under `artifacts/deploy/`, not a JSONL line
+ * under `.mpgm/`, so it survives past this process (DESIGN §9.12).
  *
  * `demo:release` (T4.1.2) proves a release *can* be delivered and rolled
  * back when something else decides to. This script proves the part T4.1.2
@@ -20,18 +22,35 @@
  * changes on the environment, not no-ops the assertions below could not
  * tell from doing nothing.
  *
+ * The outcome artifacts land under a scratch root (`mkdtempSync`), not this
+ * checkout — the same choice every other artifact-writing demo makes
+ * (`definition-phase.mjs`, `design-phase.mjs`, `plan-phase.mjs`,
+ * `scope-phase.mjs`, `trace-queries.mjs`, `switchover.mjs`). What is under
+ * test is `ArtifactStore`'s own layout guarantee (`artifacts/deploy/<env>.vN.md`,
+ * versioned markdown with frontmatter) — a property of the mechanism, not of
+ * this repository — and proving it needs no write into the repository this
+ * script happens to run from. Writing into the real `artifacts/` here would
+ * leave `npm run check` (`demo:verify` is part of it) with a dirty working
+ * tree every run, which `mergeChange` refuses to merge into.
+ *
  * Requires a Docker daemon, the same as `demo:env` and `demo:release`.
  */
-import { readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import {
+  ArtifactSchemaRegistry,
+  ArtifactStore,
   CapabilityRegistry,
   composeProvider,
+  defineArtifactSchema,
   dockerReleaseProvider,
   envProvisionContract,
+  outcomeBasePath,
   readOutcomes,
   recordOutcome,
   releaseDeliverContract,
+  releaseOutcomeSchema,
   verifyRelease,
 } from '../../dist/index.js';
 
@@ -52,8 +71,23 @@ async function content() {
 }
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
-const outcomesPath = join(repo, '.mpgm', 'demo', 'release-outcomes-test.jsonl');
-rmSync(outcomesPath, { force: true });
+
+// Where the outcome artifacts land: a scratch root, never this checkout
+// (see the module comment above). Removed in `finally`, below.
+const scratchRoot = mkdtempSync(join(tmpdir(), 'mpgm-verify-'));
+
+const outcomeArtifacts = new ArtifactStore({
+  root: scratchRoot,
+  schemas: new ArtifactSchemaRegistry([
+    defineArtifactSchema('release-outcome', releaseOutcomeSchema),
+  ]),
+});
+const producedBy = {
+  task: 'demo-release-verify',
+  role: 'harness',
+  model: 'n/a',
+  runId: 'demo-release-verify',
+};
 
 const registry = new CapabilityRegistry();
 const env = registry.bind(envProvisionContract, composeProvider());
@@ -92,7 +126,10 @@ try {
     },
     { rollback: rollbackTo },
   );
-  recordOutcome(outcomesPath, outcome1);
+  const artifact1 = recordOutcome(outcomeArtifacts, {
+    outcome: outcome1,
+    producedBy,
+  });
   check(
     'the first release verifies healthy and promotes — nothing to roll back to yet',
     outcome1.decision === 'promoted',
@@ -153,7 +190,10 @@ try {
     },
     { rollback: rollbackTo },
   );
-  recordOutcome(outcomesPath, outcome2);
+  const artifact2 = recordOutcome(outcomeArtifacts, {
+    outcome: outcome2,
+    producedBy,
+  });
 
   check(
     'the harness decided to roll back — nobody told it to',
@@ -180,19 +220,68 @@ try {
     servedAfterRollback.text.slice(0, 80),
   );
 
-  process.stdout.write('\n4. The outcome is recorded — durably, not just returned\n');
-  const recorded = readOutcomes(outcomesPath);
+  process.stdout.write(
+    '\n4. The outcome is recorded as a versioned artifact — durably, not just returned\n',
+  );
+  const recorded = readOutcomes(outcomeArtifacts, 'test');
   check('both verification runs are on disk, oldest first', recorded.length === 2);
   check(
     'the recorded rollback outcome matches what verifyRelease returned',
     JSON.stringify(recorded[1]) === JSON.stringify(outcome2),
   );
-  // A second process reading the file back sees exactly what the raw JSON
-  // says — proof this is a real file, not the in-memory object reused.
-  const rawLines = readFileSync(outcomesPath, 'utf8').trim().split('\n');
-  check('one JSON line per outcome', rawLines.length === 2);
+  // Each run got its own immutable version, under `artifacts/deploy/`, laid
+  // out exactly as `outcomeBasePath` promises. Checked against paths computed
+  // independently of `artifact1.path`/`artifact2.path` themselves — those are,
+  // by construction, exactly the path `recordOutcome` just wrote to, so an
+  // `existsSync` on them could never fail regardless of where that path
+  // actually is. Computing the expected path separately (via `outcomeBasePath`
+  // against `scratchRoot`) and checking existence there is what actually
+  // exercises the contract.
+  const expectedPath1 = join(
+    scratchRoot,
+    outcomeBasePath('test').replace('.md', '.v1.md'),
+  );
+  const expectedPath2 = join(
+    scratchRoot,
+    outcomeBasePath('test').replace('.md', '.v2.md'),
+  );
+  const relative1 = relative(scratchRoot, artifact1.path);
+  const relative2 = relative(scratchRoot, artifact2.path);
+  check(
+    'each outcome landed under artifacts/deploy/, laid out as version 1 and version 2',
+    artifact1.path === expectedPath1 &&
+      artifact2.path === expectedPath2 &&
+      existsSync(expectedPath1) &&
+      existsSync(expectedPath2) &&
+      relative1 === outcomeBasePath('test').replace('.md', '.v1.md') &&
+      relative2 === outcomeBasePath('test').replace('.md', '.v2.md'),
+    `${relative1} / ${relative2}`,
+  );
+  // Read back through a second `ArtifactStore` bound to the same root, not
+  // this module's own in-process write path — proof this is a real,
+  // self-describing file on disk, not the in-memory object reused.
+  const rereadStore = new ArtifactStore({
+    root: scratchRoot,
+    schemas: new ArtifactSchemaRegistry([
+      defineArtifactSchema('release-outcome', releaseOutcomeSchema),
+    ]),
+  });
+  const raw = readFileSync(expectedPath2, 'utf8');
+  check(
+    'the file is versioned markdown with frontmatter, not a JSONL line',
+    raw.startsWith('---\n') &&
+      raw.includes('schema: release-outcome') &&
+      raw.includes('version: 2'),
+    raw.slice(0, 200),
+  );
+  check(
+    'a fresh ArtifactStore instance reads back the same outcome',
+    JSON.stringify(rereadStore.read('artifacts/deploy/test.md', 2).data) ===
+      JSON.stringify(outcome2),
+  );
 } finally {
   await env.invoke('down', { repo, env: 'test' }).catch(() => undefined);
+  rmSync(scratchRoot, { recursive: true, force: true });
 }
 
 process.stdout.write(

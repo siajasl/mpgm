@@ -224,6 +224,23 @@ describe('releaseOutcomeSchema', () => {
       ).success,
     ).toBe(false);
   });
+
+  it(
+    'rejects an env that is not path-safe kebab-case — an outcome that ' +
+      'outcome-log.ts#outcomeBasePath would refuse to file cannot be constructed ' +
+      'in the first place (CONV-5)',
+    () => {
+      expect(
+        releaseOutcomeSchema.safeParse(outcome({ env: '../../escaped' })).success,
+      ).toBe(false);
+      expect(releaseOutcomeSchema.safeParse(outcome({ env: 'Prod' })).success).toBe(
+        false,
+      );
+      expect(releaseOutcomeSchema.safeParse(outcome({ env: 'test_1' })).success).toBe(
+        false,
+      );
+    },
+  );
 });
 
 describe('verifyReleaseInput', () => {
@@ -247,6 +264,29 @@ describe('verifyReleaseInput', () => {
       }).success,
     ).toBe(false);
   });
+
+  it(
+    'rejects a non-kebab-case env before any check or rollback would run — the same ' +
+      'path-safety releaseOutcomeSchema enforces on the way out, enforced here on the way in',
+    () => {
+      expect(
+        verifyReleaseInput.safeParse({
+          env: 'Prod',
+          release: { version: '2.0.0', digest: 'sha256:bbb' },
+          checks: [check()],
+          previous: null,
+        }).success,
+      ).toBe(false);
+      expect(
+        verifyReleaseInput.safeParse({
+          env: '../../escaped',
+          release: { version: '2.0.0', digest: 'sha256:bbb' },
+          checks: [check()],
+          previous: null,
+        }).success,
+      ).toBe(false);
+    },
+  );
 });
 
 describe('verifyRelease', () => {
@@ -299,6 +339,31 @@ describe('verifyRelease', () => {
     expect(outcome.checks.every((result) => !result.ok)).toBe(true);
     expect(releaseOutcomeSchema.safeParse(outcome).success).toBe(true);
   });
+
+  it(
+    'refuses a path-unsafe env before running any smoke check or calling rollback — ' +
+      'the whole point of validating env on the way in rather than only on the way out',
+    async () => {
+      const fetcher = vi.fn(() => Promise.resolve(response(200, 'now serving 2.0.0')));
+      const rollback = vi.fn(() => Promise.resolve({}));
+
+      await expect(
+        verifyRelease(
+          {
+            env: 'Prod',
+            release,
+            checks: [check()],
+            previous: { artifact: previousArtifact, checks: previousChecks },
+            policy: { attempts: 1, intervalMs: 0 },
+          },
+          { fetcher, sleep: noSleep, rollback },
+        ),
+      ).rejects.toThrow(/kebab-case/);
+
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(rollback).not.toHaveBeenCalled();
+    },
+  );
 
   it('reports rollback-unavailable rather than pretending to roll back a first release', async () => {
     const fetcher: Fetcher = () => Promise.resolve(response(200, 'broken'));
