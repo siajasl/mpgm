@@ -22,9 +22,21 @@
  * changes on the environment, not no-ops the assertions below could not
  * tell from doing nothing.
  *
+ * The outcome artifacts land under a scratch root (`mkdtempSync`), not this
+ * checkout — the same choice every other artifact-writing demo makes
+ * (`definition-phase.mjs`, `design-phase.mjs`, `plan-phase.mjs`,
+ * `scope-phase.mjs`, `trace-queries.mjs`, `switchover.mjs`). What is under
+ * test is `ArtifactStore`'s own layout guarantee (`artifacts/deploy/<env>.vN.md`,
+ * versioned markdown with frontmatter) — a property of the mechanism, not of
+ * this repository — and proving it needs no write into the repository this
+ * script happens to run from. Writing into the real `artifacts/` here would
+ * leave `npm run check` (`demo:verify` is part of it) with a dirty working
+ * tree every run, which `mergeChange` refuses to merge into.
+ *
  * Requires a Docker daemon, the same as `demo:env` and `demo:release`.
  */
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import {
   ArtifactSchemaRegistry,
@@ -60,20 +72,12 @@ async function content() {
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 
-// Start clean: a previous local run of this script left its own versions
-// behind (they are real, committable files now — see §4 below), and this
-// run's assertions expect to see exactly the two it produces.
-const deployDir = join(repo, 'artifacts', 'deploy');
-if (existsSync(deployDir)) {
-  for (const entry of readdirSync(deployDir)) {
-    if (/^test\.v\d+\.md$/.test(entry)) {
-      rmSync(join(deployDir, entry));
-    }
-  }
-}
+// Where the outcome artifacts land: a scratch root, never this checkout
+// (see the module comment above). Removed in `finally`, below.
+const scratchRoot = mkdtempSync(join(tmpdir(), 'mpgm-verify-'));
 
 const outcomeArtifacts = new ArtifactStore({
-  root: repo,
+  root: scratchRoot,
   schemas: new ArtifactSchemaRegistry([
     defineArtifactSchema('release-outcome', releaseOutcomeSchema),
   ]),
@@ -123,7 +127,6 @@ try {
     { rollback: rollbackTo },
   );
   const artifact1 = recordOutcome(outcomeArtifacts, {
-    env: 'test',
     outcome: outcome1,
     producedBy,
   });
@@ -188,7 +191,6 @@ try {
     { rollback: rollbackTo },
   );
   const artifact2 = recordOutcome(outcomeArtifacts, {
-    env: 'test',
     outcome: outcome2,
     producedBy,
   });
@@ -227,28 +229,44 @@ try {
     'the recorded rollback outcome matches what verifyRelease returned',
     JSON.stringify(recorded[1]) === JSON.stringify(outcome2),
   );
-  // Each run got its own immutable version, under `artifacts/`, not `.mpgm/`
-  // (which ADR-2 gitignores) — this is what "survives the run that produced
-  // it" means (DESIGN §9.12): the file is still here after this process
-  // exits, ready to be committed like any other artifact. Checked relative
-  // to `repo`, not by substring on the absolute path — the checkout itself
-  // can legitimately sit under a `.mpgm/worktrees/...` directory (as this
-  // one does), which a bare `.includes('.mpgm')` would mistake for the
-  // artifact living there.
-  const relative1 = relative(repo, artifact1.path);
-  const relative2 = relative(repo, artifact2.path);
+  // Each run got its own immutable version, under `artifacts/deploy/`, laid
+  // out exactly as `outcomeBasePath` promises. Checked against paths computed
+  // independently of `artifact1.path`/`artifact2.path` themselves — those are,
+  // by construction, exactly the path `recordOutcome` just wrote to, so an
+  // `existsSync` on them could never fail regardless of where that path
+  // actually is. Computing the expected path separately (via `outcomeBasePath`
+  // against `scratchRoot`) and checking existence there is what actually
+  // exercises the contract.
+  const expectedPath1 = join(
+    scratchRoot,
+    outcomeBasePath('test').replace('.md', '.v1.md'),
+  );
+  const expectedPath2 = join(
+    scratchRoot,
+    outcomeBasePath('test').replace('.md', '.v2.md'),
+  );
+  const relative1 = relative(scratchRoot, artifact1.path);
+  const relative2 = relative(scratchRoot, artifact2.path);
   check(
-    'each outcome landed under artifacts/deploy/, never under .mpgm/',
-    existsSync(artifact1.path) &&
-      existsSync(artifact2.path) &&
+    'each outcome landed under artifacts/deploy/, laid out as version 1 and version 2',
+    artifact1.path === expectedPath1 &&
+      artifact2.path === expectedPath2 &&
+      existsSync(expectedPath1) &&
+      existsSync(expectedPath2) &&
       relative1 === outcomeBasePath('test').replace('.md', '.v1.md') &&
       relative2 === outcomeBasePath('test').replace('.md', '.v2.md'),
     `${relative1} / ${relative2}`,
   );
-  // A second process reading the file back sees exactly what the raw
-  // frontmatter says — proof this is a real, self-describing file, not the
-  // in-memory object reused.
-  const raw = readFileSync(artifact2.path, 'utf8');
+  // Read back through a second `ArtifactStore` bound to the same root, not
+  // this module's own in-process write path — proof this is a real,
+  // self-describing file on disk, not the in-memory object reused.
+  const rereadStore = new ArtifactStore({
+    root: scratchRoot,
+    schemas: new ArtifactSchemaRegistry([
+      defineArtifactSchema('release-outcome', releaseOutcomeSchema),
+    ]),
+  });
+  const raw = readFileSync(expectedPath2, 'utf8');
   check(
     'the file is versioned markdown with frontmatter, not a JSONL line',
     raw.startsWith('---\n') &&
@@ -256,8 +274,14 @@ try {
       raw.includes('version: 2'),
     raw.slice(0, 200),
   );
+  check(
+    'a fresh ArtifactStore instance reads back the same outcome',
+    JSON.stringify(rereadStore.read('artifacts/deploy/test.md', 2).data) ===
+      JSON.stringify(outcome2),
+  );
 } finally {
   await env.invoke('down', { repo, env: 'test' }).catch(() => undefined);
+  rmSync(scratchRoot, { recursive: true, force: true });
 }
 
 process.stdout.write(

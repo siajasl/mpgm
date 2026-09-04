@@ -509,6 +509,14 @@ describe('schema registration', () => {
     expect(projectOutputSchemas().has('defect')).toBe(false);
   });
 
+  it('registers release-outcome as a stored artifact only, not a session output', () => {
+    // T4.1.6, DEP-5: a ReleaseOutcome is built by `verifyRelease`'s own
+    // health-check run (`src/release/verify.ts`) from what its smoke checks
+    // found, not asserted whole by one session's structured output.
+    expect(projectArtifactSchemas().families).toContain('release-outcome');
+    expect(projectOutputSchemas().has('release-outcome')).toBe(false);
+  });
+
   it('derives a JSON Schema the structured-output tool can accept', () => {
     // The requirement union is nested inside an object rather than at the top
     // level: a top-level union emits `oneOf` with no `type`, which the API
