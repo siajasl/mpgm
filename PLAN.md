@@ -1,6 +1,6 @@
 # PLAN — mpgm Build Plan
 
-**Status:** v0.4 — adds per-task model recommendations · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.5 — T4.1.4 split after three sessions could not close it · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-04
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.31. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
@@ -128,8 +128,10 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 |---|---|---|---|
 | T4.1.1 `env.provision` contract + IaC for test/staging envs | env up/down from repo config only | §4.7, DEP-1/4 | Sonnet 5 |
 | T4.1.2 `release.deliver` contract: artifact assembly (version, changelog, rollback path), CD delegation | staged release with tested rollback on sample service | §4.7, DEP-2/3 | Sonnet 5 |
-| T4.1.3 Health verification + promote/rollback decisions; release outcome artifacts | induced regression auto-rolls back; outcome recorded | §4.7, DEP-2/5 | Sonnet 5 |
-| T4.1.4 Deploy gate: HIL-2 hard approval wiring; `mpgm rollback` verb | production deploy impossible without approval event | §4.4, HIL-2 | Opus 5 |
+| T4.1.3 Health verification + promote/rollback decisions | induced regression auto-rolls back; outcome recorded | §4.7, DEP-2/5 | Sonnet 5 |
+| T4.1.4 Production deploy gate: HIL-2 hard approval wiring on every route to production | production deploy impossible without approval event; every route gated, not only the release path | §4.4, §9.10, HIL-2 | Opus 5 |
+| T4.1.5 The `mpgm rollback` verb | operator rolls back a declared environment from the CLI; recorded, not gated | §4.4, §9.11, DEP-2, HIL-5 | Sonnet 5 |
+| T4.1.6 Release outcome artifacts | a deploy outcome is a versioned artifact that survives its run | §4.5, §9.12, DEP-5 | Sonnet 5 |
 
 **Verification:** sample service (T3.2.6) deployed staging → (canary via CD tool) → promoted; a second release with an induced fault auto-rolls back with the outcome recorded per DEP-5 (full incident records arrive with T5.1.2).
 

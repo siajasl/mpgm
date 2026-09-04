@@ -260,12 +260,34 @@ export const MPGM_PLAN = {
             },
             {
               id: 'T4.1.4',
-              title: 'Deploy gate and the rollback verb',
+              title: 'Production deploy gate',
               completionCriteria: [
                 'A production deploy is impossible without an approval event.',
+                'Every route to a declared production environment is gated, not ' +
+                  'only the release path.',
               ],
               dependsOn: ['T4.1.3'],
               tracesTo: ['HIL-2'],
+            },
+            {
+              id: 'T4.1.5',
+              title: 'The rollback verb',
+              completionCriteria: [
+                'An operator can roll back a declared environment from the CLI, ' +
+                  'and the rollback is recorded without being gated.',
+              ],
+              dependsOn: ['T4.1.4'],
+              tracesTo: ['DEP-2', 'HIL-5'],
+            },
+            {
+              id: 'T4.1.6',
+              title: 'Release outcome artifacts',
+              completionCriteria: [
+                'A deploy outcome is written as a versioned artifact and ' +
+                  'survives the run that produced it.',
+              ],
+              dependsOn: ['T4.1.3'],
+              tracesTo: ['DEP-5'],
             },
           ],
         },
