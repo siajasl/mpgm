@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -136,6 +136,28 @@ describe('recordOutcome / readOutcomes', () => {
     expect(readOutcomes(store, 'staging')).toHaveLength(1);
   });
 
+  it(
+    'refuses to read a history with a gap in its version sequence, rather than ' +
+      'silently returning only the versions present (fail closed, CONV-4)',
+    () => {
+      const store = newStore();
+      recordOutcome(store, {
+        outcome: outcome({ release: { version: '1.0.0', digest: 'sha256:aaa' } }),
+        producedBy: provenance,
+      });
+      recordOutcome(store, {
+        outcome: outcome({ release: { version: '2.0.0', digest: 'sha256:bbb' } }),
+        producedBy: provenance,
+      });
+      // Delete v1 out from under the store — an old file removed, or never
+      // committed by whoever produced it. v2 (the latest) still exists, so
+      // readOutcomes must not silently report "just v2" as the environment's
+      // whole history: a gap means the history cannot be trusted.
+      unlinkSync(store.pathFor(outcomeBasePath('test'), 1));
+      expect(() => readOutcomes(store, 'test')).toThrow(/not found/);
+    },
+  );
+
   it('refuses to record something releaseOutcomeSchema does not allow (fail closed)', () => {
     const store = newStore();
     expect(() =>
@@ -182,9 +204,16 @@ describe('recordOutcome / readOutcomes', () => {
 
   it('refuses an env that could escape artifacts/deploy, e.g. a path traversal (fail closed)', () => {
     const store = newStore();
+    // `artifacts/deploy/` is two segments below the store root, so an env of
+    // only `../..` normalises back to the root itself (confirmed with
+    // node's own `path.join`) — an assertion phrased against "outside the
+    // store's root" would pass whether or not the guard exists. `../../..`
+    // is the shallowest traversal that actually leaves the root, landing at
+    // `dirname(store.root)/escaped.v1.md`; that is the file this asserts
+    // never appears, which only holds if the guard actually ran.
     expect(() =>
       recordOutcome(store, {
-        outcome: outcome({ env: '../../escaped' }),
+        outcome: outcome({ env: '../../../escaped' }),
         producedBy: provenance,
       }),
     ).toThrow(/not a valid environment name/);

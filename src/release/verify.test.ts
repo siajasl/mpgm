@@ -224,6 +224,23 @@ describe('releaseOutcomeSchema', () => {
       ).success,
     ).toBe(false);
   });
+
+  it(
+    'rejects an env that is not path-safe kebab-case — an outcome that ' +
+      'outcome-log.ts#outcomeBasePath would refuse to file cannot be constructed ' +
+      'in the first place (CONV-5)',
+    () => {
+      expect(
+        releaseOutcomeSchema.safeParse(outcome({ env: '../../escaped' })).success,
+      ).toBe(false);
+      expect(releaseOutcomeSchema.safeParse(outcome({ env: 'Prod' })).success).toBe(
+        false,
+      );
+      expect(releaseOutcomeSchema.safeParse(outcome({ env: 'test_1' })).success).toBe(
+        false,
+      );
+    },
+  );
 });
 
 describe('verifyReleaseInput', () => {

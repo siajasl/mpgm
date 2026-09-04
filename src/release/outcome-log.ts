@@ -1,15 +1,5 @@
 import type { Artifact, ArtifactStore, Provenance } from '../artifact/store.js';
-import { releaseOutcomeSchema, type ReleaseOutcome } from './verify.js';
-
-/**
- * `env`, kebab-case only. `outcomeBasePath` interpolates it directly into a
- * filesystem path — the same shape `roles/<name>.md` and `phases/<name>.yaml`
- * names already require (`role/definition.ts`, `playbook/definition.ts`) —
- * because a free-form string reaching a path unconstrained is one
- * `../../escaped` away from writing outside `artifacts/` altogether, and
- * fails closed rather than silently permitting it (CONV-4).
- */
-const ENV_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+import { ENV_NAME_PATTERN, releaseOutcomeSchema, type ReleaseOutcome } from './verify.js';
 
 /**
  * Where DEP-5's "record the outcome" actually lands (DESIGN §4.5, §9.12).
@@ -38,11 +28,17 @@ const RELEASE_OUTCOME_SCHEMA = 'release-outcome';
 /**
  * `env` → the base path its outcome artifact is versioned under.
  *
- * Throws before interpolating anything that is not a path-safe environment
- * name (CONV-4, fail closed) — the single point every caller of this module
- * (`recordOutcome`, `readOutcomes`, and anything reading an outcome path
- * directly) goes through on the way to a filesystem path, so a guard here
- * covers all of them rather than each having to remember its own.
+ * Throws before interpolating anything that does not match
+ * {@link ENV_NAME_PATTERN} (CONV-4, fail closed) — the single point every
+ * caller of this module (`recordOutcome`, `readOutcomes`, and anything
+ * reading an outcome path directly) goes through on the way to a filesystem
+ * path, so a guard here covers all of them rather than each having to
+ * remember its own. `verify.ts#releaseOutcomeSchema` constrains its own
+ * `env` field to the same pattern, so a `ReleaseOutcome` that this function
+ * would refuse cannot be constructed by `verifyRelease` in the first place
+ * (CONV-5) — this guard is what still stands between an `env` arriving here
+ * some other way (a hand-built `RecordOutcomeOptions`, a direct
+ * `outcomeBasePath` call) and a path outside `artifacts/deploy/`.
  */
 export function outcomeBasePath(env: string): string {
   if (!ENV_NAME_PATTERN.test(env)) {
@@ -112,6 +108,17 @@ export function recordOutcome(
  * {@link ArtifactStore.list}, whose directory-entry ordering is
  * lexicographic (`v10` sorts before `v2`) — wrong for a log that must read
  * back oldest-first past nine runs.
+ *
+ * A missing version in that range — `v2` deleted, or never committed by
+ * whoever produced it — throws (via {@link ArtifactStore.read}) rather than
+ * being skipped, unlike {@link ArtifactStore.list}, which does skip an
+ * unreadable file because a directory listing tolerates noise. This is
+ * deliberate, not incidental: a gap partway through an outcome history means
+ * the history itself cannot be trusted — a caller asking "what did the last
+ * release do" cannot tell a genuine gap from a version silently dropped, so
+ * returning only the versions present would answer with a history that
+ * looks complete and is not (CONV-4). Refusing the whole read is the
+ * failure that is at least honest about what it does not know.
  */
 export function readOutcomes(store: ArtifactStore, env: string): ReleaseOutcome[] {
   const basePath = outcomeBasePath(env);

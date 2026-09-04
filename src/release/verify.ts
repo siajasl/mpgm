@@ -98,6 +98,24 @@ export const releaseDecisions = [
 export type ReleaseDecision = (typeof releaseDecisions)[number];
 
 /**
+ * `env`, kebab-case only — the same shape `roles/<name>.md` and
+ * `phases/<name>.yaml` names already require (`role/definition.ts`,
+ * `playbook/definition.ts`). `outcome-log.ts#outcomeBasePath` interpolates an
+ * outcome's `env` directly into a filesystem path under `artifacts/deploy/`,
+ * so a free-form string reaching that path unconstrained is one
+ * `../../escaped` away from writing outside `artifacts/` altogether. The
+ * pattern lives here, not only as a runtime guard in `outcomeBasePath`,
+ * because a schema check at construction time — here, on
+ * {@link releaseOutcomeSchema} — makes an outcome that could never be
+ * recorded unrepresentable in the first place (CONV-5), rather than one that
+ * `verifyRelease` can build in full and only `recordOutcome` discovers is
+ * unrecordable, after the deploy (and any rollback) has already happened.
+ * `outcomeBasePath`'s own check stays as defence for callers that construct
+ * a path from an `env` that arrived some other way (CONV-4, fail closed).
+ */
+export const ENV_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
  * DEP-5's "record the outcome as a release artifact" — the single record a
  * verification run produces, whichever way it went.
  *
@@ -115,7 +133,10 @@ export type ReleaseDecision = (typeof releaseDecisions)[number];
  */
 export const releaseOutcomeSchema = z
   .object({
-    env: z.string().min(1),
+    env: z
+      .string()
+      .min(1)
+      .regex(ENV_NAME_PATTERN, 'must be lowercase kebab-case, e.g. "staging", "prod"'),
     release: releaseRefSchema,
     decision: z.enum(releaseDecisions),
     reason: z.string().min(1),
