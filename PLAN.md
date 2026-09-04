@@ -1,6 +1,6 @@
 # PLAN — mpgm Build Plan
 
-**Status:** v0.5 — T4.1.4 split after three sessions could not close it · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-04
+**Status:** v0.6 — adds T4.2.3, progress output from a running verb · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-04
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.31. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
@@ -140,6 +140,7 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 |---|---|---|---|
 | T4.2.1 Metrics projections: cost/latency/retry/success per phase/role/run | `mpgm status --metrics` + dashboard panels | §4.5, OBS-2 | Sonnet 5 |
 | T4.2.2 Quality metrics: gate rejection, rework, escaped-defect rates | longitudinal report over ≥3 runs | §4.5, OBS-4 | Sonnet 5 |
+| T4.2.3 Progress output from a running verb | a long-running verb reports each session as it starts and finishes, before the run ends | §4.4, OBS-3, NFR-2 | Sonnet 5 |
 
 **Verification:** spend and quality dashboards populated from real self-hosted runs; kernel overhead measured under 10% of run wall-clock (NFR-3); a clean-machine install reaches a gated Definition artifact within one hour, timed (NFR-6).
 
