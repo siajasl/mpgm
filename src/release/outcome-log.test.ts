@@ -1,4 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -20,8 +27,18 @@ const provenance = {
 const tempDirs: string[] = [];
 
 function newStore(): ArtifactStore {
-  const root = mkdtempSync(join(tmpdir(), 'mpgm-outcomes-'));
-  tempDirs.push(root);
+  // `root` is nested one level inside the mkdtemp dir (rather than being the
+  // mkdtemp dir itself) so that `store.root`'s *parent* — where a traversal
+  // that escapes the store would land — is still inside the directory
+  // `afterEach` removes. Otherwise an escape assertion built from
+  // `join(store.root, '..', ...)` points at the shared, machine-global
+  // tmpdir, which `afterEach` never cleans and which can fail against
+  // unmodified code if a stray file from a prior run (or a failed mutation
+  // check) is still sitting there.
+  const dir = mkdtempSync(join(tmpdir(), 'mpgm-outcomes-'));
+  tempDirs.push(dir);
+  const root = join(dir, 'repo');
+  mkdirSync(root);
   return new ArtifactStore({
     root,
     schemas: new ArtifactSchemaRegistry([
