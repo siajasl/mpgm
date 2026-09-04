@@ -105,13 +105,20 @@ export type ReleaseDecision = (typeof releaseDecisions)[number];
  * so a free-form string reaching that path unconstrained is one
  * `../../escaped` away from writing outside `artifacts/` altogether. The
  * pattern lives here, not only as a runtime guard in `outcomeBasePath`,
- * because a schema check at construction time — here, on
- * {@link releaseOutcomeSchema} — makes an outcome that could never be
- * recorded unrepresentable in the first place (CONV-5), rather than one that
- * `verifyRelease` can build in full and only `recordOutcome` discovers is
- * unrecordable, after the deploy (and any rollback) has already happened.
- * `outcomeBasePath`'s own check stays as defence for callers that construct
- * a path from an `env` that arrived some other way (CONV-4, fail closed).
+ * because a schema check at construction time makes an outcome that could
+ * never be recorded unrepresentable in the first place (CONV-5) — and it is
+ * applied at *both* ends of `verifyRelease`: on {@link verifyReleaseInput},
+ * so a path-unsafe `env` is refused before any smoke check or rollback runs,
+ * and again on {@link releaseOutcomeSchema}, so nothing downstream of
+ * `verifyReleaseInput` (a caller constructing an outcome directly, via the
+ * exported `recordOutcome`) can reintroduce one. Checking only on the
+ * outcome would mean `verifyRelease` discovers an unrecordable `env` at its
+ * closing `releaseOutcomeSchema.parse`, after the deploy (and any rollback)
+ * has already happened, and would then have to throw away the very outcome
+ * that rollback produced — worse than never checking (CONV-4: fail closed
+ * toward a recorded decision, never toward silence). `outcomeBasePath`'s own
+ * check stays as defence for callers that construct a path from an `env`
+ * that arrived some other way (CONV-4, fail closed).
  */
 export const ENV_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -298,7 +305,20 @@ export function isHealthy(results: readonly CheckResult[]): boolean {
 }
 
 export const verifyReleaseInput = z.object({
-  env: z.string().min(1),
+  /**
+   * Constrained to {@link ENV_NAME_PATTERN} here, not only on
+   * {@link releaseOutcomeSchema}: a non-kebab `env` refused only at the
+   * closing `releaseOutcomeSchema.parse` inside `verifyRelease` would be
+   * refused after smoke checks ran and any rollback already happened — the
+   * outcome that rollback produced would then be thrown away as a ZodError
+   * instead of returned, which is worse than not checking at all (CONV-4:
+   * fail closed toward a recorded decision, never toward silence). Checking
+   * here refuses the bad input before any of that runs.
+   */
+  env: z
+    .string()
+    .min(1)
+    .regex(ENV_NAME_PATTERN, 'must be lowercase kebab-case, e.g. "staging", "prod"'),
   /** The just-delivered release being verified. */
   release: releaseRefSchema,
   /** Smoke checks describing what a healthy `release` looks like. */
