@@ -17,6 +17,7 @@ import {
 } from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
+import { lastReviewOf, renderPriorReview } from './prior-review.js';
 import {
   earnsAnotherRound,
   markShown,
@@ -318,6 +319,11 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     commits: inheritedCommits,
     uncommitted: await options.worktrees.isDirty(task.id),
   };
+  // A reused checkout's `base` is its branch tip, so this is the commit the
+  // last run left — and the only one a previous review can still be about.
+  const priorReview = worktree.reused
+    ? lastReviewOf(options.log.read(), task.id, worktree.base)
+    : undefined;
   // Rounds are attached by the helper rather than by each caller: a task that
   // blocked in its second round should say so wherever it stopped, and
   // thirteen call sites each remembering to pass them is twelve chances not
@@ -351,7 +357,10 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const context = assembleContext({
     task: {
       description: `${task.id} — ${task.title} (${task.milestone})`,
-      prompt: implementPrompt(task, worktree.branch, carried),
+      prompt:
+        priorReview === undefined
+          ? implementPrompt(task, worktree.branch, carried)
+          : `${implementPrompt(task, worktree.branch, carried)}\n\n## What the last review found\n\n${renderPriorReview(priorReview)}`,
     },
     upstream: [],
     kb: options.kb,
