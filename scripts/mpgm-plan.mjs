@@ -259,15 +259,27 @@ export const MPGM_PLAN = {
               tracesTo: ['DEP-2', 'DEP-5'],
             },
             {
-              id: 'T4.1.4',
-              title: 'Production deploy gate',
+              id: 'T4.1.4a',
+              title: 'Approval gate on the release path',
               completionCriteria: [
-                'A production deploy is impossible without an approval event.',
-                'Every route to a declared production environment is gated, not ' +
-                  'only the release path.',
+                'A release delivered to an environment the project marks as ' +
+                  'requiring approval is impossible without an approval event.',
+                'Which environments require approval is read from project ' +
+                  'configuration, never from a hardcoded name.',
               ],
               dependsOn: ['T4.1.3'],
               tracesTo: ['HIL-2'],
+            },
+            {
+              id: 'T4.1.4b',
+              title: 'Approval gate on the environment path, and declaring production',
+              completionCriteria: [
+                'Every env.provision operation that can change what a gated ' +
+                  'environment serves is gated, bringing it down included.',
+                'production is declared, once nothing can reach it unapproved.',
+              ],
+              dependsOn: ['T4.1.4a'],
+              tracesTo: ['HIL-2', 'DEP-4'],
             },
             {
               id: 'T4.1.5',
@@ -276,7 +288,7 @@ export const MPGM_PLAN = {
                 'An operator can roll back a declared environment from the CLI, ' +
                   'and the rollback is recorded without being gated.',
               ],
-              dependsOn: ['T4.1.4'],
+              dependsOn: ['T4.1.4b'],
               tracesTo: ['DEP-2', 'HIL-5'],
             },
             {
