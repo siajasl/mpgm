@@ -17,6 +17,13 @@ import {
 } from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
+import { lastReviewOf, renderPriorReview } from './prior-review.js';
+import {
+  earnsAnotherRound,
+  markShown,
+  renderLateDeviation,
+  unseenDeviations,
+} from './late-deviation.js';
 import type { WorktreeManager } from './worktree.js';
 
 /**
@@ -312,6 +319,11 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     commits: inheritedCommits,
     uncommitted: await options.worktrees.isDirty(task.id),
   };
+  // A reused checkout's `base` is its branch tip, so this is the commit the
+  // last run left — and the only one a previous review can still be about.
+  const priorReview = worktree.reused
+    ? lastReviewOf(options.log.read(), task.id, worktree.base)
+    : undefined;
   // Rounds are attached by the helper rather than by each caller: a task that
   // blocked in its second round should say so wherever it stopped, and
   // thirteen call sites each remembering to pass them is twelve chances not
@@ -345,7 +357,10 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const context = assembleContext({
     task: {
       description: `${task.id} — ${task.title} (${task.milestone})`,
-      prompt: implementPrompt(task, worktree.branch, carried),
+      prompt:
+        priorReview === undefined
+          ? implementPrompt(task, worktree.branch, carried)
+          : `${implementPrompt(task, worktree.branch, carried)}\n\n## What the last review found\n\n${renderPriorReview(priorReview)}`,
     },
     upstream: [],
     kb: options.kb,
@@ -420,7 +435,14 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // is a new commit and a new commit has to clear the checks again — a change
   // that fixed a finding and broke the build is not one to merge on the
   // strength of the review it just earned.
-  for (let round = 1; round <= maxReviewAttempts; round += 1) {
+  // Deviations the author has already been sent back with, and whether the one
+  // grace round for a late one has been spent. Both live outside the loop
+  // because both are facts about the task, not about a round.
+  const shownDeviations = new Set<string>();
+  let graceGranted = false;
+  let attempts = maxReviewAttempts;
+
+  for (let round = 1; round <= attempts; round += 1) {
     // CI before review, and repair before review: an agent asked to read a
     // change that does not build is spending an expensive session on something
     // the build already said (IMP-2).
@@ -530,22 +552,39 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       return stop(decision.reasons.join('; '), { ref: repair.ref, review, repair });
     }
 
-    if (round === maxReviewAttempts) {
-      options.log.append({
-        runId,
-        type: 'BudgetExceeded',
-        payload: {
-          taskId: task.id,
-          kind: 'reviews',
-          limit: maxReviewAttempts,
-          observed: round,
-        },
-      });
-      return stop(
-        `the review still refuses the change after ${String(maxReviewAttempts)} attempt(s): ` +
-          decision.reasons.join('; '),
-        { ref: repair.ref, review, repair },
-      );
+    const undeclared = undeclaredDeviations(review.deviations ?? [], declared);
+
+    if (round === attempts) {
+      // One extra round, once, when the only thing refusing an approved change
+      // is a deviation reported too late for the author to have declared it.
+      if (
+        !graceGranted &&
+        earnsAnotherRound({
+          decision,
+          approved: review.approved,
+          undeclared,
+          shown: shownDeviations,
+        })
+      ) {
+        graceGranted = true;
+        attempts += 1;
+      } else {
+        options.log.append({
+          runId,
+          type: 'BudgetExceeded',
+          payload: {
+            taskId: task.id,
+            kind: 'reviews',
+            limit: attempts,
+            observed: round,
+          },
+        });
+        return stop(
+          `the review still refuses the change after ${String(attempts)} attempt(s): ` +
+            decision.reasons.join('; '),
+          { ref: repair.ref, review, repair },
+        );
+      }
     }
 
     // Back to the author, with what the reviewer found. Without this the review
@@ -555,14 +594,24 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       runId,
       taskId: task.id,
       role: implementerRole,
-      prompt: `${context.prompt}\n\n## The review asked for changes\n\n${renderReview({
-        review: parsed.data,
-        undeclared: undeclaredDeviations(review.deviations ?? [], declared),
-        attempt: round,
-        attemptsRemaining: maxReviewAttempts - round,
-      })}`,
+      prompt:
+        graceGranted && round === attempts - 1
+          ? `${context.prompt}\n\n## One round, to declare what you were never shown\n\n${renderLateDeviation(
+              unseenDeviations(undeclared, shownDeviations),
+            )}`
+          : `${context.prompt}\n\n## The review asked for changes\n\n${renderReview({
+              review: parsed.data,
+              undeclared,
+              attempt: round,
+              attemptsRemaining: attempts - round,
+            })}`,
       policyRoot: worktree.path,
     });
+
+    // Only now: the set must mean "shown in an earlier round" when the grace
+    // test reads it at the cap, and this round's deviations were shown by the
+    // prompt immediately above.
+    markShown(shownDeviations, undeclared);
 
     if (reworked.status !== 'completed') {
       return stop(`the rework session blocked: ${reworked.reason}`, {

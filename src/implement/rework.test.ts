@@ -618,6 +618,360 @@ describe('a review that never approves (NFR-1)', () => {
     }
   }, 20_000);
 
+  it('grants one more round when a deviation arrives too late to declare', async () => {
+    // T4.1.6: the reviewer approved, and the gate refused over a CONV-1 that
+    // first appeared in round three of three, which the author had never been
+    // shown and so could never have declared. A unit test of
+    // `earnsAnotherRound` cannot see whether the loop acts on it.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    // Approve every round, and report the deviation only on the last one the
+    // budget allows. Round 2 is the grace round; the author declares there.
+    const approving = (deviations: { convention: string; where: string }[]) =>
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations,
+      });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      approving([{ convention: 'CONV-1', where: 'the branch' }]),
+      // The grace round: the author declares it rather than changing anything.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'CONV-1', why: 'the loop made them' }],
+      }),
+      approving([{ convention: 'CONV-1', where: 'the branch' }]),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      // Without the grace it would block after one attempt; with it the
+      // declaration lands and the change merges.
+      expect(result.status).toBe('merged');
+      expect(result.rounds).toHaveLength(2);
+
+      const granted = provider.requests.find((request) =>
+        request.prompt.includes('One round, to declare what you were never shown'),
+      );
+      expect(granted?.prompt).toContain('CONV-1');
+      expect(granted?.prompt).toMatch(/never given the chance to declare it/);
+    } finally {
+      log.close();
+    }
+  }, 30_000);
+
+  it('does not grant it twice, nor for a deviation already shown', async () => {
+    // The grace is once, and only for what nobody said. A reviewer that keeps
+    // reporting the same deviation the author keeps not declaring gets the
+    // budget it was given.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const approving = scriptedSuccess({
+      ref: head,
+      verdict: 'approve',
+      summary: 'good',
+      findings: [],
+      deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+    });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      approving,
+      scriptedSuccess(change), // the grace round, and the author declares nothing
+      approving,
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      expect(result.status).toBe('blocked');
+      // Two rounds: the original and the one grace. Not three.
+      expect(result.rounds).toHaveLength(2);
+      expect(result.reason).toMatch(/after 2 attempt\(s\)/);
+    } finally {
+      log.close();
+    }
+  }, 30_000);
+
+  it('grants the grace once, even when a second deviation is also new', async () => {
+    // The guard that makes this bounded. Without it a reviewer reporting a
+    // fresh deviation each round extends the budget forever — which is the
+    // elasticity the grace is deliberately not.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const approving = (...conventions: string[]) =>
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: conventions.map((convention) => ({
+          convention,
+          where: 'the branch',
+        })),
+      });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      approving('CONV-1'),
+      // Grace round: declares CONV-1.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'CONV-1', why: 'the loop made them' }],
+      }),
+      // CONV-6 is new and never shown — a second grace, if nothing stopped it.
+      approving('CONV-1', 'CONV-6'),
+      // Only a loop that granted twice reaches these.
+      scriptedSuccess({
+        ...change,
+        deviations: [
+          { convention: 'CONV-1', why: 'the loop made them' },
+          { convention: 'CONV-6', why: 'and this too' },
+        ],
+      }),
+      approving('CONV-1', 'CONV-6'),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.rounds).toHaveLength(2);
+    } finally {
+      log.close();
+    }
+  }, 30_000);
+
+  it('carries the last run’s review into the session that resumes it', async () => {
+    // T4.1.6's second run re-found a gap its first run's final review had
+    // already named. The findings are in the log; nothing read them. A unit
+    // test of `lastReviewOf` cannot see whether the loop looks.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(worktree.path, 'left.txt'), 'from the run before\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'what the last run committed']);
+    const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+    log.append({
+      runId: 'r',
+      type: 'TaskDispatched',
+      payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+    });
+    // The previous run's final review, about the commit the branch is still on.
+    log.append({
+      runId: 'r',
+      type: 'ChangeReviewed',
+      payload: {
+        taskId: 'T1',
+        reviewTaskId: 'T1-review-3',
+        reviewerRole: 'code-reviewer',
+        ref: tip,
+        approved: false,
+        summary: 'the env constraint is missing at the input boundary',
+        findings: 1,
+        deviations: ['CONV-5'],
+        declaredDeviations: [],
+        undeclaredDeviations: ['CONV-5'],
+      },
+    });
+
+    const provider = refusingProvider(tip);
+    try {
+      await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 1,
+      });
+
+      const authoring = provider.requests.find((request) =>
+        request.prompt.includes('Implement T1'),
+      );
+      expect(authoring?.prompt).toContain('What the last review found');
+      expect(authoring?.prompt).toContain(
+        'the env constraint is missing at the input boundary',
+      );
+      expect(authoring?.prompt).toContain('CONV-5');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
+  it('carries nothing when the branch has moved past the review', async () => {
+    // The guard. A review of an older commit has been partly answered by
+    // whatever landed since, and there is no way to tell which parts.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(worktree.path, 'left.txt'), 'from the run before\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'what the last run committed']);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+    log.append({
+      runId: 'r',
+      type: 'TaskDispatched',
+      payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+    });
+    log.append({
+      runId: 'r',
+      type: 'ChangeReviewed',
+      payload: {
+        taskId: 'T1',
+        reviewTaskId: 'T1-review',
+        reviewerRole: 'code-reviewer',
+        ref: 'a-commit-that-is-no-longer-the-tip',
+        approved: false,
+        summary: 'this was about an older commit',
+        findings: 1,
+        deviations: [],
+        declaredDeviations: [],
+        undeclaredDeviations: [],
+      },
+    });
+
+    const provider = refusingProvider(git(worktree.path, ['rev-parse', 'HEAD']));
+    try {
+      await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 1,
+      });
+
+      const authoring = provider.requests.find((request) =>
+        request.prompt.includes('Implement T1'),
+      );
+      expect(authoring?.prompt).not.toContain('What the last review found');
+      expect(authoring?.prompt).not.toContain('this was about an older commit');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
+  it('carries nothing into a fresh checkout, even if a review names its base', async () => {
+    // Re-dispatching a task that already merged gives it a fresh worktree off
+    // the trunk — whose tip is the very commit that task's last review was
+    // about. Deciding on the review's ref alone would hand a new run the
+    // review of work that is already on main.
+    const repo = newRepo();
+    const trunk = git(repo, ['rev-parse', 'HEAD']);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+    log.append({
+      runId: 'r',
+      type: 'TaskDispatched',
+      payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+    });
+    log.append({
+      runId: 'r',
+      type: 'ChangeReviewed',
+      payload: {
+        taskId: 'T1',
+        reviewTaskId: 'T1-review',
+        reviewerRole: 'code-reviewer',
+        ref: trunk,
+        approved: true,
+        summary: 'this review is of work that has since merged',
+        findings: 0,
+        deviations: [],
+        declaredDeviations: [],
+        undeclaredDeviations: [],
+      },
+    });
+
+    const provider = refusingProvider(trunk);
+    try {
+      await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      const authoring = provider.requests.find((request) =>
+        request.prompt.includes('Implement T1'),
+      );
+      expect(authoring?.prompt).not.toContain('What the last review found');
+      expect(authoring?.prompt).not.toContain('has since merged');
+    } finally {
+      log.close();
+    }
+  }, 20_000);
+
   it('records the block in the log, whatever gave up', async () => {
     // Two different paths, because the block used to be recorded only where a
     // budget ran out. Every other way the loop gives up left the fold saying
