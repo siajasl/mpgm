@@ -521,15 +521,38 @@ try {
     confirmed.output,
   );
 
-  // rollback — DESIGN §9 decision 10/11, HIL-2, T4.1.4. `production` is
+  // rollback — DESIGN §9 decision 10/11/14, HIL-2, T4.1.4. `production` is
   // gated the same fingerprint/dry-run/confirm way a destructive tool call
-  // is, reused directly in front of `release.deliver#rollback` rather than
-  // through the `PreToolUse` hook — a deploy never arrives as a tool call.
-  // This workspace declares no `deploy/environments/environments.yaml` at
-  // all, which is deliberate: it means a confirmed call reaching the real
-  // provider fails for a *different*, docker-shaped reason than the gate's
-  // own refusal, which is what proves control actually passed the gate
-  // rather than the test asserting on the gate's own message twice.
+  // is, reused directly in front of `release.deliver#rollback` (and, since
+  // the T4.1.4 rework, `env.provision#up`) rather than through the
+  // `PreToolUse` hook — a deploy never arrives as a tool call.
+  //
+  // Which environment is gated is read from *this* manifest, not a name
+  // `deploy-gate.ts` hardcodes (T4.1.4 rework, CONV-4) — this workspace
+  // declares its own `deploy/environments/environments.yaml`, distinct from
+  // mpgm's own, marking `production` `approval: required` the same way. Its
+  // `compose` path names a file that is never written: a confirmed call
+  // reaching the real provider then fails for a *different*, docker-shaped
+  // reason ("did not become healthy") than the gate's own refusal, which is
+  // what proves control actually passed the gate rather than the test
+  // asserting on the gate's own message twice — requires a real `docker` on
+  // PATH (present on this project's own dev setup and CI runners; `demo:env`
+  // and `demo:release`, which run later in `npm run check`, already require
+  // one), but not a real compose stack: `docker compose` fails fast on a
+  // missing file, before ever reaching a daemon roundtrip.
+  mkdirSync(join(workspace, 'deploy', 'environments'), { recursive: true });
+  writeFileSync(
+    join(workspace, 'deploy', 'environments', 'environments.yaml'),
+    [
+      'environments:',
+      '  - name: production',
+      '    compose: deploy/environments/production/compose.yaml',
+      '    project: e2e-production',
+      '    approval: required',
+      '',
+    ].join('\n'),
+  );
+
   const releaseArtifact = {
     version: '1.0.0',
     image: 'mpgm-sample-service:1.0.0',
@@ -539,7 +562,12 @@ try {
   };
   const artifactPath = join(workspace, 'release-1.0.0.json');
   writeFileSync(artifactPath, JSON.stringify(releaseArtifact));
-  const deployTarget = { repo: workspace, env: 'production', release: releaseArtifact };
+  const deployTarget = {
+    repo: workspace,
+    env: 'production',
+    digest: releaseArtifact.digest,
+    label: releaseArtifact.version,
+  };
   const deployPrint = deployFingerprint(deployTarget);
 
   const rollbackArgs = [
@@ -601,7 +629,7 @@ try {
     !rollbackConfirmed.result.ok &&
       !rollbackConfirmed.output.includes('has not been simulated') &&
       !rollbackConfirmed.output.includes('simulated but not confirmed') &&
-      rollbackConfirmed.output.includes('no environments manifest'),
+      rollbackConfirmed.output.includes('did not become healthy'),
     rollbackConfirmed.output,
   );
 
@@ -629,15 +657,21 @@ try {
     !rollbackOtherRun.result.ok &&
       !rollbackOtherRun.output.includes('has not been simulated') &&
       !rollbackOtherRun.output.includes('simulated but not confirmed') &&
-      rollbackOtherRun.output.includes('no environments manifest'),
+      rollbackOtherRun.output.includes('did not become healthy'),
     rollbackOtherRun.output,
   );
 
   // A rollback naming a release that was never confirmed for production must
-  // not become a second, ungated door into it — the same fingerprint is not
-  // on record for a different version, so this is refused exactly as an
-  // unconfirmed `deliver` would be.
-  const neverConfirmedArtifact = { ...releaseArtifact, version: '2.0.0' };
+  // not become a second, ungated door into it — the fingerprint is keyed by
+  // digest (`deployFingerprint`, T4.1.4 rework), so this needs a different
+  // digest, not merely a different version, to actually be a different
+  // approval question; the same fingerprint is not on record for it, so this
+  // is refused exactly as an unconfirmed `deliver` would be.
+  const neverConfirmedArtifact = {
+    ...releaseArtifact,
+    version: '2.0.0',
+    digest: `sha256:${'b'.repeat(64)}`,
+  };
   const neverConfirmedPath = join(workspace, 'release-2.0.0.json');
   writeFileSync(neverConfirmedPath, JSON.stringify(neverConfirmedArtifact));
   const rollbackNeverConfirmed = await call([

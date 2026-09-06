@@ -1,14 +1,11 @@
 import type { Provider } from '../contract/capability.js';
-import {
-  releaseDeliverInput,
-  releaseRollbackInput,
-  type ReleaseArtifact,
-} from '../release/deliver.js';
+import { envUpInput } from '../env/provision.js';
+import { releaseDeliverInput, releaseRollbackInput } from '../release/deliver.js';
 import type { DestructiveCallState, KernelState } from '../state/kernel-state.js';
 import { fingerprint } from './destructive.js';
 
 /**
- * The production deploy gate (DESIGN §9 decision 10/11, HIL-2, SAF-4).
+ * The production deploy gate (DESIGN §9 decision 10/11/14, HIL-2, SAF-4).
  *
  * HIL-2 asks that irreversible, outward-facing actions require explicit
  * approval *regardless of gate settings* — a phase gate will not do, because
@@ -18,59 +15,107 @@ import { fingerprint } from './destructive.js';
  * agent's tool calls. What this module reuses instead is the guard's *shape*
  * — a stable fingerprint over the call, a dry run that records intent without
  * effect, and a confirmation keyed to that exact fingerprint — applied
- * directly in front of `release.deliver#deliver`/`#rollback`, independent of
+ * directly in front of both places an image can reach a gated environment:
+ * `release.deliver#deliver`/`#rollback` ({@link gateProductionRelease}), and
+ * `env.provision#up` itself ({@link gateProvisionRelease}) — independent of
  * any tool call at all.
  *
- * `deliver` is gated outright: a call naming the production environment is
- * refused until an operator has confirmed the exact `{repo, env, release}`
- * it names. `rollback` is not gated the same way — DESIGN §9 decision 11 —
- * because restoring a release that was itself already confirmed for
- * production asks nothing new of the operator; gating it again would keep a
- * bad release serving while someone is found to approve going back to a
- * release that was already approved, which is exactly the delay DEP-2's
- * automatic rollback exists to avoid. What `rollback` *is* refused is
- * restoring something that was never confirmed for this environment in the
- * first place — otherwise `rollback` would be a second door into production
- * that the `deliver` gate never sees, and "impossible without an approval
- * event" would only be true of one of the two ways to change what production
- * runs.
+ * **Which environments are gated is never a name this module knows.**
+ * T4.1.4's first review found `production` hardcoded here, unreachable by a
+ * target project whose own manifest calls its production environment
+ * something else — silently ungated, which is exactly the CONV-4 failure a
+ * security control must not have. `DeployGateOptions.gatedEnvs` is read from
+ * that project's own `deploy/environments/environments.yaml` instead
+ * (`env/compose-provider.ts`'s `approval: required` marker,
+ * `gatedEnvironments`) — a caller builds it from the same manifest
+ * `env.provision` itself refuses to guess an environment's name from, so
+ * "which call needs an approval event" is answered the same way everywhere
+ * it is asked, by the project being deployed, not by this module.
+ *
+ * **`deliver` and `up` are gated outright:** a call naming a gated
+ * environment is refused until an operator has confirmed the exact
+ * `{repo, env, digest}` it names. `rollback` is not gated the same way —
+ * DESIGN §9 decision 11 — because restoring a release that was itself
+ * already confirmed for that environment asks nothing new of the operator;
+ * gating it again would keep a bad release serving while someone is found to
+ * approve going back to a release that was already approved, which is
+ * exactly the delay DEP-2's automatic rollback exists to avoid. What
+ * `rollback` *is* refused is restoring something that was never confirmed
+ * for this environment in the first place — otherwise `rollback` would be a
+ * second door into production that the `deliver` gate never sees.
+ *
+ * **`env.provision#up` is the same door as `release.deliver`, not a second
+ * one.** T4.1.4's first review also found that declaring `production` in the
+ * manifest made `env.provision#up` — reachable directly, with an `image`
+ * override, no confirmation anywhere in the path — an ungated deploy of an
+ * arbitrary digest, one layer beneath the gate this module puts in front of
+ * `release.deliver`. The defence tried then ("nothing stops an operator
+ * running `docker compose up` by hand") conflated an operator's own shell
+ * with a kernel capability the harness invokes programmatically; a future
+ * orchestrator effect reaching `env.provision#up` directly would have found
+ * no refusal at all. {@link gateProvisionRelease} closes that: it fingerprints
+ * an `up` call's `{repo, env, image}` exactly the way {@link deployFingerprint}
+ * fingerprints a `deliver`/`rollback`'s `{repo, env, digest}` — the same
+ * confirmation satisfies both, so a release already approved through
+ * `release.deliver` never has to be approved a second time when
+ * `dockerReleaseProvider` hands it to `env.provision#up` underneath, but a
+ * caller reaching `env.provision#up` on its own, for a digest nobody
+ * approved, is refused exactly as `deliver` would refuse it.
  */
 
 export class DeployGateError extends Error {}
 
-/** `release.deliver`'s production path, named once so every message and every
- * fingerprint agree on what call is being gated. */
-const DEPLOY_TOOL = 'release.deliver#deliver';
+/**
+ * A shared identity, not a literal contract#operation name: the same string
+ * is folded into a `deliver`/`rollback` call's fingerprint and an `up`
+ * call's, on purpose (see {@link deployFingerprint}). Changing it would split
+ * one confirmation into two the operator never agreed were different.
+ */
+const DEPLOY_TOOL = 'deploy';
 
 /**
- * There is no field on {@link ReleaseDeliverInput} that puts a delivery into a
- * dry-run mode — unlike the tool calls `policy/destructive.ts` guards,
- * `release.deliver#deliver` has no cheaper "describe what would happen"
- * path, so the fingerprint is taken over the whole input. Passed through to
- * {@link fingerprint} only for parity with that module's signature; since this
- * name is never a key of `ReleaseDeliverInput`, nothing is ever excluded by
- * it.
+ * Neither `release.deliver#deliver`/`#rollback` nor `env.provision#up` has a
+ * field that puts a call into a dry-run mode — unlike the tool calls
+ * `policy/destructive.ts` guards, none of these has a cheaper "describe what
+ * would happen" path, so the fingerprint is taken over the whole identity.
+ * Passed through to {@link fingerprint} only for parity with that module's
+ * signature; since this name is never a key of any of their inputs, nothing
+ * is ever excluded by it.
  */
 const DRY_RUN_PARAM = '__no_dry_run_field__';
 
-export const DEFAULT_PRODUCTION_ENV = 'production';
-
 /** What one gated call targets: enough to compute its fingerprint and to
- * describe it to an operator without them reading this module (CONV-3). */
+ * describe it to an operator without them reading this module (CONV-3).
+ *
+ * Identity is `{repo, env, digest}` alone — DESIGN §9 decision 9's own
+ * reasoning applied to what this gate is actually approving: a digest is the
+ * one immutable name for the image an approval releases, so two `deliver`
+ * inputs (or a `deliver` and the `rollback` that later restores it, or the
+ * `up` call either one hands to `env.provision`) naming the same digest for
+ * the same `{repo, env}` are the same approval question, whatever else
+ * differs — a changelog rewritten after the fact, or a bare digest with no
+ * release metadata attached at all (`env.provision#up`'s own input, which
+ * carries no version or changelog to hash). `label` is never part of the
+ * fingerprint for exactly that reason. */
 export interface DeployTarget {
   readonly repo: string;
   readonly env: string;
-  readonly release: ReleaseArtifact;
+  readonly digest: string;
+  /** A human-readable name for `digest` — a release's `version`, typically —
+   * shown in messages only (CONV-3). Absent where the caller has nothing but
+   * the digest itself (`gateProvisionRelease`'s `up`). */
+  readonly label?: string;
 }
 
-/** A stable identity for delivering `target.release` to `target.env` — the
- * same identity whether it arrives via `deliver` or via a `rollback` naming
- * the same release, so an earlier confirmation of one satisfies the other
- * (DESIGN §9 decision 11). */
+/** A stable identity for delivering `target.digest` to `target.env` — the
+ * same identity whether it arrives via `release.deliver#deliver`, a
+ * `#rollback` naming the same release, or `env.provision#up` handed the same
+ * digest, so an earlier confirmation of any one satisfies the others
+ * (DESIGN §9 decision 11/14). */
 export function deployFingerprint(target: DeployTarget): string {
   return fingerprint(
     DEPLOY_TOOL,
-    { repo: target.repo, env: target.env, release: target.release },
+    { repo: target.repo, env: target.env, digest: target.digest },
     DRY_RUN_PARAM,
   );
 }
@@ -104,12 +149,12 @@ export interface DeployLedger {
  * and got it confirmed — an operator approving a digest for production does
  * not stop approving it because the kernel process that asked was later
  * restarted, or a new run began. `deployFingerprint` already names the same
- * call — `{repo, env, release}` — no matter which run's ledger it is found
+ * call — `{repo, env, digest}` — no matter which run's ledger it is found
  * in, so a lookup scoped to one run is scoped by an accident of when the
  * call happens to arrive, not by anything HIL-2 cares about; this makes the
  * gate consult the whole log instead, so a confirmation, once given, is
- * still there for `rollback` (or a later `deliver` of the identical digest)
- * to find in any run that asks.
+ * still there for `rollback` (or a later `deliver`/`up` of the identical
+ * digest) to find in any run that asks.
  */
 export function crossRunLedger(state: () => KernelState): DeployLedger {
   const calls = (print: string): readonly DestructiveCallState[] =>
@@ -142,12 +187,22 @@ export interface ConfirmationNeeded {
 }
 
 export interface DeployGateOptions {
-  /** Defaults to {@link DEFAULT_PRODUCTION_ENV}. Every other `env` passes
-   * through both operations ungated — this gate exists for HIL-2's
-   * production case specifically, not for staging or test deliveries
-   * `env.provision` and `release.deliver` already gate by declaration alone
-   * (`deploy/environments/environments.yaml`). */
-  readonly productionEnv?: string;
+  /**
+   * The environments HIL-2 requires an approval event for, read from the
+   * target project's own manifest (`env/compose-provider.ts`'s
+   * `gatedEnvironments`, `deploy/environments/environments.yaml`'s
+   * `approval: required`) — never a name this module defaults to. Every
+   * other `env` passes through both {@link gateProductionRelease} and
+   * {@link gateProvisionRelease} ungated — this gate exists for HIL-2's
+   * approval-required case specifically, not for an environment
+   * `env.provision`/`release.deliver` already gate by declaration alone.
+   *
+   * Required, not optional: a caller that does not know which environments
+   * its target project gates cannot gate any of them, and defaulting to
+   * "none" or to a guessed name is the ambiguity CONV-4 asks a security
+   * control to refuse rather than paper over.
+   */
+  readonly gatedEnvs: ReadonlySet<string>;
   readonly ledger: DeployLedger;
   /**
    * A call was refused for want of a dry run. The gate itself performs no
@@ -164,10 +219,11 @@ export interface DeployGateOptions {
 }
 
 function describe(target: DeployTarget): string {
-  return (
-    `${target.release.version} (${target.release.digest.slice(0, 12)}) to ` +
-    `'${target.env}'`
-  );
+  const id =
+    target.label === undefined
+      ? target.digest.slice(0, 12)
+      : `${target.label} (${target.digest.slice(0, 12)})`;
+  return `${id} to '${target.env}'`;
 }
 
 /**
@@ -216,20 +272,19 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
 }
 
 /**
- * Wraps a `release.deliver` provider so its production path is impossible to
- * reach without a matching confirmation event (HIL-2, DESIGN §9 decision 10).
+ * Wraps a `release.deliver` provider so its gated-environment path is
+ * impossible to reach without a matching confirmation event (HIL-2, DESIGN
+ * §9 decision 10).
  *
- * Every other operation, and every other environment, passes straight
- * through unchanged — `assemble` never touches an environment at all, and a
- * non-production `deliver`/`rollback` is exactly as ungated as it was before
- * this wrapper existed.
+ * Every other operation, and every environment `options.gatedEnvs` does not
+ * name, passes straight through unchanged — `assemble` never touches an
+ * environment at all, and a non-gated `deliver`/`rollback` is exactly as
+ * ungated as it was before this wrapper existed.
  */
 export function gateProductionRelease(
   provider: Provider,
   options: DeployGateOptions,
 ): Provider {
-  const productionEnv = options.productionEnv ?? DEFAULT_PRODUCTION_ENV;
-
   // Read once, and checked here rather than trusted at every call: `Provider`
   // is a bare `Record`, so nothing before `BoundContract`'s own construction
   // check otherwise guarantees these exist. Wrapping a provider that does not
@@ -250,11 +305,16 @@ export function gateProductionRelease(
 
     deliver: async (input: never): Promise<unknown> => {
       const parsed = releaseDeliverInput.parse(input);
-      if (parsed.env !== productionEnv) {
+      if (!options.gatedEnvs.has(parsed.env)) {
         return deliver(input);
       }
       assertReady(
-        { repo: parsed.repo, env: parsed.env, release: parsed.release },
+        {
+          repo: parsed.repo,
+          env: parsed.env,
+          digest: parsed.release.digest,
+          label: parsed.release.version,
+        },
         options,
       );
       return deliver(input);
@@ -262,18 +322,72 @@ export function gateProductionRelease(
 
     rollback: async (input: never): Promise<unknown> => {
       const parsed = releaseRollbackInput.parse(input);
-      if (parsed.env !== productionEnv) {
+      if (!options.gatedEnvs.has(parsed.env)) {
         return rollbackOp(input);
       }
       // Deliberately the *same* fingerprint a `deliver` of `to` would have
       // produced (see `deployFingerprint`): restoring a release this
       // environment already had confirmed asks nothing new of an operator
-      // (decision 11). What it must not do is let `rollback` hand production
-      // a release that was never confirmed for it at all — that would be a
-      // second, ungated door into the same environment `deliver` refuses to
-      // open without one.
-      assertReady({ repo: parsed.repo, env: parsed.env, release: parsed.to }, options);
+      // (decision 11). What it must not do is let `rollback` hand a gated
+      // environment a release that was never confirmed for it at all — that
+      // would be a second, ungated door into the same environment `deliver`
+      // refuses to open without one.
+      assertReady(
+        {
+          repo: parsed.repo,
+          env: parsed.env,
+          digest: parsed.to.digest,
+          label: parsed.to.version,
+        },
+        options,
+      );
       return rollbackOp(input);
+    },
+  };
+}
+
+/**
+ * Wraps an `env.provision` provider so an `image`-carrying `up` cannot reach
+ * a gated environment without the same confirmation `gateProductionRelease`
+ * requires of `release.deliver` (HIL-2, DESIGN §9 decision 14).
+ *
+ * This is the door T4.1.4's first review found still open: `env.provision`
+ * carries no notion of "production" (`contracts/env.provision.md`) and never
+ * should, but that is exactly why binding it unwrapped, anywhere a caller
+ * might later hand it an image, leaves a second unguarded path to the same
+ * environment `release.deliver`'s gate protects. `env.provision#up` with no
+ * `image` is untouched — that is the "stand the IaC up before any release
+ * exists" case `env.provision`'s own contract exists to serve, and gating it
+ * would gate infrastructure nobody is asking to deploy anything onto.
+ *
+ * `deployFingerprint`'s identity is shared with `gateProductionRelease`, so
+ * a caller that reaches this `up` only via `dockerReleaseProvider`'s already
+ * -gated `deliver`/`rollback` (the one path wired into this repository)
+ * never sees a second prompt: the confirmation `assertReady` found there is
+ * the same fingerprint this wrapper looks up.
+ */
+export function gateProvisionRelease(
+  provider: Provider,
+  options: DeployGateOptions,
+): Provider {
+  const up = provider.up;
+  if (up === undefined) {
+    throw new DeployGateError(
+      "the provider given to 'gateProvisionRelease' does not implement 'up' " +
+        '— nothing here can gate an operation that is not there to gate',
+    );
+  }
+
+  return {
+    ...provider,
+
+    up: async (input: never): Promise<unknown> => {
+      const parsed = envUpInput.parse(input);
+      if (parsed.image === undefined || !options.gatedEnvs.has(parsed.env)) {
+        return up(input);
+      }
+      assertReady({ repo: parsed.repo, env: parsed.env, digest: parsed.image }, options);
+      return up(input);
     },
   };
 }

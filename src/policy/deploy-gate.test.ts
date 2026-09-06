@@ -11,26 +11,47 @@ import {
   DeployGateError,
   deployFingerprint,
   gateProductionRelease,
+  gateProvisionRelease,
   type DeployGateOptions,
   type DeployLedger,
 } from './deploy-gate.js';
 
 /**
- * `gateProductionRelease` returns the same `Provider` type it was given —
- * a bare `Record`, so a caller cannot call `.deliver`/`.rollback` on it
- * without narrowing first. Every real caller reaches these two operations
- * through a `BoundContract`, which does that narrowing for them
- * (`contract/capability.ts`); this test calls the gate directly, so it
- * narrows once here instead of repeating a non-null assertion at every call.
+ * `gateProductionRelease`/`gateProvisionRelease` return the same `Provider`
+ * type they were given — a bare `Record`, so a caller cannot call
+ * `.deliver`/`.rollback`/`.up` on it without narrowing first. Every real
+ * caller reaches these operations through a `BoundContract`, which does that
+ * narrowing for them (`contract/capability.ts`); this test calls the gates
+ * directly, so it narrows once here instead of repeating a non-null
+ * assertion at every call.
  */
-interface GatedProvider {
+interface GatedReleaseProvider {
   readonly deliver: (input: never) => Promise<unknown>;
   readonly rollback: (input: never) => Promise<unknown>;
 }
 
-function gate(provider: Provider, options: DeployGateOptions): GatedProvider {
-  return gateProductionRelease(provider, options) as unknown as GatedProvider;
+interface GatedProvisionProvider {
+  readonly up: (input: never) => Promise<unknown>;
 }
+
+function gate(provider: Provider, options: DeployGateOptions): GatedReleaseProvider {
+  return gateProductionRelease(provider, options) as unknown as GatedReleaseProvider;
+}
+
+function provisionGate(
+  provider: Provider,
+  options: DeployGateOptions,
+): GatedProvisionProvider {
+  return gateProvisionRelease(provider, options) as unknown as GatedProvisionProvider;
+}
+
+/** `gatedEnvs` naming only `production` — every test below that does not
+ * exercise `gatedEnvs` itself uses this, the same set a caller reading a
+ * project's own manifest (`env/compose-provider.ts`'s `gatedEnvironments`)
+ * would build for a project that marks only `production` `approval:
+ * required` (T4.1.4 rework: this is never a name the gate assumes on its
+ * own). */
+const PRODUCTION_GATED: ReadonlySet<string> = new Set(['production']);
 
 /** A ledger over in-memory sets, mirroring `stateLedger`'s shape. */
 function ledger(seen = new Set<string>(), confirmed = new Set<string>()): DeployLedger {
@@ -71,10 +92,28 @@ function fakeProvider(): { provider: Provider; calls: string[] } {
   return { provider, calls };
 }
 
+/** A fake `env.provision` provider, the same shape for `gateProvisionRelease`. */
+function fakeProvisionProvider(): { provider: Provider; calls: string[] } {
+  const calls: string[] = [];
+  const provider: Provider = {
+    up: (input: never) => {
+      calls.push(`up:${JSON.stringify(input)}`);
+      return Promise.resolve({
+        env: (input as { env: string }).env,
+        up: true,
+        services: [],
+      });
+    },
+    down: () => Promise.resolve({ env: 'x', up: false, services: [] }),
+    status: () => Promise.resolve({ env: 'x', up: false, services: [] }),
+  };
+  return { provider, calls };
+}
+
 describe('gateProductionRelease — deliver', () => {
   it('refuses production without a recorded dry run', async () => {
     const { provider, calls } = fakeProvider();
-    const gated = gate(provider, { ledger: ledger() });
+    const gated = gate(provider, { gatedEnvs: PRODUCTION_GATED, ledger: ledger() });
 
     await expect(
       gated.deliver({ repo: 'r', env: 'production', release: release('1.0.0') } as never),
@@ -91,7 +130,7 @@ describe('gateProductionRelease — deliver', () => {
   it('tells the caller whether this refusal actually recorded the dry run', async () => {
     const { provider: unwired } = fakeProvider();
     await expect(
-      gate(unwired, { ledger: ledger() }).deliver({
+      gate(unwired, { gatedEnvs: PRODUCTION_GATED, ledger: ledger() }).deliver({
         repo: 'r',
         env: 'production',
         release: release('1.0.0'),
@@ -100,7 +139,11 @@ describe('gateProductionRelease — deliver', () => {
 
     const { provider: wired } = fakeProvider();
     await expect(
-      gate(wired, { ledger: ledger(), onDryRunNeeded: () => undefined }).deliver({
+      gate(wired, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+        onDryRunNeeded: () => undefined,
+      }).deliver({
         repo: 'r',
         env: 'production',
         release: release('1.0.0'),
@@ -110,27 +153,31 @@ describe('gateProductionRelease — deliver', () => {
 
   it('refuses production once simulated but still unconfirmed', async () => {
     const { provider, calls } = fakeProvider();
-    const target = { repo: 'r', env: 'production', release: release('1.0.0') };
+    const target = { repo: 'r', env: 'production', digest: release('1.0.0').digest };
     const print = deployFingerprint(target);
     const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print])),
     });
 
-    await expect(gated.deliver(target as never)).rejects.toThrow(
-      /simulated but not confirmed/,
-    );
+    await expect(
+      gated.deliver({ repo: 'r', env: 'production', release: release('1.0.0') } as never),
+    ).rejects.toThrow(/simulated but not confirmed/);
     expect(calls).toEqual([]);
   });
 
   it('delivers to production once the exact call is dry-run and confirmed', async () => {
     const { provider, calls } = fakeProvider();
-    const target = { repo: 'r', env: 'production', release: release('1.0.0') };
+    const target = { repo: 'r', env: 'production', digest: release('1.0.0').digest };
     const print = deployFingerprint(target);
     const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print]), new Set([print])),
     });
 
-    await expect(gated.deliver(target as never)).resolves.toEqual({
+    await expect(
+      gated.deliver({ repo: 'r', env: 'production', release: release('1.0.0') } as never),
+    ).resolves.toEqual({
       env: 'production',
       up: true,
       services: [],
@@ -143,9 +190,10 @@ describe('gateProductionRelease — deliver', () => {
     const confirmed = deployFingerprint({
       repo: 'r',
       env: 'production',
-      release: release('1.0.0'),
+      digest: release('1.0.0').digest,
     });
     const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([confirmed]), new Set([confirmed])),
     });
 
@@ -155,9 +203,9 @@ describe('gateProductionRelease — deliver', () => {
     expect(calls).toEqual([]);
   });
 
-  it('leaves a non-production environment ungated', async () => {
+  it('leaves a non-gated environment ungated', async () => {
     const { provider, calls } = fakeProvider();
-    const gated = gate(provider, { ledger: ledger() });
+    const gated = gate(provider, { gatedEnvs: PRODUCTION_GATED, ledger: ledger() });
 
     await gated.deliver({
       repo: 'r',
@@ -167,14 +215,17 @@ describe('gateProductionRelease — deliver', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('respects a custom production environment name', async () => {
+  it('gates whichever environments the caller names, not a hardcoded one', async () => {
     const { provider, calls } = fakeProvider();
     const gated = gate(provider, {
+      gatedEnvs: new Set(['prod-eu']),
       ledger: ledger(),
-      productionEnv: 'prod-eu',
     });
 
-    // The default name, unconfigured, passes straight through now.
+    // 'production' is not in this caller's `gatedEnvs` — a target project
+    // whose manifest never mentions that name gets no gate on it, and this
+    // caller's `gatedEnvs` says exactly that, rather than a default this
+    // module would otherwise fall back to (T4.1.4 rework, CONV-4).
     await gated.deliver({
       repo: 'r',
       env: 'production',
@@ -191,24 +242,38 @@ describe('gateProductionRelease — deliver', () => {
     const { provider } = fakeProvider();
     const dryRunNeeded: string[] = [];
     const confirmationNeeded: string[] = [];
-    const target = { repo: 'r', env: 'production', release: release('1.0.0') };
+    const target = { repo: 'r', env: 'production', digest: release('1.0.0').digest };
     const print = deployFingerprint(target);
 
     const gated1 = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(),
       onDryRunNeeded: (record) => dryRunNeeded.push(record.fingerprint),
       onConfirmationNeeded: (record) => confirmationNeeded.push(record.fingerprint),
     });
-    await expect(gated1.deliver(target as never)).rejects.toThrow(DeployGateError);
+    await expect(
+      gated1.deliver({
+        repo: 'r',
+        env: 'production',
+        release: release('1.0.0'),
+      } as never),
+    ).rejects.toThrow(DeployGateError);
     expect(dryRunNeeded).toEqual([print]);
     expect(confirmationNeeded).toEqual([]);
 
     const gated2 = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print])),
       onDryRunNeeded: (record) => dryRunNeeded.push(record.fingerprint),
       onConfirmationNeeded: (record) => confirmationNeeded.push(record.fingerprint),
     });
-    await expect(gated2.deliver(target as never)).rejects.toThrow(DeployGateError);
+    await expect(
+      gated2.deliver({
+        repo: 'r',
+        env: 'production',
+        release: release('1.0.0'),
+      } as never),
+    ).rejects.toThrow(DeployGateError);
     expect(confirmationNeeded).toEqual([print]);
   });
 });
@@ -216,7 +281,7 @@ describe('gateProductionRelease — deliver', () => {
 describe('gateProductionRelease — rollback', () => {
   it('refuses restoring a release production never had confirmed', async () => {
     const { provider, calls } = fakeProvider();
-    const gated = gate(provider, { ledger: ledger() });
+    const gated = gate(provider, { gatedEnvs: PRODUCTION_GATED, ledger: ledger() });
 
     await expect(
       gated.rollback({ repo: 'r', env: 'production', to: release('1.0.0') } as never),
@@ -231,9 +296,10 @@ describe('gateProductionRelease — rollback', () => {
     const print = deployFingerprint({
       repo: 'r',
       env: 'production',
-      release: release('1.0.0'),
+      digest: release('1.0.0').digest,
     });
     const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print]), new Set([print])),
     });
 
@@ -248,9 +314,10 @@ describe('gateProductionRelease — rollback', () => {
     const print = deployFingerprint({
       repo: 'r',
       env: 'production',
-      release: release('1.0.0'),
+      digest: release('1.0.0').digest,
     });
     const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print]), new Set([print])),
     });
 
@@ -260,9 +327,9 @@ describe('gateProductionRelease — rollback', () => {
     expect(calls).toEqual([]);
   });
 
-  it('leaves a non-production rollback ungated', async () => {
+  it('leaves a non-gated rollback ungated', async () => {
     const { provider, calls } = fakeProvider();
-    const gated = gate(provider, { ledger: ledger() });
+    const gated = gate(provider, { gatedEnvs: PRODUCTION_GATED, ledger: ledger() });
 
     await gated.rollback({ repo: 'r', env: 'staging', to: release('1.0.0') } as never);
     expect(calls).toHaveLength(1);
@@ -291,7 +358,7 @@ describe('crossRunLedger', () => {
     }
   }
 
-  const target = { repo: 'r', env: 'production', release: release('1.0.0') };
+  const target = { repo: 'r', env: 'production', digest: release('1.0.0').digest };
   const print = deployFingerprint(target);
 
   it('finds a dry run and confirmation recorded in a different run', () => {
@@ -300,14 +367,14 @@ describe('crossRunLedger', () => {
       {
         runId: 'run-a',
         type: 'DryRunRecorded',
-        payload: { taskId: '', tool: 'release.deliver#deliver', fingerprint: print },
+        payload: { taskId: '', tool: 'deploy', fingerprint: print },
       },
       {
         runId: 'run-a',
         type: 'DestructiveOpConfirmed',
         payload: {
           taskId: '',
-          tool: 'release.deliver#deliver',
+          tool: 'deploy',
           fingerprint: print,
           by: 'macg',
         },
@@ -339,14 +406,14 @@ describe('crossRunLedger', () => {
       {
         runId: 'run-a',
         type: 'DryRunRecorded',
-        payload: { taskId: '', tool: 'release.deliver#deliver', fingerprint: print },
+        payload: { taskId: '', tool: 'deploy', fingerprint: print },
       },
       {
         runId: 'run-a',
         type: 'DestructiveOpConfirmed',
         payload: {
           taskId: '',
-          tool: 'release.deliver#deliver',
+          tool: 'deploy',
           fingerprint: print,
           by: 'macg',
         },
@@ -354,7 +421,10 @@ describe('crossRunLedger', () => {
       { runId: 'run-b', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
     ]);
     const { provider, calls } = fakeProvider();
-    const gated = gate(provider, { ledger: crossRunLedger(() => state) });
+    const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: crossRunLedger(() => state),
+    });
 
     // `run-b` is the run acting here — DEP-2's automatic rollback, or an
     // operator's `mpgm rollback`, invoked from a run that never itself saw
@@ -366,16 +436,141 @@ describe('crossRunLedger', () => {
 
 describe('deployFingerprint', () => {
   it('is stable for the same target and changes with any field', () => {
-    const target = { repo: 'r', env: 'production', release: release('1.0.0') };
+    const target = { repo: 'r', env: 'production', digest: 'sha256:aaa' };
     expect(deployFingerprint(target)).toBe(deployFingerprint({ ...target }));
     expect(deployFingerprint(target)).not.toBe(
       deployFingerprint({ ...target, env: 'staging' }),
     );
     expect(deployFingerprint(target)).not.toBe(
-      deployFingerprint({ ...target, release: release('1.0.1') }),
+      deployFingerprint({ ...target, digest: 'sha256:bbb' }),
     );
     expect(deployFingerprint(target)).not.toBe(
       deployFingerprint({ ...target, repo: 'other' }),
     );
+  });
+
+  it('ignores label — a description, never part of what a confirmation covers', () => {
+    const target = { repo: 'r', env: 'production', digest: 'sha256:aaa' };
+    expect(deployFingerprint(target)).toBe(
+      deployFingerprint({ ...target, label: '1.0.0' }),
+    );
+  });
+});
+
+/**
+ * T4.1.4's first review: `production` declared in a manifest made
+ * `env.provision#up` — reached directly, with an `image` override — an
+ * ungated deploy of an arbitrary digest, one layer beneath the gate this
+ * module puts in front of `release.deliver`. These tests are the ones that
+ * fix has to fail without.
+ */
+describe('gateProvisionRelease', () => {
+  it('refuses an image-carrying up for a gated environment without a recorded dry run', async () => {
+    const { provider, calls } = fakeProvisionProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(
+      gated.up({ repo: 'r', env: 'production', image: 'sha256:aaa' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses an image-carrying up once simulated but still unconfirmed', async () => {
+    const { provider, calls } = fakeProvisionProvider();
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: 'sha256:aaa',
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print])),
+    });
+
+    await expect(
+      gated.up({ repo: 'r', env: 'production', image: 'sha256:aaa' } as never),
+    ).rejects.toThrow(/simulated but not confirmed/);
+    expect(calls).toEqual([]);
+  });
+
+  it('lets an image-carrying up proceed once confirmed', async () => {
+    const { provider, calls } = fakeProvisionProvider();
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: 'sha256:aaa',
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print]), new Set([print])),
+    });
+
+    await gated.up({ repo: 'r', env: 'production', image: 'sha256:aaa' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('leaves an up with no image untouched, even for a gated environment', async () => {
+    // Standing up the declared IaC before any release exists to point it at
+    // is `env.provision`'s own reason to exist (`contracts/env.provision.md`)
+    // — gating it would gate infrastructure nobody is asking to deploy
+    // anything onto.
+    const { provider, calls } = fakeProvisionProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await gated.up({ repo: 'r', env: 'production' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('leaves an image-carrying up for a non-gated environment untouched', async () => {
+    const { provider, calls } = fakeProvisionProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await gated.up({ repo: 'r', env: 'staging', image: 'sha256:aaa' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('shares its fingerprint identity with gateProductionRelease — one confirmation satisfies both', async () => {
+    // The confirmation on record is for `release.deliver#deliver`'s
+    // fingerprint of this exact `{repo, env, digest}` — the same identity
+    // `dockerReleaseProvider.deliverTo` hands to `env.provision#up`
+    // underneath an already-gated `deliver`. No second prompt.
+    const deliverPrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: release('1.0.0').digest,
+    });
+    const { provider, calls } = fakeProvisionProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([deliverPrint]), new Set([deliverPrint])),
+    });
+
+    await gated.up({
+      repo: 'r',
+      env: 'production',
+      image: release('1.0.0').digest,
+    } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses to wrap a provider that does not implement up', () => {
+    expect(() =>
+      gateProvisionRelease(
+        { down: () => Promise.resolve({}) },
+        {
+          gatedEnvs: PRODUCTION_GATED,
+          ledger: ledger(),
+        },
+      ),
+    ).toThrow(DeployGateError);
   });
 });

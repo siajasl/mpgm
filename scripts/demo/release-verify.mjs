@@ -29,6 +29,7 @@ import {
   composeProvider,
   dockerReleaseProvider,
   envProvisionContract,
+  gatedEnvironments,
   readOutcomes,
   recordOutcome,
   releaseDeliverContract,
@@ -61,10 +62,15 @@ const release = registry.bind(
   releaseDeliverContract,
   // See `release-deliver.mjs`: the gate is required construction as of
   // T4.1.4 (DESIGN §9 decision 10); this script only ever names `env:
-  // 'test'`, so the ledger below is never consulted.
+  // 'test'`, so the ledger below is never consulted. `gatedEnvs` reads this
+  // repository's own manifest (`gatedEnvironments`) rather than a name this
+  // script decides on its own (T4.1.4 rework, CONV-4).
   dockerReleaseProvider({
     envProvision: env,
-    gate: { ledger: { dryRunSeen: () => false, confirmed: () => false } },
+    gate: {
+      gatedEnvs: gatedEnvironments(repo),
+      ledger: { dryRunSeen: () => false, confirmed: () => false },
+    },
   }),
 );
 

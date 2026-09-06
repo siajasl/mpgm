@@ -35,9 +35,21 @@ import {
  * forget — means there is no code path that produces an *ungated*
  * `deliver`/`rollback` bound to the contract: not the CLI, not a demo
  * script, not a future orchestrator effect. A caller cannot construct a
- * provider whose production path skips the gate, which is a stronger
+ * provider whose gated-environment path skips the gate, which is a stronger
  * guarantee than a token on the call would have given (see decision 10's
  * revision for why a token was set aside).
+ *
+ * `options.gate.gatedEnvs` also governs `deliverTo`'s own call into
+ * `options.envProvision`'s `up` (`deployFingerprint`'s identity is the same
+ * `{repo, env, digest}` either wrapper checks — `deploy-gate.ts`) — but only
+ * if the caller wrapped that `BoundContract`'s provider with
+ * `gateProvisionRelease` before binding it. This provider does not do that
+ * wrapping itself: `envProvision` arrives already bound, and rewrapping a
+ * `BoundContract` here cannot change what its own provider already is. What
+ * this construction *does* guarantee is that when `envProvision` is gated
+ * the same way, the confirmation this provider's own `deliver`/`rollback`
+ * gate found already satisfies it — no second prompt for the same digest
+ * (DESIGN §9 decision 14).
  */
 
 export class ReleaseProviderError extends Error {}
@@ -89,13 +101,16 @@ export interface DockerReleaseProviderOptions {
   readonly envProvision: BoundContract;
   readonly cli?: DockerCli;
   /**
-   * The HIL-2 production gate's options (`../policy/deploy-gate.ts`) —
-   * required, not optional: see the module doc above for why this provider
-   * gates its own production path rather than trusting a caller to wrap it.
-   * A caller that never touches `env: 'production'` (every test in this
-   * file, both release demo scripts) still supplies a ledger; it is simply
-   * never consulted, the same way `gateProductionRelease` leaves any other
-   * environment untouched.
+   * The HIL-2 deploy gate's options (`../policy/deploy-gate.ts`) — required,
+   * not optional: see the module doc above for why this provider gates its
+   * own gated-environment path rather than trusting a caller to wrap it.
+   * `gatedEnvs` names which environments those are, read from the target
+   * project's own manifest (`gatedEnvironments`,
+   * `deploy/environments/environments.yaml`) — never a name this provider
+   * assumes. A caller whose `gatedEnvs` is empty, or that never touches an
+   * environment it names (every test in this file, both release demo
+   * scripts), still supplies a ledger; it is simply never consulted, the
+   * same way `gateProductionRelease` leaves any other environment untouched.
    */
   readonly gate: DeployGateOptions;
 }

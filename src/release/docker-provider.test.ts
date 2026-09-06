@@ -64,12 +64,18 @@ function writeIid(path: string, digest: string): void {
 
 /**
  * The gate is now a required constructor argument (`gate`, DESIGN §9
- * decision 10) — every test in this file delivers to `env: 'test'`, which
- * `gateProductionRelease` never consults, so this ledger only has to exist,
- * not answer anything in particular.
+ * decision 10) — every test in this file delivers to `env: 'test'`, and
+ * `gatedEnvs` defaults to empty here, which `gateProductionRelease` never
+ * consults for any environment, so this ledger only has to exist, not
+ * answer anything in particular. `gatedEnvs` is a caller-supplied set now,
+ * not a hardcoded name (T4.1.4 rework) — the one test that needs production
+ * actually gated names it explicitly.
  */
-function noProductionGate(): { ledger: DeployLedger } {
-  return { ledger: { dryRunSeen: () => false, confirmed: () => false } };
+function noProductionGate(gatedEnvs: ReadonlySet<string> = new Set()): {
+  gatedEnvs: ReadonlySet<string>;
+  ledger: DeployLedger;
+} {
+  return { gatedEnvs, ledger: { dryRunSeen: () => false, confirmed: () => false } };
 }
 
 function boundEnvProvision(overrides: Partial<Provider> = {}) {
@@ -376,7 +382,11 @@ describe('dockerReleaseProvider — the production gate is not optional', () => 
    * was true, a caller supplying only `envProvision` (as every test above
    * still does, for `env: 'test'`) would reach a real `env.provision#up` for
    * `env: 'production'` too — this test would have passed against that
-   * shape, so it is the one this fix has to fail without.
+   * shape, so it is the one this fix has to fail without. `gatedEnvs` names
+   * 'production' explicitly here — T4.1.4's rework made this a caller-built
+   * set, not a name `deploy-gate.ts` assumes, so a test proving the gate
+   * still fires has to build the same set a real caller reading its own
+   * manifest would.
    */
   it('refuses a production deliver even though the caller never wrapped the provider itself', async () => {
     const registry = new CapabilityRegistry();
@@ -389,7 +399,10 @@ describe('dockerReleaseProvider — the production gate is not optional', () => 
       down: () => Promise.resolve({ env: 'production', up: false, services: [] }),
       status: () => Promise.resolve({ env: 'production', up: false, services: [] }),
     });
-    const provider = dockerReleaseProvider({ envProvision, gate: noProductionGate() });
+    const provider = dockerReleaseProvider({
+      envProvision,
+      gate: noProductionGate(new Set(['production'])),
+    });
 
     await expect(
       operation(

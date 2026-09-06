@@ -18,6 +18,7 @@ import {
   composeProvider,
   dockerReleaseProvider,
   envProvisionContract,
+  gatedEnvironments,
   releaseDeliverContract,
 } from '../../dist/index.js';
 
@@ -45,10 +46,15 @@ const release = registry.bind(
   // The gate (`src/policy/deploy-gate.ts`) is a required part of
   // construction as of T4.1.4 (DESIGN §9 decision 10) — this script never
   // delivers to `env: 'production'`, so the ledger below is never consulted,
-  // but a provider cannot be built without one at all.
+  // but a provider cannot be built without one at all. `gatedEnvs` reads
+  // this repository's own manifest (`gatedEnvironments`) rather than a name
+  // this script decides on its own (T4.1.4 rework, CONV-4).
   dockerReleaseProvider({
     envProvision: env,
-    gate: { ledger: { dryRunSeen: () => false, confirmed: () => false } },
+    gate: {
+      gatedEnvs: gatedEnvironments(repo),
+      ledger: { dryRunSeen: () => false, confirmed: () => false },
+    },
   }),
 );
 

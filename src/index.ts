@@ -548,11 +548,11 @@ export type {
   DryRunNeeded,
 } from './policy/deploy-gate.js';
 export {
-  DEFAULT_PRODUCTION_ENV,
   DeployGateError,
   crossRunLedger,
   deployFingerprint,
   gateProductionRelease,
+  gateProvisionRelease,
 } from './policy/deploy-gate.js';
 export type {
   DesiredIssue,
@@ -731,6 +731,8 @@ export {
   ComposeProviderError,
   DEFAULT_MANIFEST_PATH,
   dockerComposeCli,
+  gatedEnvironmentNames,
+  gatedEnvironments,
   loadDeclaredEnvironments,
   parseComposePs,
   UndeclaredEnvironmentError,

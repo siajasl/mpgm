@@ -47,16 +47,29 @@ would provision infrastructure nothing wrote down.
 
 This project declares `test`, `staging` and `production`
 (`deploy/environments/environments.yaml`). `env.provision` itself carries no
-notion of "production" — `up`/`down`/`status` treat it exactly like any other
-declared name, per DEP-4. The hard approval gate DEP-2/HIL-2 ask for in front
-of it lives one layer up, at `release.deliver#deliver`/`#rollback`
-(`src/policy/deploy-gate.ts`, T4.1.4): a caller reaching production through
-*that* contract is refused unless an operator has confirmed the exact release
-named. This contract's own `up` was never what needed gating — nothing stops
-an operator running `docker compose up` against this environment's compose
-file directly, the same as any of the others — what the gate makes
-impossible is *`release.deliver` landing an unapproved release there*, which
-is the path DEP-2 actually cares about.
+notion of "production" — `up`/`down`/`status` treat every declared name the
+same, per DEP-4 — but each entry MUST also declare `approval: required` or
+`approval: none` (required, not defaulted: CONV-5), which is how a project
+says which of its own environments HIL-2's hard approval gate covers. This
+project marks only `production` `approval: required`.
+
+The gate DEP-2/HIL-2 ask for lives one layer up
+(`src/policy/deploy-gate.ts`, T4.1.4/DESIGN §9 decision 10/14), applied at
+every route an image can reach a gated environment through, not only one of
+them: `release.deliver#deliver`/`#rollback` (`gateProductionRelease`) *and*
+this contract's own `up`, when it carries an `image` (`gateProvisionRelease`)
+— a caller reaching `up` for a gated environment with an image is refused
+exactly as `release.deliver` would refuse it, unless an operator has
+confirmed the exact `{repo, env, digest}` named. T4.1.4's first review found
+the earlier version of this paragraph's reasoning false: "nothing stops an
+operator running `docker compose up` by hand" is true of an operator's own
+shell but was never a defence for a kernel capability a caller — the CLI, a
+demo script, or a future orchestrator effect — can reach programmatically,
+and nothing did refuse that call before this. `up` with no `image` is left
+untouched by the gate regardless of `approval` — standing up the declared IaC
+before any release exists to point it at is this contract's own reason to
+exist, and gating it would gate infrastructure nobody is asking to deploy
+anything onto.
 
 ## Operations
 
