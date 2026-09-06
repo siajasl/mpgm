@@ -3,7 +3,16 @@ import prettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'coverage/**', 'node_modules/**'] },
+  // `.mpgm/**` is the kernel's machine-local runtime state (ADR-2) — the event
+  // log, and a git worktree per in-flight task. eslint descends into it: with
+  // flat config there is no dotfile exemption, so a task's unmerged source gets
+  // linted as if it were this checkout's own.
+  //
+  // That makes `npm run lint` fail for reasons no change here can fix, and CI
+  // cannot reproduce it because `.mpgm/` is gitignored and a fresh checkout has
+  // none. A local red that CI calls green is worse than either: it trains the
+  // reader to disbelieve the check.
+  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', '.mpgm/**'] },
 
   eslint.configs.recommended,
 
