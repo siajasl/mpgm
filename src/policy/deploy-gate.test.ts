@@ -12,6 +12,7 @@ import {
   deployFingerprint,
   gateProductionRelease,
   gateProvisionRelease,
+  RECREATE_ON_DEFAULT_DIGEST,
   type DeployGateOptions,
   type DeployLedger,
 } from './deploy-gate.js';
@@ -92,9 +93,36 @@ function fakeProvider(): { provider: Provider; calls: string[] } {
   return { provider, calls };
 }
 
-/** A fake `env.provision` provider, the same shape for `gateProvisionRelease`. */
-function fakeProvisionProvider(): { provider: Provider; calls: string[] } {
+/**
+ * A fake `env.provision` provider, the same shape for `gateProvisionRelease`.
+ *
+ * `alreadyUp` controls what `status` reports before `up` is even called —
+ * this is what {@link gateProvisionRelease} asks before letting a no-image
+ * `up` through, so a test exercising that check needs a provider that can
+ * say "already running" without a real Docker daemon behind it. Defaults to
+ * not-up, the case every earlier test here (recorded before that check
+ * existed) already assumes.
+ */
+function fakeProvisionProvider(options: { alreadyUp?: boolean } = {}): {
+  provider: Provider;
+  calls: string[];
+} {
   const calls: string[] = [];
+  const status =
+    options.alreadyUp === true
+      ? {
+          env: 'x',
+          up: true,
+          services: [
+            {
+              name: 'web',
+              state: 'running' as const,
+              health: 'none' as const,
+              containerId: 'c1',
+            },
+          ],
+        }
+      : { env: 'x', up: false, services: [] };
   const provider: Provider = {
     up: (input: never) => {
       calls.push(`up:${JSON.stringify(input)}`);
@@ -105,7 +133,7 @@ function fakeProvisionProvider(): { provider: Provider; calls: string[] } {
       });
     },
     down: () => Promise.resolve({ env: 'x', up: false, services: [] }),
-    status: () => Promise.resolve({ env: 'x', up: false, services: [] }),
+    status: () => Promise.resolve(status),
   };
   return { provider, calls };
 }
@@ -525,6 +553,61 @@ describe('gateProvisionRelease', () => {
 
     await gated.up({ repo: 'r', env: 'production' } as never);
     expect(calls).toHaveLength(1);
+  });
+
+  it('refuses a no-image up for a gated environment that is already up', async () => {
+    // The second review's own gap: a no-image `up` recreates the stack on
+    // the compose default, which for an environment already serving a
+    // confirmed release is an unapproved change to what production serves
+    // (T4.1.4 third rework). Refused until an operator confirms recreating
+    // this exact `{repo, env}` onto its default.
+    const { provider, calls } = fakeProvisionProvider({ alreadyUp: true });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      DeployGateError,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('lets a no-image up for an already-up gated environment proceed once confirmed', async () => {
+    const { provider, calls } = fakeProvisionProvider({ alreadyUp: true });
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: RECREATE_ON_DEFAULT_DIGEST,
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print]), new Set([print])),
+    });
+
+    await gated.up({ repo: 'r', env: 'production' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses a no-image up for a gated environment when the provider cannot report status', async () => {
+    // Fail closed (CONV-4): a provider this gate cannot ask is never assumed
+    // fresh.
+    const calls: string[] = [];
+    const provider: Provider = {
+      up: (input: never) => {
+        calls.push(`up:${JSON.stringify(input)}`);
+        return Promise.resolve({ env: 'x', up: true, services: [] });
+      },
+    };
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      DeployGateError,
+    );
+    expect(calls).toEqual([]);
   });
 
   it('leaves an image-carrying up for a non-gated environment untouched', async () => {

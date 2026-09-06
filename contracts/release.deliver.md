@@ -92,7 +92,13 @@ contract at all (DESIGN §9 decision 10). A caller wires the gate's
 of one *is* the simulation, and this records it the instant that happens.
 The first call for a given `{repo, env, digest}` is therefore always
 refused, but leaves that exact fingerprint confirmable; `mpgm confirm
-<fingerprint> --by <who>` and the same call again then proceeds.
+<fingerprint> --by <who> --run <the run this call happened under>` and the
+same call again then proceeds. `--run` is not optional in practice even
+though the CLI accepts its absence: omitting it confirms against `run-1` by
+default, which is silently wrong whenever the dry run that made this
+fingerprint confirmable happened under a different run — a review found this
+paragraph and the gate's own refusal message naming `mpgm confirm` without
+saying that.
 `scripts/demo/deploy-gate.mjs` (T4.1.4's own verification, `npm run
 demo:gate`) is the caller this task exercises the gate through, wiring
 `onDryRunNeeded` and confirming exactly the way described above; the

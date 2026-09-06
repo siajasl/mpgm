@@ -597,4 +597,37 @@ describe('reduce', () => {
       ),
     ).toThrow();
   });
+
+  it('refuses a DryRunRecorded/DestructiveOpConfirmed with no taskId at all (CONV-5)', () => {
+    // The deploy-gate sentinel is `taskId: ''`, written explicitly — never
+    // an omitted field silently defaulted to it. A caller that forgets
+    // `taskId` altogether must fail loudly, the same as forgetting `tool` or
+    // `fingerprint` would, not end up with the sentinel by accident.
+    // `EventInput['payload']` is untyped per event (validated by the
+    // registry's schema, not the compiler), so the omission below is caught
+    // only at runtime — which is exactly the behaviour this test proves.
+    const dryRunPayload: Record<string, unknown> = {
+      tool: 'mcp__deploy__release',
+      fingerprint: 'f1',
+      summary: '',
+    };
+    expect(() =>
+      logWith([
+        runStartedInput,
+        { runId: RUN, type: 'DryRunRecorded', payload: dryRunPayload },
+      ]),
+    ).toThrow();
+
+    const confirmedPayload: Record<string, unknown> = {
+      tool: 'mcp__deploy__release',
+      fingerprint: 'f1',
+      by: 'macg',
+    };
+    expect(() =>
+      logWith([
+        runStartedInput,
+        { runId: RUN, type: 'DestructiveOpConfirmed', payload: confirmedPayload },
+      ]),
+    ).toThrow();
+  });
 });

@@ -1,5 +1,5 @@
 import type { Provider } from '../contract/capability.js';
-import { envUpInput } from '../env/provision.js';
+import { envStatusOutput, envUpInput } from '../env/provision.js';
 import { releaseDeliverInput, releaseRollbackInput } from '../release/deliver.js';
 import type { DestructiveCallState, KernelState } from '../state/kernel-state.js';
 import { fingerprint } from './destructive.js';
@@ -61,6 +61,29 @@ import { fingerprint } from './destructive.js';
  * `dockerReleaseProvider` hands it to `env.provision#up` underneath, but a
  * caller reaching `env.provision#up` on its own, for a digest nobody
  * approved, is refused exactly as `deliver` would refuse it.
+ *
+ * **A no-image `up` is not automatically the "stand up the IaC" case
+ * either.** A third review found the reasoning above proved too much: `up`
+ * with no `image` is exempted from the gate outright, on the grounds that
+ * bringing up empty infrastructure needs no approval — true for an
+ * environment nobody has pointed at a release yet, but the identical call
+ * against a gated environment already serving a *confirmed* release
+ * recreates the stack on the reference provider's compose default
+ * (`nginx:1.27-alpine`, placeholder page re-mounted), replacing what
+ * production serves with no approval anywhere in the path — reachable
+ * through the same kernel capability, not an operator's shell, that decision
+ * 14 already agreed cannot be trusted to police itself. {@link
+ * gateProvisionRelease} tells the two cases apart the only way it can
+ * without inventing a notion of "release" that `env.provision` does not
+ * have: it asks the provider's own `status` whether the environment is
+ * already up before letting a no-image `up` through. Not up — nothing is
+ * being replaced, and the call proceeds ungated, exactly as before. Already
+ * up — the call is gated under a fingerprint identity stable for this
+ * `{repo, env}` alone (there is no digest to name; see {@link
+ * RECREATE_ON_DEFAULT_DIGEST}), so an operator confirms recreating onto the
+ * declared default once and is not asked again for the same environment. A
+ * provider that cannot answer `status` is refused outright rather than
+ * assumed fresh (CONV-4).
  */
 
 export class DeployGateError extends Error {}
@@ -249,13 +272,17 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
       `deploying ${describe(target)} has not been simulated. This call's ` +
         `fingerprint is ${print}. ` +
         (recorded
-          ? `This refusal has recorded it as a dry run for this run, so an ` +
-            `operator can confirm it now with 'mpgm confirm ${print} --by ` +
-            `<who>' (HIL-2, SAF-4).`
+          ? `This refusal has recorded it as a dry run, in whichever run this ` +
+            `call happened under, so an operator can confirm it now with ` +
+            `'mpgm confirm ${print} --by <who> --run <that run>' (HIL-2, ` +
+            `SAF-4) — 'mpgm confirm' checks one run, defaulting to 'run-1' ` +
+            `when '--run' is omitted, so naming the run this call actually ` +
+            `ran under matters if it was not 'run-1'.`
           : `Nothing recorded it — this caller did not wire 'onDryRunNeeded' — ` +
-            `so there is nothing yet for 'mpgm confirm ${print} --by <who>' to ` +
-            `find; a 'DryRunRecorded' event for this fingerprint must exist in ` +
-            `this run before it can be confirmed (HIL-2, SAF-4).`),
+            `so there is nothing yet for 'mpgm confirm ${print} --by <who> ` +
+            `--run <that run>' to find; a 'DryRunRecorded' event for this ` +
+            `fingerprint must exist in that run before it can be confirmed ` +
+            `(HIL-2, SAF-4).`),
     );
   }
 
@@ -269,7 +296,11 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
       target,
       reason,
     });
-    throw new DeployGateError(`${reason} Confirm with: mpgm confirm ${print} --by <who>`);
+    throw new DeployGateError(
+      `${reason} Confirm with: mpgm confirm ${print} --by <who> --run <the ` +
+        `run this call's dry run was recorded under — 'run-1' only if that ` +
+        `is where it actually ran>`,
+    );
   }
 }
 
@@ -349,24 +380,54 @@ export function gateProductionRelease(
 }
 
 /**
- * Wraps an `env.provision` provider so an `image`-carrying `up` cannot reach
- * a gated environment without the same confirmation `gateProductionRelease`
- * requires of `release.deliver` (HIL-2, DESIGN §9 decision 14).
+ * The fingerprint identity a no-image `up` is checked against once
+ * {@link gateProvisionRelease} finds the target environment already up (see
+ * below). There is no image in that call to name a digest from — that is
+ * the whole reason the call needs a stand-in — but the stand-in is constant,
+ * not derived from anything an operator did not already see: folded into
+ * {@link deployFingerprint}'s `{repo, env, digest}` identity, it produces one
+ * fingerprint per gated `{repo, env}` for "recreate this environment on its
+ * compose default", confirmed once and never asked again for the same
+ * environment, the same way a `deliver`/`rollback` of an identical digest
+ * is not asked twice. Distinct from any real digest an actual release could
+ * carry, so a coincidental collision is not a concern this needs to guard
+ * against separately.
+ */
+export const RECREATE_ON_DEFAULT_DIGEST = 'no-image-up';
+
+/**
+ * Wraps an `env.provision` provider so neither an `image`-carrying `up`, nor
+ * a no-image `up` that would silently replace what a gated environment is
+ * already serving, can reach it without the same confirmation
+ * `gateProductionRelease` requires of `release.deliver` (HIL-2, DESIGN §9
+ * decision 14).
  *
- * This is the door T4.1.4's first review found still open: `env.provision`
- * carries no notion of "production" (`contracts/env.provision.md`) and never
- * should, but that is exactly why binding it unwrapped, anywhere a caller
- * might later hand it an image, leaves a second unguarded path to the same
- * environment `release.deliver`'s gate protects. `env.provision#up` with no
- * `image` is untouched — that is the "stand the IaC up before any release
- * exists" case `env.provision`'s own contract exists to serve, and gating it
- * would gate infrastructure nobody is asking to deploy anything onto.
+ * `env.provision` carries no notion of "production" (`contracts/env.provision.md`)
+ * and never should, but that is exactly why binding it unwrapped, anywhere a
+ * caller might later hand it an image, leaves a second unguarded path to the
+ * same environment `release.deliver`'s gate protects — the gap T4.1.4's
+ * first review found. `deployFingerprint`'s identity is shared with
+ * `gateProductionRelease`, so a caller that reaches this `up` only via
+ * `dockerReleaseProvider`'s already-gated `deliver`/`rollback` (the one path
+ * wired into this repository) never sees a second prompt: the confirmation
+ * `assertReady` found there is the same fingerprint this wrapper looks up.
  *
- * `deployFingerprint`'s identity is shared with `gateProductionRelease`, so
- * a caller that reaches this `up` only via `dockerReleaseProvider`'s already
- * -gated `deliver`/`rollback` (the one path wired into this repository)
- * never sees a second prompt: the confirmation `assertReady` found there is
- * the same fingerprint this wrapper looks up.
+ * An `up` with no `image` is not gated outright, only conditionally: a third
+ * review found "no image is always the stand-the-IaC-up case" false the
+ * moment the environment already has a confirmed release running, because
+ * the *identical* call then recreates the stack on the reference provider's
+ * compose default — an unapproved change to what production serves, one
+ * input field away from the case this function was already built to refuse.
+ * Before letting a no-image `up` for a gated environment through, this asks
+ * the wrapped provider's own `status` whether anything is up there already.
+ * Not up — this really is the "nothing to replace yet" case, and the call
+ * proceeds exactly as before. Already up — the call is gated under
+ * {@link RECREATE_ON_DEFAULT_DIGEST} instead of a real digest, satisfied by
+ * the identical confirmation on every later no-image `up` against the same
+ * `{repo, env}`. A provider that does not implement `status` cannot be asked
+ * and is refused outright rather than trusted to be fresh (CONV-4) — every
+ * real `env.provision` provider implements `status` (`contracts/env.provision.md`);
+ * one that does not is not a provider this gate can safely wrap at all.
  */
 export function gateProvisionRelease(
   provider: Provider,
@@ -379,16 +440,50 @@ export function gateProvisionRelease(
         '— nothing here can gate an operation that is not there to gate',
     );
   }
+  const status = provider.status;
 
   return {
     ...provider,
 
     up: async (input: never): Promise<unknown> => {
       const parsed = envUpInput.parse(input);
-      if (parsed.image === undefined || !options.gatedEnvs.has(parsed.env)) {
+      if (!options.gatedEnvs.has(parsed.env)) {
         return up(input);
       }
-      assertReady({ repo: parsed.repo, env: parsed.env, digest: parsed.image }, options);
+      if (parsed.image !== undefined) {
+        assertReady(
+          { repo: parsed.repo, env: parsed.env, digest: parsed.image },
+          options,
+        );
+        return up(input);
+      }
+      // No image: refuse to assume this is the empty-infrastructure case
+      // without asking. A provider with no `status` to ask is refused
+      // fail-closed (CONV-4) rather than treated as "must be fresh".
+      if (status === undefined) {
+        throw new DeployGateError(
+          `deploying to '${parsed.env}' with no image cannot be confirmed safe: ` +
+            "the provider given to 'gateProvisionRelease' does not implement " +
+            "'status', so whether this environment is already serving a " +
+            'confirmed release cannot be checked before recreating it on its ' +
+            'compose default (HIL-2, CONV-4).',
+        );
+      }
+      const current = envStatusOutput.parse(
+        await status({ repo: parsed.repo, env: parsed.env } as never),
+      );
+      if (!current.up) {
+        return up(input);
+      }
+      assertReady(
+        {
+          repo: parsed.repo,
+          env: parsed.env,
+          digest: RECREATE_ON_DEFAULT_DIGEST,
+          label: 'compose default',
+        },
+        options,
+      );
       return up(input);
     },
   };

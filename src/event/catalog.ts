@@ -418,12 +418,19 @@ export const changeMerged = defineEvent(
  * `taskId` names the task whose tool call this was — empty only for the
  * production deploy gate (`policy/deploy-gate.ts`, T4.1.4), which guards a
  * call the kernel makes itself rather than a tool call inside a task, the
- * same reason `OperatorIntervened` carries no `taskId` either.
+ * same reason `OperatorIntervened` carries no `taskId` either. Required,
+ * not defaulted (CONV-5): `.default('')` would let a caller building this
+ * payload simply omit the field and have it silently become the deploy
+ * gate's sentinel, which is exactly backwards — a normal destructive tool
+ * call losing its task attribution by omission, not by a decision anyone
+ * made, is the ambiguity a required field with no default refuses to let
+ * exist. A caller naming the deploy-gate sentinel writes `taskId: ''`
+ * explicitly instead; every real caller in this repository already does.
  */
 export const dryRunRecorded = defineEvent(
   'DryRunRecorded',
   z.object({
-    taskId: z.string().default(''),
+    taskId: z.string(),
     tool: nonEmpty,
     fingerprint: nonEmpty,
     summary: z.string().default(''),
@@ -433,12 +440,13 @@ export const dryRunRecorded = defineEvent(
 /**
  * An operator confirmed a simulated destructive call may proceed (SAF-4,
  * HIL-2). `taskId` echoes the `DryRunRecorded` it confirms (see above) —
- * empty for the same reason there.
+ * empty for the same reason there, and required rather than defaulted for
+ * the same CONV-5 reason.
  */
 export const destructiveOpConfirmed = defineEvent(
   'DestructiveOpConfirmed',
   z.object({
-    taskId: z.string().default(''),
+    taskId: z.string(),
     tool: nonEmpty,
     fingerprint: nonEmpty,
     by: nonEmpty,

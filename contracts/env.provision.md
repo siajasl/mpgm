@@ -66,10 +66,10 @@ operator running `docker compose up` by hand" is true of an operator's own
 shell but was never a defence for a kernel capability a caller — the CLI, a
 demo script, or a future orchestrator effect — can reach programmatically,
 and nothing did refuse that call before this. `up` with no `image` is left
-untouched by the gate regardless of `approval` — standing up the declared IaC
-before any release exists to point it at is this contract's own reason to
-exist, and gating it would gate infrastructure nobody is asking to deploy
-anything onto.
+untouched by the gate *while the environment is not already up* — standing up
+the declared IaC before any release exists to point it at is this contract's
+own reason to exist, and gating it would gate infrastructure nobody is asking
+to deploy anything onto.
 
 T4.1.4's second review found two further gaps in that first fix, both closed
 in the reference provider now: `gateProvisionRelease` was applied by exactly
@@ -96,6 +96,23 @@ environment's declared default, not to whatever the process happened to
 have lying around; the reference provider now clears
 `MPGM_SERVICE_IMAGE` explicitly on every no-image `up`, rather than leaving
 its absence to be decided by inheritance (CONV-4).
+
+A third review found "no `image` is left untouched" itself proved too much:
+that reasoning is right for an environment nobody has pointed at a release
+yet, but the *identical* call against a gated environment already serving a
+confirmed release recreates the stack on the reference provider's compose
+default — an unapproved change to what production serves, one input field
+away from the case this contract's gate already refuses. `gateProvisionRelease`
+now asks the provider's own `status` before letting a no-image `up` for a
+gated environment through: not up, the call proceeds exactly as before; already
+up, the call is gated under a fingerprint identity fixed for "recreate this
+`{repo, env}` onto its compose default"
+(`src/policy/deploy-gate.ts`'s `RECREATE_ON_DEFAULT_DIGEST`), so an operator
+confirms it once for a given environment and is not asked again for the same
+one. A provider that does not implement `status` cannot be asked and is
+refused outright (CONV-4) — every provider satisfying this contract
+implements `status` already (see "Operations" below), so this asks nothing
+of a provider the contract did not already require.
 
 **Scope.** T4.1.4 originally carried the gate, `mpgm rollback`, and release
 outcome artifacts as one task; three sessions could not close it, and PLAN.md

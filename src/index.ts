@@ -558,6 +558,7 @@ export type {
 } from './policy/deploy-gate.js';
 export {
   DeployGateError,
+  RECREATE_ON_DEFAULT_DIGEST,
   crossRunLedger,
   deployFingerprint,
   gateProductionRelease,
