@@ -71,6 +71,30 @@ before any release exists to point it at is this contract's own reason to
 exist, and gating it would gate infrastructure nobody is asking to deploy
 anything onto.
 
+T4.1.4's second review found two further gaps in that first fix, both closed
+in the reference provider now: `gateProvisionRelease` was applied by exactly
+one caller (`mpgm rollback`) rather than built into the reference provider
+itself, so three other committed callers (`scripts/demo/env-provision.mjs`,
+`release-deliver.mjs`, `release-verify.mjs`) bound `composeProvider()` raw —
+a caller could still construct an ungated `up`, the identical shape the
+first review had already ruled out for `release.deliver`. `composeProvider`
+now takes its gate as a required constructor argument, exactly as
+`dockerReleaseProvider` does, and always returns the `gateProvisionRelease`
+-wrapped result — there is no unwrapped provider this contract's reference
+implementation ever hands back. Second, "`up` with no `image` is left
+untouched" was true of the gate's own logic but not of what actually reached
+`docker compose`: the reference provider passed no explicit
+`MPGM_SERVICE_IMAGE` at all on a no-image `up`, so an ambient value already
+present in the *caller's own process environment* reached the child
+unchanged, and this project's own compose files resolve
+`${MPGM_SERVICE_IMAGE:-nginx:1.27-alpine}` — an unset-or-empty variable falls
+back to the pinned default, but a *set* one, however it got set, overrides
+it. An `up` with no `image` in its input MUST still resolve to the
+environment's declared default, not to whatever the process happened to
+have lying around; the reference provider now clears
+`MPGM_SERVICE_IMAGE` explicitly on every no-image `up`, rather than leaving
+its absence to be decided by inheritance (CONV-4).
+
 ## Operations
 
 ### `up`

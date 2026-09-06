@@ -117,8 +117,13 @@ before T4.1.4's own review found it, a second and wholly ungated door to the
 same environment. `deploy-gate.ts`'s `gateProvisionRelease` wraps
 `env.provision#up` the same way `gateProductionRelease` wraps this contract,
 sharing the same fingerprint identity, so a confirmation given to one is
-found by the other — `mpgm rollback` wraps both providers with the same
-`gatedEnvs`/ledger before binding either.
+found by the other. As of T4.1.4's second rework this is not left to a
+caller to remember for each provider it binds: `composeProvider`
+(`env.provision`'s reference provider) requires `gate` at construction and
+applies `gateProvisionRelease` itself, the same way `dockerReleaseProvider`
+requires it and applies `gateProductionRelease` — `mpgm rollback` passes the
+same `gatedEnvs`/ledger to both constructors, but no caller in this
+repository can construct either provider ungated in the first place.
 
 `assemble` and delivery to any environment `<repo>`'s manifest does not mark
 `approval: required` are ungated, exactly as before this section existed.

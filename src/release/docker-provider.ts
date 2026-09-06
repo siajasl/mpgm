@@ -42,14 +42,16 @@ import {
  * `options.gate.gatedEnvs` also governs `deliverTo`'s own call into
  * `options.envProvision`'s `up` (`deployFingerprint`'s identity is the same
  * `{repo, env, digest}` either wrapper checks — `deploy-gate.ts`) — but only
- * if the caller wrapped that `BoundContract`'s provider with
- * `gateProvisionRelease` before binding it. This provider does not do that
- * wrapping itself: `envProvision` arrives already bound, and rewrapping a
- * `BoundContract` here cannot change what its own provider already is. What
- * this construction *does* guarantee is that when `envProvision` is gated
- * the same way, the confirmation this provider's own `deliver`/`rollback`
- * gate found already satisfies it — no second prompt for the same digest
- * (DESIGN §9 decision 14).
+ * if `envProvision` was itself built gated. This provider does not do any
+ * wrapping of `envProvision` here: it arrives already bound, and rewrapping
+ * a `BoundContract` here cannot change what its own provider already is. As
+ * of T4.1.4's second rework, the reference `env.provision` provider
+ * (`../env/compose-provider.ts`'s `composeProvider`) makes that a
+ * constructor requirement rather than something a caller could omit, the
+ * same way `gate` is required here — so in this repository `envProvision`
+ * is always gated, and the confirmation this provider's own
+ * `deliver`/`rollback` gate found already satisfies it — no second prompt
+ * for the same digest (DESIGN §9 decision 14).
  */
 
 export class ReleaseProviderError extends Error {}

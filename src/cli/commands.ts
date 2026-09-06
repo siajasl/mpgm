@@ -23,7 +23,7 @@ import { TraceIndex } from '../trace/index-store.js';
 import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
-import { crossRunLedger, gateProvisionRelease } from '../policy/deploy-gate.js';
+import { crossRunLedger } from '../policy/deploy-gate.js';
 import { RoleRegistry } from '../role/loader.js';
 import {
   approvalKey,
@@ -762,14 +762,12 @@ export async function rollback(
     const registry = new CapabilityRegistry();
     const envContract = registry.bind(
       envProvisionContract,
-      // `gateProvisionRelease` closes the second door T4.1.4's first review
-      // found: `env.provision#up` reached directly, with an image bound for
-      // a gated environment, was ungated even though `release.deliver` was
-      // not — the same `gatedEnvs`/ledger here means an image already
-      // confirmed through `release.deliver` below is never confirmed twice,
-      // and one that was not is refused here exactly as `deliver` refuses it
-      // (DESIGN §9 decision 14).
-      gateProvisionRelease(composeProvider(), { gatedEnvs, ledger, onDryRunNeeded }),
+      // `composeProvider` applies `gateProvisionRelease` itself now (T4.1.4
+      // second rework) — the same `gatedEnvs`/ledger here means an image
+      // already confirmed through `release.deliver` below is never confirmed
+      // twice, and one that was not is refused here exactly as `deliver`
+      // refuses it (DESIGN §9 decision 14).
+      composeProvider({ gate: { gatedEnvs, ledger, onDryRunNeeded } }),
     );
     const release = registry.bind(
       releaseDeliverContract,

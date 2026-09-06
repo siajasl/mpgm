@@ -18,6 +18,7 @@ import {
   CapabilityRegistry,
   composeProvider,
   envProvisionContract,
+  gatedEnvironments,
 } from '../../dist/index.js';
 
 const failures = [];
@@ -33,7 +34,21 @@ function check(label, condition, detail = '') {
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const registry = new CapabilityRegistry();
-const bound = registry.bind(envProvisionContract, composeProvider());
+const bound = registry.bind(
+  envProvisionContract,
+  // The gate (`src/policy/deploy-gate.ts`) is a required part of
+  // construction as of T4.1.4's second rework — this script only ever names
+  // `env: 'test'` and passes no `image`, so the ledger below is never
+  // consulted, but a provider cannot be built without one at all.
+  // `gatedEnvs` reads this repository's own manifest (`gatedEnvironments`)
+  // rather than a name this script decides on its own (CONV-4).
+  composeProvider({
+    gate: {
+      gatedEnvs: gatedEnvironments(repo),
+      ledger: { dryRunSeen: () => false, confirmed: () => false },
+    },
+  }),
+);
 
 try {
   process.stdout.write('\n1. Up from the committed IaC alone\n');

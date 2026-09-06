@@ -57,20 +57,28 @@ const outcomesPath = join(repo, '.mpgm', 'demo', 'release-outcomes-test.jsonl');
 rmSync(outcomesPath, { force: true });
 
 const registry = new CapabilityRegistry();
-const env = registry.bind(envProvisionContract, composeProvider());
+const productionGate = {
+  gatedEnvs: gatedEnvironments(repo),
+  ledger: { dryRunSeen: () => false, confirmed: () => false },
+};
+const env = registry.bind(
+  envProvisionContract,
+  // `composeProvider`'s gate is a required part of construction as of
+  // T4.1.4's second rework, for the same reason `dockerReleaseProvider`'s is
+  // below.
+  composeProvider({ gate: productionGate }),
+);
 const release = registry.bind(
   releaseDeliverContract,
   // See `release-deliver.mjs`: the gate is required construction as of
   // T4.1.4 (DESIGN §9 decision 10); this script only ever names `env:
   // 'test'`, so the ledger below is never consulted. `gatedEnvs` reads this
   // repository's own manifest (`gatedEnvironments`) rather than a name this
-  // script decides on its own (T4.1.4 rework, CONV-4).
+  // script decides on its own (T4.1.4 rework, CONV-4). Same gate object
+  // `env` above was built with — one confirmation would satisfy both.
   dockerReleaseProvider({
     envProvision: env,
-    gate: {
-      gatedEnvs: gatedEnvironments(repo),
-      ledger: { dryRunSeen: () => false, confirmed: () => false },
-    },
+    gate: productionGate,
   }),
 );
 
