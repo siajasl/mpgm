@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { BoundContract, Provider } from '../contract/capability.js';
+import { gateProductionRelease, type DeployGateOptions } from '../policy/deploy-gate.js';
 import {
   nextRelease,
   type ReleaseArtifact,
@@ -25,6 +26,32 @@ import {
  * structural rather than a comment — swap the bound `env.provision` contract
  * for one fronting a hosted or Kubernetes-native CD tool (§8's deploy-substrate
  * revisit trigger) and nothing in this file changes.
+ *
+ * The HIL-2 production gate (`../policy/deploy-gate.ts`) is applied here,
+ * inside construction, rather than left for a caller to wrap on afterward
+ * (DESIGN §9 decision 10). This is the only concrete provider
+ * `releaseDeliverContract` has in this repository, so requiring the gate's
+ * ledger as a constructor argument — not an optional wrapper a caller can
+ * forget — means there is no code path that produces an *ungated*
+ * `deliver`/`rollback` bound to the contract: not the CLI, not a demo
+ * script, not a future orchestrator effect. A caller cannot construct a
+ * provider whose gated-environment path skips the gate, which is a stronger
+ * guarantee than a token on the call would have given (see decision 10's
+ * revision for why a token was set aside).
+ *
+ * `options.gate.gatedEnvs` also governs `deliverTo`'s own call into
+ * `options.envProvision`'s `up` (`deployFingerprint`'s identity is the same
+ * `{repo, env, digest}` either wrapper checks — `deploy-gate.ts`) — but only
+ * if `envProvision` was itself built gated. This provider does not do any
+ * wrapping of `envProvision` here: it arrives already bound, and rewrapping
+ * a `BoundContract` here cannot change what its own provider already is. As
+ * of T4.1.4's second rework, the reference `env.provision` provider
+ * (`../env/compose-provider.ts`'s `composeProvider`) makes that a
+ * constructor requirement rather than something a caller could omit, the
+ * same way `gate` is required here — so in this repository `envProvision`
+ * is always gated, and the confirmation this provider's own
+ * `deliver`/`rollback` gate found already satisfies it — no second prompt
+ * for the same digest (DESIGN §9 decision 14).
  */
 
 export class ReleaseProviderError extends Error {}
@@ -75,6 +102,19 @@ export interface DockerReleaseProviderOptions {
    */
   readonly envProvision: BoundContract;
   readonly cli?: DockerCli;
+  /**
+   * The HIL-2 deploy gate's options (`../policy/deploy-gate.ts`) — required,
+   * not optional: see the module doc above for why this provider gates its
+   * own gated-environment path rather than trusting a caller to wrap it.
+   * `gatedEnvs` names which environments those are, read from the target
+   * project's own manifest (`gatedEnvironments`,
+   * `deploy/environments/environments.yaml`) — never a name this provider
+   * assumes. A caller whose `gatedEnvs` is empty, or that never touches an
+   * environment it names (every test in this file, both release demo
+   * scripts), still supplies a ledger; it is simply never consulted, the
+   * same way `gateProductionRelease` leaves any other environment untouched.
+   */
+  readonly gate: DeployGateOptions;
 }
 
 async function buildImage(
@@ -130,6 +170,10 @@ async function buildImage(
  * the same reasoning as `composeProvider` (`../env/compose-provider.ts`): a
  * constructor-bound checkout would let a caller name one repo and silently
  * build or deliver from another's tree.
+ *
+ * Returns a provider already wrapped by `gateProductionRelease` — there is
+ * no unwrapped provider this function ever hands back for a caller to bind
+ * unguarded (DESIGN §9 decision 10).
  */
 export function dockerReleaseProvider(options: DockerReleaseProviderOptions): Provider {
   const cli = options.cli ?? dockerCli;
@@ -153,7 +197,7 @@ export function dockerReleaseProvider(options: DockerReleaseProviderOptions): Pr
     };
   }
 
-  return {
+  const raw: Provider = {
     assemble: async (input: never): Promise<unknown> => {
       const assembleInput = input as ReleaseAssembleInput;
       return buildImage(cli, assembleInput.repo, assembleInput);
@@ -169,4 +213,6 @@ export function dockerReleaseProvider(options: DockerReleaseProviderOptions): Pr
       return deliverTo(repo, env, to);
     },
   };
+
+  return gateProductionRelease(raw, options.gate);
 }

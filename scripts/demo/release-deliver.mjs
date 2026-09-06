@@ -18,6 +18,7 @@ import {
   composeProvider,
   dockerReleaseProvider,
   envProvisionContract,
+  gatedEnvironments,
   releaseDeliverContract,
 } from '../../dist/index.js';
 
@@ -39,10 +40,32 @@ async function content() {
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const registry = new CapabilityRegistry();
-const env = registry.bind(envProvisionContract, composeProvider());
+const productionGate = {
+  gatedEnvs: gatedEnvironments(repo),
+  ledger: { dryRunSeen: () => false, confirmed: () => false },
+};
+const env = registry.bind(
+  envProvisionContract,
+  // `composeProvider`'s gate is a required part of construction as of
+  // T4.1.4's second rework, for the same reason `dockerReleaseProvider`'s is
+  // below — this script never delivers to `env: 'production'`, so the
+  // ledger is never consulted, but a provider cannot be built without one at
+  // all (CONV-4).
+  composeProvider({ gate: productionGate }),
+);
 const release = registry.bind(
   releaseDeliverContract,
-  dockerReleaseProvider({ envProvision: env }),
+  // The gate (`src/policy/deploy-gate.ts`) is a required part of
+  // construction as of T4.1.4 (DESIGN §9 decision 10) — this script never
+  // delivers to `env: 'production'`, so the ledger below is never consulted,
+  // but a provider cannot be built without one at all. `gatedEnvs` reads
+  // this repository's own manifest (`gatedEnvironments`) rather than a name
+  // this script decides on its own (T4.1.4 rework, CONV-4). Same gate object
+  // `env` above was built with — one confirmation would satisfy both.
+  dockerReleaseProvider({
+    envProvision: env,
+    gate: productionGate,
+  }),
 );
 
 try {

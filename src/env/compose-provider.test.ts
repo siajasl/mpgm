@@ -3,10 +3,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Provider } from '../contract/capability.js';
+import type { DeployGateOptions } from '../policy/deploy-gate.js';
 import {
   ComposeProviderError,
   UndeclaredEnvironmentError,
   composeProvider,
+  gatedEnvironmentNames,
+  gatedEnvironments,
   loadDeclaredEnvironments,
   parseComposePs,
   type ComposeCli,
@@ -27,6 +30,19 @@ function operation(provider: Provider, name: string): (input: never) => Promise<
     throw new Error(`composeProvider does not implement '${name}'`);
   }
   return fn;
+}
+
+/**
+ * `composeProvider`'s `gate` is required construction as of T4.1.4's second
+ * rework (mirrors `dockerReleaseProvider`'s `noProductionGate` in
+ * `../release/docker-provider.test.ts`) — every test in this file that is
+ * not itself exercising the gate wants one that never refuses anything.
+ * `gatedEnvs` defaults to empty, which `gateProvisionRelease` never
+ * consults its ledger for at all, so a ledger that always answers "no" is
+ * never actually asked to answer anything in particular.
+ */
+function noProductionGate(gatedEnvs: ReadonlySet<string> = new Set()): DeployGateOptions {
+  return { gatedEnvs, ledger: { dryRunSeen: () => false, confirmed: () => false } };
 }
 
 let repo: string;
@@ -56,9 +72,15 @@ function seedManifest(): void {
       '    compose: deploy/environments/test/compose.yaml',
       '    project: mpgm-test',
       '    releaseOverride: deploy/environments/test/compose.release.yaml',
+      '    approval: none',
       '  - name: staging',
       '    compose: deploy/environments/staging/compose.yaml',
       '    project: mpgm-staging',
+      '    approval: none',
+      '  - name: production',
+      '    compose: deploy/environments/production/compose.yaml',
+      '    project: mpgm-production',
+      '    approval: required',
       '',
     ].join('\n'),
   );
@@ -73,11 +95,19 @@ describe('loadDeclaredEnvironments', () => {
         compose: 'deploy/environments/test/compose.yaml',
         project: 'mpgm-test',
         releaseOverride: 'deploy/environments/test/compose.release.yaml',
+        approval: 'none',
       },
       {
         name: 'staging',
         compose: 'deploy/environments/staging/compose.yaml',
         project: 'mpgm-staging',
+        approval: 'none',
+      },
+      {
+        name: 'production',
+        compose: 'deploy/environments/production/compose.yaml',
+        project: 'mpgm-production',
+        approval: 'required',
       },
     ]);
   });
@@ -95,9 +125,76 @@ describe('loadDeclaredEnvironments', () => {
 
   it('names what was wrong when an entry is missing a required field', () => {
     writeManifest(
-      ['environments:', '  - name: test', '    compose: some/file.yaml', ''].join('\n'),
+      [
+        'environments:',
+        '  - name: test',
+        '    compose: some/file.yaml',
+        '    approval: none',
+        '',
+      ].join('\n'),
     );
     expect(() => loadDeclaredEnvironments(repo)).toThrow(/project/);
+  });
+
+  /**
+   * CONV-4/CONV-5: a manifest that never says whether an environment needs
+   * approval is refused outright, not read as "no" — the ambiguity T4.1.4's
+   * first review found (`production` gated only by a name this module used
+   * to hardcode) must not resurface as a manifest that simply omits the
+   * field and gets treated as ungated (T4.1.4 rework).
+   */
+  it('refuses an entry that never says whether it needs approval', () => {
+    writeManifest(
+      [
+        'environments:',
+        '  - name: test',
+        '    compose: some/file.yaml',
+        '    project: mpgm-test',
+        '',
+      ].join('\n'),
+    );
+    expect(() => loadDeclaredEnvironments(repo)).toThrow(/approval/);
+  });
+});
+
+describe('gatedEnvironmentNames / gatedEnvironments', () => {
+  it('names only the environments a manifest marks approval: required', () => {
+    seedManifest();
+    expect(gatedEnvironmentNames(loadDeclaredEnvironments(repo))).toEqual(
+      new Set(['production']),
+    );
+    expect(gatedEnvironments(repo)).toEqual(new Set(['production']));
+  });
+
+  it('gates whichever name a project’s manifest actually uses, not "production"', () => {
+    // A project whose own manifest calls its gated environment something
+    // else entirely — the exact case T4.1.4's first review found unreachable
+    // through a hardcoded name (CONV-4).
+    writeManifest(
+      [
+        'environments:',
+        '  - name: prod-eu',
+        '    compose: deploy/environments/prod-eu/compose.yaml',
+        '    project: mpgm-prod-eu',
+        '    approval: required',
+        '',
+      ].join('\n'),
+    );
+    expect(gatedEnvironments(repo)).toEqual(new Set(['prod-eu']));
+  });
+
+  it('names nothing when every entry declares approval: none', () => {
+    writeManifest(
+      [
+        'environments:',
+        '  - name: test',
+        '    compose: deploy/environments/test/compose.yaml',
+        '    project: mpgm-test',
+        '    approval: none',
+        '',
+      ].join('\n'),
+    );
+    expect(gatedEnvironments(repo)).toEqual(new Set());
   });
 });
 
@@ -136,7 +233,7 @@ describe('composeProvider', () => {
 
   it('up brings the environment up, waits, and reports it up', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     const result = (await operation(provider, 'up')({ repo, env: 'test' } as never)) as {
       env: string;
@@ -165,7 +262,7 @@ describe('composeProvider', () => {
 
   it('up passes an image override through MPGM_SERVICE_IMAGE', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await operation(
       provider,
@@ -175,18 +272,30 @@ describe('composeProvider', () => {
     expect(calls[0]?.env).toEqual({ MPGM_SERVICE_IMAGE: 'registry/app:7' });
   });
 
-  it('up without an image override passes no compose env at all', async () => {
+  it('up without an image override explicitly clears MPGM_SERVICE_IMAGE, rather than leaving it to whatever this process happens to have ambient (CONV-4)', async () => {
+    // T4.1.4's second review found the earlier version of this test asserted
+    // `calls[0]?.env` was `undefined` on a no-image `up` — which is exactly
+    // the gap that made the ambient environment variable exploitable: an
+    // absent `options.env` means `dockerComposeCli` hands the *whole* of
+    // this process's own `process.env` to `docker compose` unfiltered, so an
+    // ambient `MPGM_SERVICE_IMAGE` (set by whatever invoked the kernel) would
+    // resolve `deploy/environments/production/compose.yaml`'s
+    // `${MPGM_SERVICE_IMAGE:-nginx:1.27-alpine}` to an arbitrary image, with
+    // no `image` in this call's input and so no gate check at all. Explicitly
+    // setting it to `''` closes that: compose reads an empty value the same
+    // as unset (`:-`, not `-`), and no ambient value can override an explicit
+    // one `dockerComposeCli` merges on top of `process.env`.
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await operation(provider, 'up')({ repo, env: 'test' } as never);
 
-    expect(calls[0]?.env).toBeUndefined();
+    expect(calls[0]?.env).toEqual({ MPGM_SERVICE_IMAGE: '' });
   });
 
   it('up with an image override applies the declared releaseOverride compose file too', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await operation(
       provider,
@@ -209,7 +318,7 @@ describe('composeProvider', () => {
 
   it('up without an image override never applies the releaseOverride file', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await operation(provider, 'up')({ repo, env: 'test' } as never);
 
@@ -218,7 +327,7 @@ describe('composeProvider', () => {
 
   it('up with an image override but no declared releaseOverride still runs, on the base file alone', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await operation(
       provider,
@@ -239,7 +348,7 @@ describe('composeProvider', () => {
 
   it('down never applies the releaseOverride file — a project is torn down by name, not by config', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await operation(provider, 'down')({ repo, env: 'test' } as never);
 
@@ -248,7 +357,7 @@ describe('composeProvider', () => {
 
   it('up throws when docker compose never becomes healthy — a partial success is never reported', async () => {
     const { cli } = scriptedCli([fail('container mpgm-test-service-1 is unhealthy')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await expect(
       operation(provider, 'up')({ repo, env: 'test' } as never),
@@ -257,7 +366,7 @@ describe('composeProvider', () => {
 
   it('down tears the environment down and reports it not up, with no services', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     const result = await operation(provider, 'down')({ repo, env: 'test' } as never);
 
@@ -276,7 +385,7 @@ describe('composeProvider', () => {
     // docker compose exits 0 on `down` even with nothing running (verified
     // against a real daemon; contracts/env.provision.md).
     const { cli } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await expect(
       operation(provider, 'down')({ repo, env: 'test' } as never),
@@ -289,7 +398,7 @@ describe('composeProvider', () => {
 
   it('status reports the current services without invoking up or down', async () => {
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     const result = await operation(provider, 'status')({ repo, env: 'test' } as never);
 
@@ -315,7 +424,7 @@ describe('composeProvider', () => {
       '{"Service":"worker","State":"exited","Health":"","ID":"def456"}',
     ].join('\n');
     const { cli } = scriptedCli([ok(twoServicesOneExited)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     const result = (await operation(
       provider,
@@ -331,16 +440,16 @@ describe('composeProvider', () => {
 
   it('refuses an environment the manifest does not declare (fail closed)', async () => {
     const { cli } = scriptedCli([ok()]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await expect(
-      operation(provider, 'up')({ repo, env: 'production' } as never),
+      operation(provider, 'up')({ repo, env: 'canary' } as never),
     ).rejects.toThrow(UndeclaredEnvironmentError);
   });
 
   it('uses the environment-specific compose file and project for staging, not test', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: noProductionGate() });
 
     await operation(provider, 'up')({ repo, env: 'staging' } as never);
 
@@ -370,12 +479,13 @@ describe('composeProvider', () => {
           '  - name: test',
           '    compose: deploy/environments/test/compose.yaml',
           '    project: other-test',
+          '    approval: none',
           '',
         ].join('\n'),
       );
 
       const { cli, calls } = scriptedCli([ok(), ok(''), ok(), ok('')]);
-      const provider = composeProvider({ cli });
+      const provider = composeProvider({ cli, gate: noProductionGate() });
 
       await operation(provider, 'up')({ repo, env: 'test' } as never);
       await operation(provider, 'up')({ repo: otherRepo, env: 'test' } as never);
@@ -385,6 +495,78 @@ describe('composeProvider', () => {
     } finally {
       rmSync(otherRepo, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * `composeProvider`'s gate is applied inside construction, not left for a
+ * caller to wrap on afterward (T4.1.4's second rework, mirroring
+ * `dockerReleaseProvider`). These tests exist to fail if that stops being
+ * true — T4.1.4's second review found the previous version of this module
+ * had no test that would notice `gateProvisionRelease` disappearing from its
+ * one caller in `src/cli/commands.ts`; with the gate now built into
+ * `composeProvider` itself, reaching `up` at all without going through the
+ * gate is no longer something any caller, in this file or outside it, can
+ * do.
+ */
+describe('composeProvider gate', () => {
+  beforeEach(seedManifest);
+
+  it('refuses an up carrying an image for a gated environment without a confirmed dry run', async () => {
+    const { cli } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: noProductionGate(new Set(['production'])),
+    });
+
+    await expect(
+      operation(
+        provider,
+        'up',
+      )({ repo, env: 'production', image: 'sha256:deadbeef' } as never),
+    ).rejects.toThrow(/has not been simulated/);
+  });
+
+  it('lets an up carrying an image for a gated environment through once dry-run and confirmation are both on record', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: {
+        gatedEnvs: new Set(['production']),
+        ledger: { dryRunSeen: () => true, confirmed: () => true },
+      },
+    });
+
+    const result = await operation(
+      provider,
+      'up',
+    )({ repo, env: 'production', image: 'sha256:deadbeef' } as never);
+
+    expect(result).toMatchObject({ env: 'production', up: true });
+    expect(calls[0]?.args).toEqual(
+      expect.arrayContaining(['-p', 'mpgm-production', 'up']),
+    );
+  });
+
+  it('lets an up carrying an image for a non-gated environment through with no confirmation at all', async () => {
+    const { cli } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({ cli, gate: noProductionGate() });
+
+    await expect(
+      operation(provider, 'up')({ repo, env: 'test', image: 'sha256:deadbeef' } as never),
+    ).resolves.toMatchObject({ env: 'test' });
+  });
+
+  it("lets an up with no image reach a gated environment unconfirmed — standing up declared IaC before any release exists is this contract's own reason to exist", async () => {
+    const { cli } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: noProductionGate(new Set(['production'])),
+    });
+
+    await expect(
+      operation(provider, 'up')({ repo, env: 'production' } as never),
+    ).resolves.toMatchObject({ env: 'production' });
   });
 });
 

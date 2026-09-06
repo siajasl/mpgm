@@ -124,6 +124,13 @@ jobs:
       - name: release verification — induced regression auto-rolls back
         run: npm run demo:verify
 
+      # T4.1.4: release.deliver#deliver/#rollback and env.provision#up both
+      # refuse a gated environment with no confirmation behind their exact
+      # {repo, env, digest}, and both succeed once one is recorded (HIL-2).
+      # Same Docker daemon as demo:env above.
+      - name: production deploy gate — every route to production is gated
+        run: npm run demo:gate
+
   scan:
     name: scan
     runs-on: ubuntu-latest

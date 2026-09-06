@@ -18,6 +18,7 @@ import {
   CapabilityRegistry,
   composeProvider,
   envProvisionContract,
+  gatedEnvironments,
 } from '../../dist/index.js';
 
 const failures = [];
@@ -33,7 +34,21 @@ function check(label, condition, detail = '') {
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const registry = new CapabilityRegistry();
-const bound = registry.bind(envProvisionContract, composeProvider());
+const bound = registry.bind(
+  envProvisionContract,
+  // The gate (`src/policy/deploy-gate.ts`) is a required part of
+  // construction as of T4.1.4's second rework — this script only ever names
+  // `env: 'test'` and passes no `image`, so the ledger below is never
+  // consulted, but a provider cannot be built without one at all.
+  // `gatedEnvs` reads this repository's own manifest (`gatedEnvironments`)
+  // rather than a name this script decides on its own (CONV-4).
+  composeProvider({
+    gate: {
+      gatedEnvs: gatedEnvironments(repo),
+      ledger: { dryRunSeen: () => false, confirmed: () => false },
+    },
+  }),
+);
 
 try {
   process.stdout.write('\n1. Up from the committed IaC alone\n');
@@ -98,13 +113,23 @@ try {
     JSON.stringify(downAgain),
   );
 
+  // `production` was this check's example environment through T4.1.1..3 —
+  // deliberately undeclared until T4.1.4 landed the hard approval gate that
+  // has to stand in front of it (`src/policy/deploy-gate.ts`). It is declared
+  // now (`environments.yaml`), so the example moved to a name nothing ever
+  // declares; the point being verified — an undeclared environment is
+  // refused, not guessed at — is unchanged.
   process.stdout.write('\n7. An undeclared environment is refused, not guessed at\n');
   try {
-    await bound.invoke('up', { repo, env: 'production' });
-    check('production is refused', false, 'the call resolved instead of throwing');
+    await bound.invoke('up', { repo, env: 'canary' });
+    check(
+      'an undeclared environment is refused',
+      false,
+      'the call resolved instead of throwing',
+    );
   } catch (cause) {
     check(
-      'production is refused',
+      'an undeclared environment is refused',
       cause instanceof Error && /not declared/.test(cause.message),
       cause instanceof Error ? cause.message : String(cause),
     );

@@ -1,0 +1,5 @@
+# Same shape as `staging`'s (`deploy/environments/staging/compose.release.yaml`)
+# — see `test`'s for why this exists.
+services:
+  service:
+    volumes: !override []

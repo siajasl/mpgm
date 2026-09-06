@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { CapabilityRegistry } from '../contract/capability.js';
 import type { Provider } from '../contract/capability.js';
 import { envProvisionContract } from '../env/provision.js';
+import type { DeployLedger } from '../policy/deploy-gate.js';
 import {
   dockerReleaseProvider,
   ReleaseProviderError,
@@ -61,6 +62,22 @@ function writeIid(path: string, digest: string): void {
   writeFileSync(path, digest);
 }
 
+/**
+ * The gate is now a required constructor argument (`gate`, DESIGN §9
+ * decision 10) — every test in this file delivers to `env: 'test'`, and
+ * `gatedEnvs` defaults to empty here, which `gateProductionRelease` never
+ * consults for any environment, so this ledger only has to exist, not
+ * answer anything in particular. `gatedEnvs` is a caller-supplied set now,
+ * not a hardcoded name (T4.1.4 rework) — the one test that needs production
+ * actually gated names it explicitly.
+ */
+function noProductionGate(gatedEnvs: ReadonlySet<string> = new Set()): {
+  gatedEnvs: ReadonlySet<string>;
+  ledger: DeployLedger;
+} {
+  return { gatedEnvs, ledger: { dryRunSeen: () => false, confirmed: () => false } };
+}
+
 function boundEnvProvision(overrides: Partial<Provider> = {}) {
   const registry = new CapabilityRegistry();
   return registry.bind(envProvisionContract, {
@@ -81,7 +98,11 @@ function boundEnvProvision(overrides: Partial<Provider> = {}) {
 describe('dockerReleaseProvider — assemble', () => {
   it('builds the default Dockerfile, tags image:version, and records the digest', async () => {
     const { cli, calls } = scriptedBuildCli('sha256:aaa');
-    const provider = dockerReleaseProvider({ envProvision: boundEnvProvision(), cli });
+    const provider = dockerReleaseProvider({
+      envProvision: boundEnvProvision(),
+      cli,
+      gate: noProductionGate(),
+    });
 
     const result = await operation(
       provider,
@@ -122,7 +143,11 @@ describe('dockerReleaseProvider — assemble', () => {
 
   it('honours an explicit dockerfile path', async () => {
     const { cli, calls } = scriptedBuildCli('sha256:aaa');
-    const provider = dockerReleaseProvider({ envProvision: boundEnvProvision(), cli });
+    const provider = dockerReleaseProvider({
+      envProvision: boundEnvProvision(),
+      cli,
+      gate: noProductionGate(),
+    });
 
     await operation(
       provider,
@@ -145,7 +170,11 @@ describe('dockerReleaseProvider — assemble', () => {
 
   it('carries the previous ref through as rollbackTo', async () => {
     const { cli } = scriptedBuildCli('sha256:bbb');
-    const provider = dockerReleaseProvider({ envProvision: boundEnvProvision(), cli });
+    const provider = dockerReleaseProvider({
+      envProvision: boundEnvProvision(),
+      cli,
+      gate: noProductionGate(),
+    });
 
     const result = (await operation(
       provider,
@@ -165,7 +194,11 @@ describe('dockerReleaseProvider — assemble', () => {
 
   it('fails closed when docker build exits non-zero', async () => {
     const { cli } = scriptedBuildCli(undefined, 1);
-    const provider = dockerReleaseProvider({ envProvision: boundEnvProvision(), cli });
+    const provider = dockerReleaseProvider({
+      envProvision: boundEnvProvision(),
+      cli,
+      gate: noProductionGate(),
+    });
 
     await expect(
       operation(
@@ -185,7 +218,11 @@ describe('dockerReleaseProvider — assemble', () => {
 
   it('fails closed when docker build reports success but writes no image id', async () => {
     const { cli } = scriptedBuildCli(undefined, 0);
-    const provider = dockerReleaseProvider({ envProvision: boundEnvProvision(), cli });
+    const provider = dockerReleaseProvider({
+      envProvision: boundEnvProvision(),
+      cli,
+      gate: noProductionGate(),
+    });
 
     await expect(
       operation(
@@ -214,7 +251,11 @@ describe('dockerReleaseProvider — assemble', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '', code: 0 });
     };
-    const provider = dockerReleaseProvider({ envProvision: boundEnvProvision(), cli });
+    const provider = dockerReleaseProvider({
+      envProvision: boundEnvProvision(),
+      cli,
+      gate: noProductionGate(),
+    });
 
     await operation(
       provider,
@@ -267,7 +308,7 @@ describe('dockerReleaseProvider — deliver / rollback', () => {
       down: () => Promise.resolve({ env: 'test', up: false, services: [] }),
       status: () => Promise.resolve({ env: 'test', up: false, services: [] }),
     });
-    const provider = dockerReleaseProvider({ envProvision });
+    const provider = dockerReleaseProvider({ envProvision, gate: noProductionGate() });
 
     const result = await operation(
       provider,
@@ -302,7 +343,7 @@ describe('dockerReleaseProvider — deliver / rollback', () => {
       down: () => Promise.resolve({ env: 'test', up: false, services: [] }),
       status: () => Promise.resolve({ env: 'test', up: false, services: [] }),
     });
-    const provider = dockerReleaseProvider({ envProvision });
+    const provider = dockerReleaseProvider({ envProvision, gate: noProductionGate() });
 
     const result = (await operation(
       provider,
@@ -322,7 +363,7 @@ describe('dockerReleaseProvider — deliver / rollback', () => {
       down: () => Promise.resolve({ env: 'test', up: false, services: [] }),
       status: () => Promise.resolve({ env: 'test', up: false, services: [] }),
     });
-    const provider = dockerReleaseProvider({ envProvision });
+    const provider = dockerReleaseProvider({ envProvision, gate: noProductionGate() });
 
     await expect(
       operation(
@@ -330,5 +371,55 @@ describe('dockerReleaseProvider — deliver / rollback', () => {
         'deliver',
       )({ repo: '/repo', env: 'test', release: releaseOne } as never),
     ).rejects.toThrow(/did not become healthy/);
+  });
+});
+
+describe('dockerReleaseProvider — the production gate is not optional', () => {
+  /**
+   * DESIGN §9 decision 10: the gate is applied inside construction, not left
+   * for a caller to wrap on afterward, so there is no way to get an
+   * unguarded `deliver`/`rollback` out of this function at all. Before this
+   * was true, a caller supplying only `envProvision` (as every test above
+   * still does, for `env: 'test'`) would reach a real `env.provision#up` for
+   * `env: 'production'` too — this test would have passed against that
+   * shape, so it is the one this fix has to fail without. `gatedEnvs` names
+   * 'production' explicitly here — T4.1.4's rework made this a caller-built
+   * set, not a name `deploy-gate.ts` assumes, so a test proving the gate
+   * still fires has to build the same set a real caller reading its own
+   * manifest would.
+   */
+  it('refuses a production deliver even though the caller never wrapped the provider itself', async () => {
+    const registry = new CapabilityRegistry();
+    let reached = false;
+    const envProvision = registry.bind(envProvisionContract, {
+      up: () => {
+        reached = true;
+        return Promise.resolve({ env: 'production', up: true, services: [] });
+      },
+      down: () => Promise.resolve({ env: 'production', up: false, services: [] }),
+      status: () => Promise.resolve({ env: 'production', up: false, services: [] }),
+    });
+    const provider = dockerReleaseProvider({
+      envProvision,
+      gate: noProductionGate(new Set(['production'])),
+    });
+
+    await expect(
+      operation(
+        provider,
+        'deliver',
+      )({
+        repo: '/repo',
+        env: 'production',
+        release: {
+          version: '1.0.0',
+          image: 'mpgm-sample-service:1.0.0',
+          digest: 'sha256:aaa',
+          changelog: 'Initial release.',
+          rollbackTo: null,
+        },
+      } as never),
+    ).rejects.toThrow(/has not been simulated/);
+    expect(reached).toBe(false);
   });
 });

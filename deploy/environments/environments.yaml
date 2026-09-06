@@ -3,9 +3,20 @@
 # What `env.provision` operates on and nothing more: a provider MUST refuse an
 # environment name not listed here rather than infer one from a directory
 # existing under `deploy/environments/` (contracts/env.provision.md,
-# `src/env/compose-provider.ts`). `production` is deliberately absent — DEP-4
-# asks the harness to be *able* to provision it, but the hard approval gate
-# that must stand in front of it (DEP-2, HIL-2) is T4.1.4's, not yet landed.
+# `src/env/compose-provider.ts`). `env.provision` carries no notion of
+# "production" at all — declaring it here only makes it something DEP-4's
+# `up`/`down`/`status` can reach, the same as `test` and `staging`.
+#
+# `approval` is what decides whether an environment needs one (HIL-2, DESIGN
+# §9 decision 10/11/14) — required on every entry, not defaulted
+# (`src/env/compose-provider.ts`'s `gatedEnvironmentNames`,
+# `src/policy/deploy-gate.ts`): `required` refuses both
+# `release.deliver#deliver`/`#rollback` and `env.provision#up` (when it
+# carries an `image`) for this environment until an operator has confirmed
+# the exact digest named; `none` says explicitly that this environment needs
+# no such confirmation, the same as `env.provision`/`release.deliver` already
+# gate delivery by declaration alone. This project marks only `production`
+# `required` — T4.1.4, landed.
 # `releaseOverride` is applied only on an `up` carrying an explicit `image`
 # (DEP-3, `release.deliver`, T4.1.2) — see the compose file it names.
 environments:
@@ -13,7 +24,14 @@ environments:
     compose: deploy/environments/test/compose.yaml
     project: mpgm-test
     releaseOverride: deploy/environments/test/compose.release.yaml
+    approval: none
   - name: staging
     compose: deploy/environments/staging/compose.yaml
     project: mpgm-staging
     releaseOverride: deploy/environments/staging/compose.release.yaml
+    approval: none
+  - name: production
+    compose: deploy/environments/production/compose.yaml
+    project: mpgm-production
+    releaseOverride: deploy/environments/production/compose.release.yaml
+    approval: required

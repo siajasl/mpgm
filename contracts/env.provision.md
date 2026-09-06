@@ -45,12 +45,86 @@ from a directory-naming convention — DEP-4 asks for environments the harness
 provisions from configuration it was given, not ones it infers, and guessing
 would provision infrastructure nothing wrote down.
 
-This project declares `test` and `staging`. `production` is deliberately
-undeclared: DEP-4 asks the harness to be *able* to provision production, but
-the hard approval gate that must stand in front of it (DEP-2, HIL-2) is
-T4.1.4's, not yet landed — an IaC file for an environment nothing can gate is
-an environment a compose command could bring up unreviewed. Declaring it is a
-one-line addition to the manifest once the gate exists to sit in front of it.
+This project declares `test`, `staging` and `production`
+(`deploy/environments/environments.yaml`). `env.provision` itself carries no
+notion of "production" — `up`/`down`/`status` treat every declared name the
+same, per DEP-4 — but each entry MUST also declare `approval: required` or
+`approval: none` (required, not defaulted: CONV-5), which is how a project
+says which of its own environments HIL-2's hard approval gate covers. This
+project marks only `production` `approval: required`.
+
+The gate DEP-2/HIL-2 ask for lives one layer up
+(`src/policy/deploy-gate.ts`, T4.1.4/DESIGN §9 decision 10/14), applied at
+every route an image can reach a gated environment through, not only one of
+them: `release.deliver#deliver`/`#rollback` (`gateProductionRelease`) *and*
+this contract's own `up`, when it carries an `image` (`gateProvisionRelease`)
+— a caller reaching `up` for a gated environment with an image is refused
+exactly as `release.deliver` would refuse it, unless an operator has
+confirmed the exact `{repo, env, digest}` named. T4.1.4's first review found
+the earlier version of this paragraph's reasoning false: "nothing stops an
+operator running `docker compose up` by hand" is true of an operator's own
+shell but was never a defence for a kernel capability a caller — the CLI, a
+demo script, or a future orchestrator effect — can reach programmatically,
+and nothing did refuse that call before this. `up` with no `image` is left
+untouched by the gate *while the environment is not already up* — standing up
+the declared IaC before any release exists to point it at is this contract's
+own reason to exist, and gating it would gate infrastructure nobody is asking
+to deploy anything onto.
+
+T4.1.4's second review found two further gaps in that first fix, both closed
+in the reference provider now: `gateProvisionRelease` was applied by exactly
+one caller (an in-repository `mpgm rollback` verb this task had not yet been
+split from — see "Scope" below) rather than built into the reference
+provider itself, so three other committed callers
+(`scripts/demo/env-provision.mjs`, `release-deliver.mjs`,
+`release-verify.mjs`) bound `composeProvider()` raw — a caller could still
+construct an ungated `up`, the identical shape the first review had already
+ruled out for `release.deliver`. `composeProvider`
+now takes its gate as a required constructor argument, exactly as
+`dockerReleaseProvider` does, and always returns the `gateProvisionRelease`
+-wrapped result — there is no unwrapped provider this contract's reference
+implementation ever hands back. Second, "`up` with no `image` is left
+untouched" was true of the gate's own logic but not of what actually reached
+`docker compose`: the reference provider passed no explicit
+`MPGM_SERVICE_IMAGE` at all on a no-image `up`, so an ambient value already
+present in the *caller's own process environment* reached the child
+unchanged, and this project's own compose files resolve
+`${MPGM_SERVICE_IMAGE:-nginx:1.27-alpine}` — an unset-or-empty variable falls
+back to the pinned default, but a *set* one, however it got set, overrides
+it. An `up` with no `image` in its input MUST still resolve to the
+environment's declared default, not to whatever the process happened to
+have lying around; the reference provider now clears
+`MPGM_SERVICE_IMAGE` explicitly on every no-image `up`, rather than leaving
+its absence to be decided by inheritance (CONV-4).
+
+A third review found "no `image` is left untouched" itself proved too much:
+that reasoning is right for an environment nobody has pointed at a release
+yet, but the *identical* call against a gated environment already serving a
+confirmed release recreates the stack on the reference provider's compose
+default — an unapproved change to what production serves, one input field
+away from the case this contract's gate already refuses. `gateProvisionRelease`
+now asks the provider's own `status` before letting a no-image `up` for a
+gated environment through: not up, the call proceeds exactly as before; already
+up, the call is gated under a fingerprint identity fixed for "recreate this
+`{repo, env}` onto its compose default"
+(`src/policy/deploy-gate.ts`'s `RECREATE_ON_DEFAULT_DIGEST`), so an operator
+confirms it once for a given environment and is not asked again for the same
+one. A provider that does not implement `status` cannot be asked and is
+refused outright (CONV-4) — every provider satisfying this contract
+implements `status` already (see "Operations" below), so this asks nothing
+of a provider the contract did not already require.
+
+**Scope.** T4.1.4 originally carried the gate, `mpgm rollback`, and release
+outcome artifacts as one task; three sessions could not close it, and PLAN.md
+split it: T4.1.4 keeps only the gate (this section), T4.1.5 takes the
+`mpgm rollback` verb, T4.1.6 takes outcome artifacts. The `mpgm rollback`
+caller the paragraph above found ungated no longer exists in this repository
+— it was scope T4.1.4 never owned in the first place, and its own gating,
+when T4.1.5 adds it, inherits the guarantee this section already makes:
+`composeProvider`/`dockerReleaseProvider` return only gated providers,
+whatever calls them. `scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) is
+this task's own real caller, verifying the gate directly against
+`env.provision`/`release.deliver` rather than through a CLI verb.
 
 ## Operations
 

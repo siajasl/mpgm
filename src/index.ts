@@ -550,6 +550,21 @@ export {
   stateLedger,
 } from './policy/destructive.js';
 export type {
+  ConfirmationNeeded,
+  DeployGateOptions,
+  DeployLedger,
+  DeployTarget,
+  DryRunNeeded,
+} from './policy/deploy-gate.js';
+export {
+  DeployGateError,
+  RECREATE_ON_DEFAULT_DIGEST,
+  crossRunLedger,
+  deployFingerprint,
+  gateProductionRelease,
+  gateProvisionRelease,
+} from './policy/deploy-gate.js';
+export type {
   DesiredIssue,
   DesiredLabel,
   DesiredMilestone,
@@ -726,6 +741,8 @@ export {
   ComposeProviderError,
   DEFAULT_MANIFEST_PATH,
   dockerComposeCli,
+  gatedEnvironmentNames,
+  gatedEnvironments,
   loadDeclaredEnvironments,
   parseComposePs,
   UndeclaredEnvironmentError,

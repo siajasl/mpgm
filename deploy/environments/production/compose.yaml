@@ -1,0 +1,32 @@
+# The `production` environment (DEP-1, DEP-4, `env.provision`).
+#
+# Same shape as `staging`'s (`deploy/environments/staging/compose.yaml`) — a
+# separate compose project and a separate port, so all three environments can
+# be up at once without colliding. See `test`'s compose file for what
+# `MPGM_SERVICE_IMAGE` is for.
+#
+# `env.provision#up`/`#down`/`#status` treat this environment exactly like
+# any other declared here — DEP-4 asks the harness to be *able* to provision
+# it. What is different is one layer up, at `release.deliver#deliver`: a
+# caller reaching this environment through that contract is refused unless
+# an operator has confirmed the exact release being delivered here
+# (`src/policy/deploy-gate.ts`, HIL-2, DESIGN §9 decision 10). `env.provision`
+# itself carries no notion of "production" at all — the gate is what makes
+# this file's existence safe, not a rule this file encodes.
+name: mpgm-production
+services:
+  service:
+    image: ${MPGM_SERVICE_IMAGE:-nginx:1.27-alpine}
+    ports:
+      - '8083:80'
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+    environment:
+      MPGM_ENV: production
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--spider', 'http://localhost/']
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
