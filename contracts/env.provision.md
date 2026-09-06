@@ -73,11 +73,13 @@ anything onto.
 
 T4.1.4's second review found two further gaps in that first fix, both closed
 in the reference provider now: `gateProvisionRelease` was applied by exactly
-one caller (`mpgm rollback`) rather than built into the reference provider
-itself, so three other committed callers (`scripts/demo/env-provision.mjs`,
-`release-deliver.mjs`, `release-verify.mjs`) bound `composeProvider()` raw —
-a caller could still construct an ungated `up`, the identical shape the
-first review had already ruled out for `release.deliver`. `composeProvider`
+one caller (an in-repository `mpgm rollback` verb this task had not yet been
+split from — see "Scope" below) rather than built into the reference
+provider itself, so three other committed callers
+(`scripts/demo/env-provision.mjs`, `release-deliver.mjs`,
+`release-verify.mjs`) bound `composeProvider()` raw — a caller could still
+construct an ungated `up`, the identical shape the first review had already
+ruled out for `release.deliver`. `composeProvider`
 now takes its gate as a required constructor argument, exactly as
 `dockerReleaseProvider` does, and always returns the `gateProvisionRelease`
 -wrapped result — there is no unwrapped provider this contract's reference
@@ -94,6 +96,18 @@ environment's declared default, not to whatever the process happened to
 have lying around; the reference provider now clears
 `MPGM_SERVICE_IMAGE` explicitly on every no-image `up`, rather than leaving
 its absence to be decided by inheritance (CONV-4).
+
+**Scope.** T4.1.4 originally carried the gate, `mpgm rollback`, and release
+outcome artifacts as one task; three sessions could not close it, and PLAN.md
+split it: T4.1.4 keeps only the gate (this section), T4.1.5 takes the
+`mpgm rollback` verb, T4.1.6 takes outcome artifacts. The `mpgm rollback`
+caller the paragraph above found ungated no longer exists in this repository
+— it was scope T4.1.4 never owned in the first place, and its own gating,
+when T4.1.5 adds it, inherits the guarantee this section already makes:
+`composeProvider`/`dockerReleaseProvider` return only gated providers,
+whatever calls them. `scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) is
+this task's own real caller, verifying the gate directly against
+`env.provision`/`release.deliver` rather than through a CLI verb.
 
 ## Operations
 

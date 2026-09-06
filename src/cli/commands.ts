@@ -1,12 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AgentSessionProvider } from '../agent/session.js';
 import { SessionRunner } from '../agent/runner.js';
 import type { OutputSchemaRegistry } from '../agent/output-registry.js';
 import { ArtifactStore } from '../artifact/store.js';
 import type { ArtifactSchemaRegistry } from '../artifact/schema-registry.js';
-import { CapabilityRegistry } from '../contract/capability.js';
 import { DEFAULT_EGRESS_POLICY, type EgressPolicy } from '../context/egress.js';
 import { loadKnowledgeBase, type KbDocument } from '../context/knowledge-base.js';
 import { DashboardServer } from '../dashboard/server.js';
@@ -14,8 +13,6 @@ import { openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
 import { elicit, type OperatorIo } from '../elicit/session.js';
-import { composeProvider, gatedEnvironments } from '../env/compose-provider.js';
-import { envProvisionContract } from '../env/provision.js';
 import { GateManager, gateOracleFromState } from '../gate/manager.js';
 import { isGitRepository, tagGate } from '../git/tag.js';
 import { runPhase } from '../phase/runner.js';
@@ -23,7 +20,6 @@ import { TraceIndex } from '../trace/index-store.js';
 import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
-import { crossRunLedger } from '../policy/deploy-gate.js';
 import { RoleRegistry } from '../role/loader.js';
 import {
   approvalKey,
@@ -41,8 +37,6 @@ import { implementTask } from '../implement/loop.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
-import { dockerReleaseProvider } from '../release/docker-provider.js';
-import { releaseArtifactSchema, releaseDeliverContract } from '../release/deliver.js';
 import { Projector } from '../state/projector.js';
 import { fold } from '../state/reduce.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
@@ -633,179 +627,6 @@ export function confirm(
     });
     context.write(`${call.tool} (${fingerprint.slice(0, 12)}) confirmed by ${by}`);
     return { ok: true, detail: 'confirmed' };
-  } finally {
-    db.close();
-  }
-}
-
-/**
- * `mpgm rollback <artifact> --repo <path> --env <env> --by <who> [--reason <s>]`
- * — restore a previously-delivered release (DESIGN §4.4, §9 decision 11).
- *
- * `<artifact>` is a path to a release artifact `release.deliver#assemble`
- * (or an earlier `deliver`/`rollback`) produced — `{version, image, digest,
- * changelog, rollbackTo}` — read from disk rather than reconstructed from
- * flags, the same reason `release.deliver#rollback`'s own input takes a full
- * artifact rather than a bare ref: a rollback's own record then carries the
- * changelog and rollback path of what it restores.
- *
- * Not gated by name: HIL-2's approval was already given to this exact
- * digest when it was first delivered (`src/policy/deploy-gate.ts`). It is
- * still an outward-facing act and is still recorded, like any other
- * intervention (HIL-5) — and for whichever environment `<repo>`'s own
- * manifest marks `approval: required`, the gate itself is still in the
- * loop, both at `release.deliver#rollback` and, underneath it, at
- * `env.provision#up`: a release that was never confirmed for that
- * environment is refused exactly as `deliver` would refuse it, so
- * `rollback` cannot become a second, ungated door into it. Which
- * environments those are is read from `<repo>`'s own
- * `deploy/environments/environments.yaml`
- * (`env/compose-provider.ts`'s `gatedEnvironments`) — never a name this
- * command assumes, since `<repo>` names an arbitrary project whose manifest
- * may call its gated environment anything (T4.1.4 rework, CONV-4).
- *
- * The gate has no separate dry-run mode to call first (`deploy-gate.ts`): a
- * refusal for want of one *is* the simulation, so `onDryRunNeeded` is wired
- * here to record it as a `DryRunRecorded` event the instant that happens.
- * Without this, `mpgm confirm` would have nothing in this run to confirm and
- * a gated rollback could never proceed through this verb at all — the
- * first call always names the fingerprint and records it; an operator
- * confirms that fingerprint; the same command run again then proceeds.
- */
-export async function rollback(
-  context: CliContext,
-  runId: string,
-  artifactPath: string,
-  repo: string,
-  env: string,
-  by: string,
-  reason = '',
-): Promise<CommandResult> {
-  const { db, log, projector } = open(context);
-  try {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(readFileSync(artifactPath, 'utf8'));
-    } catch (cause) {
-      context.write(
-        `could not read a release artifact from '${artifactPath}': ` +
-          (cause instanceof Error ? cause.message : String(cause)),
-      );
-      return { ok: false, detail: 'unreadable artifact' };
-    }
-    const parsed = releaseArtifactSchema.safeParse(raw);
-    if (!parsed.success) {
-      context.write(
-        `'${artifactPath}' is not a release artifact: ${parsed.error.message}`,
-      );
-      return { ok: false, detail: 'invalid artifact' };
-    }
-    const to = parsed.data;
-
-    // Read before anything else touches `repo`: which environments need an
-    // approval event is `<repo>`'s own decision, not this command's, and a
-    // manifest this command cannot read or parse is refused rather than
-    // treated as declaring nothing gated (CONV-4) — the alternative would
-    // let a malformed or missing manifest silently rollback ungated.
-    let gatedEnvs;
-    try {
-      gatedEnvs = gatedEnvironments(repo);
-    } catch (cause) {
-      context.write(
-        `could not determine which environments '${repo}' requires approval ` +
-          `for: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-      return { ok: false, detail: 'gated environments undetermined' };
-    }
-
-    if (projector.project().runs[runId] === undefined) {
-      log.append({
-        runId,
-        type: 'RunStarted',
-        payload: { project: context.root, operator: by },
-      });
-    }
-
-    // Cross-run, not `stateLedger(() => projector.project().runs[runId])`:
-    // an operator's confirmation of `{repo, env, digest}` has to outlive the
-    // one run that happened to make this call, or restoring a release a
-    // gated environment already ran (decision 11) would ask for a fresh
-    // approval whenever the asking run differs from the confirming one —
-    // exactly the delay DEP-2's automatic rollback exists to avoid
-    // (`deploy-gate.ts`'s `crossRunLedger`).
-    const ledger = crossRunLedger(() => projector.project());
-    const onDryRunNeeded = (record: {
-      readonly tool: string;
-      readonly fingerprint: string;
-      readonly target: {
-        readonly env: string;
-        readonly digest: string;
-        readonly label?: string;
-      };
-    }): void => {
-      log.append({
-        runId,
-        type: 'DryRunRecorded',
-        payload: {
-          taskId: '',
-          tool: record.tool,
-          fingerprint: record.fingerprint,
-          summary:
-            record.target.label === undefined
-              ? `deploy ${record.target.env} -> ${record.target.digest.slice(0, 12)}`
-              : `deploy ${record.target.env} -> ${record.target.label} ` +
-                `(${record.target.digest.slice(0, 12)})`,
-        },
-      });
-    };
-
-    const registry = new CapabilityRegistry();
-    const envContract = registry.bind(
-      envProvisionContract,
-      // `composeProvider` applies `gateProvisionRelease` itself now (T4.1.4
-      // second rework) — the same `gatedEnvs`/ledger here means an image
-      // already confirmed through `release.deliver` below is never confirmed
-      // twice, and one that was not is refused here exactly as `deliver`
-      // refuses it (DESIGN §9 decision 14).
-      composeProvider({ gate: { gatedEnvs, ledger, onDryRunNeeded } }),
-    );
-    const release = registry.bind(
-      releaseDeliverContract,
-      dockerReleaseProvider({
-        envProvision: envContract,
-        gate: { gatedEnvs, ledger, onDryRunNeeded },
-      }),
-    );
-
-    let status;
-    try {
-      status = await release.invoke<{ up: boolean; services: readonly unknown[] }>(
-        'rollback',
-        { repo, env, to },
-      );
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      context.write(`rollback of ${env} to ${to.version} refused: ${message}`);
-      return { ok: false, detail: 'rollback refused' };
-    }
-
-    log.append({
-      runId,
-      type: 'OperatorIntervened',
-      payload: {
-        action: 'rollback',
-        detail:
-          `${env} -> ${to.version} (${to.digest}) by ${by}` +
-          (reason === '' ? '' : `: ${reason}`) +
-          ` — up=${String(status.up)}`,
-      },
-    });
-
-    context.write(
-      `rolled back ${env} to ${to.version} (${to.digest.slice(0, 12)}) — ` +
-        `up=${String(status.up)}`,
-    );
-    return { ok: status.up, detail: status.up ? 'rolled back' : 'not up' };
   } finally {
     db.close();
   }

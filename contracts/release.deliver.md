@@ -86,15 +86,18 @@ until the confirming run ends.
 The gate is applied inside `dockerReleaseProvider`'s own construction, not
 left for a caller to wrap on afterward: its `gate` option is required, so
 there is no way to obtain an unguarded `deliver`/`rollback` bound to this
-contract at all (DESIGN §9 decision 10). `mpgm rollback` wires the gate's
+contract at all (DESIGN §9 decision 10). A caller wires the gate's
 `onDryRunNeeded` to append the `DryRunRecorded` event its own refusal names
 — the gate has no separate dry-run mode to call first, so a refusal for want
 of one *is* the simulation, and this records it the instant that happens.
-The first `mpgm rollback` of a given `{repo, env, digest}` is therefore
-always refused, but leaves that exact fingerprint confirmable; `mpgm confirm
-<fingerprint> --by <who>` and the same command again then proceeds. Whatever
-else comes to call `deliver` for a gated environment (no such caller exists
-in this repository yet — see "Left open" in the T4.1.4 commit) would need to
+The first call for a given `{repo, env, digest}` is therefore always
+refused, but leaves that exact fingerprint confirmable; `mpgm confirm
+<fingerprint> --by <who>` and the same call again then proceeds.
+`scripts/demo/deploy-gate.mjs` (T4.1.4's own verification, `npm run
+demo:gate`) is the caller this task exercises the gate through, wiring
+`onDryRunNeeded` and confirming exactly the way described above; the
+operator-facing `mpgm rollback` verb this paragraph described in earlier
+drafts is T4.1.5's task, not this one (PLAN.md's split of T4.1.4), and would
 wire `onDryRunNeeded` the same way to be usable at all.
 
 `rollback` is refused the same way *unless* the release it names was already
@@ -121,9 +124,11 @@ found by the other. As of T4.1.4's second rework this is not left to a
 caller to remember for each provider it binds: `composeProvider`
 (`env.provision`'s reference provider) requires `gate` at construction and
 applies `gateProvisionRelease` itself, the same way `dockerReleaseProvider`
-requires it and applies `gateProductionRelease` — `mpgm rollback` passes the
-same `gatedEnvs`/ledger to both constructors, but no caller in this
-repository can construct either provider ungated in the first place.
+requires it and applies `gateProductionRelease` — every caller in this
+repository (`scripts/demo/deploy-gate.mjs` included) passes the same
+`gatedEnvs`/ledger to both constructors, but no caller, here or in a project
+this task did not anticipate, can construct either provider ungated in the
+first place.
 
 `assemble` and delivery to any environment `<repo>`'s manifest does not mark
 `approval: required` are ungated, exactly as before this section existed.

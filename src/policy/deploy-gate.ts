@@ -238,10 +238,12 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
     options.onDryRunNeeded?.({ tool: DEPLOY_TOOL, fingerprint: print, target });
     // Whether this refusal itself made the fingerprint confirmable is known
     // here, not left for the operator to guess (CONV-3): a caller that wired
-    // 'onDryRunNeeded' — `mpgm rollback` does, since T4.1.4 — has already
-    // recorded it by the time this throws, so the next command really is
-    // 'mpgm confirm'; a caller that did not wire it is told that instead of
-    // being handed instructions that would fail.
+    // 'onDryRunNeeded' — `scripts/demo/deploy-gate.mjs` does, the same way
+    // `mpgm confirm` itself appends a `DestructiveOpConfirmed` event; T4.1.5's
+    // `mpgm rollback` verb will wire it the same way — has already recorded
+    // it by the time this throws, so the next command really is 'mpgm
+    // confirm'; a caller that did not wire it is told that instead of being
+    // handed instructions that would fail.
     const recorded = options.onDryRunNeeded !== undefined;
     throw new DeployGateError(
       `deploying ${describe(target)} has not been simulated. This call's ` +
