@@ -408,6 +408,47 @@ export const changeMerged = defineEvent(
 );
 
 /**
+ * The `tool` identity `policy/deploy-gate.ts` records `DryRunRecorded`/
+ * `DestructiveOpConfirmed` under — the one case an empty `taskId` on either
+ * event is legitimate, because the gate guards a call the kernel makes
+ * itself rather than a tool call inside a task. Owned here, not by
+ * `deploy-gate.ts`, so the two event schemas below can enforce the pairing
+ * themselves (see `emptyTaskIdOnlyFor`) without importing a policy module
+ * into the event catalog.
+ */
+export const DEPLOY_GATE_TOOL = 'deploy';
+
+/**
+ * `taskId` may be empty only when `tool` is {@link DEPLOY_GATE_TOOL} — refined
+ * on the schema itself (the same idiom `env/provision.ts`'s `envStatusOutput`
+ * uses for `up`/`services`) rather than left as a comment a caller has to
+ * already know and honour. A review found the plain `taskId: z.string()`
+ * these two events had before this true in the narrow case T4.1.4 wrote it
+ * for, but otherwise only a documented convention: nothing stopped a caller
+ * recording an *ordinary* destructive tool call's dry run or confirmation
+ * with `taskId: ''` too, losing its task attribution by a typo rather than a
+ * decision, with the schema silently accepting it (CONV-5). This makes that
+ * combination fail validation instead — not empty *and* naming a real tool
+ * name in the same call, whatever the tool actually is.
+ */
+function emptyTaskIdOnlyFor<T extends { taskId: string; tool: string }>(
+  value: T,
+  ctx: z.RefinementCtx,
+): void {
+  if (value.taskId === '' && value.tool !== DEPLOY_GATE_TOOL) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['taskId'],
+      message:
+        `taskId is empty for tool '${value.tool}', but only the production ` +
+        `deploy gate ('${DEPLOY_GATE_TOOL}', policy/deploy-gate.ts) may omit ` +
+        `a task by writing an empty taskId — every other tool call must name ` +
+        `the task whose call this was (CONV-5).`,
+    });
+  }
+}
+
+/**
  * A destructive operation was simulated (SAF-4).
  *
  * The fingerprint covers every parameter except the dry-run flag, so a
@@ -416,7 +457,7 @@ export const changeMerged = defineEvent(
  * later one.
  *
  * `taskId` names the task whose tool call this was — empty only for the
- * production deploy gate (`policy/deploy-gate.ts`, T4.1.4), which guards a
+ * production deploy gate ({@link DEPLOY_GATE_TOOL}, T4.1.4), which guards a
  * call the kernel makes itself rather than a tool call inside a task, the
  * same reason `OperatorIntervened` carries no `taskId` either. Required,
  * not defaulted (CONV-5): `.default('')` would let a caller building this
@@ -426,32 +467,38 @@ export const changeMerged = defineEvent(
  * made, is the ambiguity a required field with no default refuses to let
  * exist. A caller naming the deploy-gate sentinel writes `taskId: ''`
  * explicitly instead; every real caller in this repository already does.
+ * See {@link emptyTaskIdOnlyFor}: that sentinel is refused for any other
+ * `tool`, not merely discouraged.
  */
 export const dryRunRecorded = defineEvent(
   'DryRunRecorded',
-  z.object({
-    taskId: z.string(),
-    tool: nonEmpty,
-    fingerprint: nonEmpty,
-    summary: z.string().default(''),
-  }),
+  z
+    .object({
+      taskId: z.string(),
+      tool: nonEmpty,
+      fingerprint: nonEmpty,
+      summary: z.string().default(''),
+    })
+    .superRefine(emptyTaskIdOnlyFor),
 );
 
 /**
  * An operator confirmed a simulated destructive call may proceed (SAF-4,
  * HIL-2). `taskId` echoes the `DryRunRecorded` it confirms (see above) —
  * empty for the same reason there, and required rather than defaulted for
- * the same CONV-5 reason.
+ * the same CONV-5 reason, refined by the same {@link emptyTaskIdOnlyFor}.
  */
 export const destructiveOpConfirmed = defineEvent(
   'DestructiveOpConfirmed',
-  z.object({
-    taskId: z.string(),
-    tool: nonEmpty,
-    fingerprint: nonEmpty,
-    by: nonEmpty,
-    reason: z.string().default(''),
-  }),
+  z
+    .object({
+      taskId: z.string(),
+      tool: nonEmpty,
+      fingerprint: nonEmpty,
+      by: nonEmpty,
+      reason: z.string().default(''),
+    })
+    .superRefine(emptyTaskIdOnlyFor),
 );
 
 export const operatorIntervened = defineEvent(

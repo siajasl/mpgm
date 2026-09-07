@@ -559,6 +559,7 @@ export type {
 export {
   DeployGateError,
   RECREATE_ON_DEFAULT_DIGEST,
+  TEARDOWN_ENV_DIGEST,
   crossRunLedger,
   deployFingerprint,
   gateProductionRelease,

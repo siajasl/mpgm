@@ -37,8 +37,9 @@ import {
  * constructor does the same thing: `options.gate` is required, and the
  * `Provider` returned is always the one `gateProvisionRelease`
  * (`../policy/deploy-gate.ts`) already wraps — there is no code path in this
- * repository that can produce an ungated `up` bound to `envProvisionContract`,
- * the same guarantee `dockerReleaseProvider` gives `release.deliver`.
+ * repository that can produce an ungated `up` or `down` bound to
+ * `envProvisionContract`, the same guarantee `dockerReleaseProvider` gives
+ * `release.deliver`.
  */
 
 export class ComposeProviderError extends Error {}

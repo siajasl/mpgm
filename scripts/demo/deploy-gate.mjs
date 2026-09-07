@@ -20,12 +20,23 @@
  * What this script drives instead is what `mpgm rollback` (or any other
  * future caller — an orchestrator effect, `mpgm deploy`) would ultimately
  * reach: `dockerReleaseProvider#deliver`/`#rollback` and
- * `composeProvider#up` directly, through the same `CapabilityRegistry`
- * every real caller binds them through. Confirming a fingerprint is done
- * exactly the way `mpgm confirm <fingerprint> --by <who>` does it
- * (`src/cli/commands.ts`'s `confirm`) — appending a `DestructiveOpConfirmed`
- * event for a fingerprint the ledger has already seen dry-run — just
- * without the CLI's argument parsing in front of it here.
+ * `composeProvider#up`/`#down` directly, through the same
+ * `CapabilityRegistry` every real caller binds them through. Confirming a
+ * fingerprint is done exactly the way `mpgm confirm <fingerprint> --by <who>`
+ * does it (`src/cli/commands.ts`'s `confirm`) — appending a
+ * `DestructiveOpConfirmed` event for a fingerprint the ledger has already
+ * seen dry-run — just without the CLI's argument parsing in front of it
+ * here.
+ *
+ * Steps 9-11 exercise `down` (T4.1.4 fourth rework): a fourth review found it
+ * passing through `gateProvisionRelease` ungated, which was both a newly
+ * reachable route to production and a way to defeat step 4's own check — an
+ * ungated `down` leaves the environment not-up, so the identical no-image
+ * `up` step 4 already covers finds nothing running afterward and proceeds
+ * too. Those steps bring production up for real from its declared compose
+ * default first (no image, nothing being replaced, so no gate — the same
+ * case `demo:env` already verifies), so `down` has something actually
+ * running to refuse tearing down.
  *
  * Requires a Docker daemon, the same as `demo:env`/`demo:release`/`demo:verify`.
  */
@@ -44,6 +55,7 @@ import {
   gatedEnvironments,
   kernelRegistry,
   releaseDeliverContract,
+  TEARDOWN_ENV_DIGEST,
 } from '../../dist/index.js';
 
 const failures = [];
@@ -260,6 +272,65 @@ try {
     'staging is reached with no dry run and no confirmation, even carrying an image',
     stagingUp === undefined || !stagingUp.includes('simulated'),
     stagingUp ?? '(no error — up reported normally)',
+  );
+
+  process.stdout.write(
+    '\n9. Standing production up from its declared compose default (no image) needs no approval — nothing is being replaced yet\n',
+  );
+  const productionStood = await refused(
+    envContract.invoke('up', { repo, env: 'production' }),
+  );
+  check(
+    'production comes up from its own IaC with no gate involved',
+    productionStood === undefined,
+    productionStood ?? '(no error — up reported normally)',
+  );
+
+  process.stdout.write(
+    '\n10. env.provision#down against production, now that it is actually up, is refused the same way (T4.1.4 fourth rework)\n',
+  );
+  const teardownPrint = deployFingerprint({
+    repo,
+    env: 'production',
+    digest: TEARDOWN_ENV_DIGEST,
+  });
+  const downNoDryRun = await refused(
+    envContract.invoke('down', { repo, env: 'production' }),
+  );
+  check(
+    'down is refused without a recorded dry run — the fourth review found this door wide open',
+    downNoDryRun !== undefined && downNoDryRun.includes('has not been simulated'),
+    downNoDryRun,
+  );
+  const downNotConfirmed = await refused(
+    envContract.invoke('down', { repo, env: 'production' }),
+  );
+  check(
+    'down is refused pending confirmation, once simulated',
+    downNotConfirmed !== undefined &&
+      downNotConfirmed.includes('simulated but not confirmed'),
+    downNotConfirmed,
+  );
+
+  process.stdout.write(
+    '\n11. Confirming the teardown is what lets it — and only it — proceed: the two-call defeat the review found is now closed\n',
+  );
+  operatorConfirms(teardownPrint, 'deploy');
+  const downConfirmed = await refused(
+    envContract.invoke('down', { repo, env: 'production' }),
+  );
+  check(
+    'down now reaches the real provider and actually tears production down',
+    downConfirmed === undefined,
+    downConfirmed ?? '(no error — down reported normally)',
+  );
+  const upAfterDown = await refused(
+    envContract.invoke('up', { repo, env: 'production' }),
+  );
+  check(
+    "once actually down, the identical no-image up is the empty-infrastructure case again — no second gate, and no confirmation smuggled from step 10's",
+    upAfterDown === undefined,
+    upAfterDown ?? '(no error — up reported normally)',
   );
 } finally {
   await envContract.invoke('down', { repo, env: 'production' }).catch(() => undefined);

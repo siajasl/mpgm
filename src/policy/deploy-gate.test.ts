@@ -13,6 +13,7 @@ import {
   gateProductionRelease,
   gateProvisionRelease,
   RECREATE_ON_DEFAULT_DIGEST,
+  TEARDOWN_ENV_DIGEST,
   type DeployGateOptions,
   type DeployLedger,
 } from './deploy-gate.js';
@@ -33,6 +34,7 @@ interface GatedReleaseProvider {
 
 interface GatedProvisionProvider {
   readonly up: (input: never) => Promise<unknown>;
+  readonly down: (input: never) => Promise<unknown>;
 }
 
 function gate(provider: Provider, options: DeployGateOptions): GatedReleaseProvider {
@@ -132,7 +134,10 @@ function fakeProvisionProvider(options: { alreadyUp?: boolean } = {}): {
         services: [],
       });
     },
-    down: () => Promise.resolve({ env: 'x', up: false, services: [] }),
+    down: (input: never) => {
+      calls.push(`down:${JSON.stringify(input)}`);
+      return Promise.resolve({ env: 'x', up: false, services: [] });
+    },
     status: () => Promise.resolve(status),
   };
   return { provider, calls };
@@ -389,7 +394,10 @@ describe('crossRunLedger', () => {
   const target = { repo: 'r', env: 'production', digest: release('1.0.0').digest };
   const print = deployFingerprint(target);
 
-  it('finds a dry run and confirmation recorded in a different run', () => {
+  it('finds a dry run and confirmation, both recorded under one run, when asked from a different run entirely', () => {
+    // "Cross-run" is about who is *asking*, not about splitting the pair
+    // itself across runs — see the next test for that distinction, which a
+    // review found this test's own former title blurred.
     const state = stateWith([
       { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
       {
@@ -416,6 +424,41 @@ describe('crossRunLedger', () => {
     expect(state.runs['run-b']?.destructiveCalls[print]).toBeUndefined();
     expect(ledger.dryRunSeen(print)).toBe(true);
     expect(ledger.confirmed(print)).toBe(true);
+  });
+
+  it('does not pair a dry run and a confirmation recorded under two different runs', () => {
+    // The actual boundary of "outlives the run": the *pair* is folded per
+    // run (`state/reduce.ts`'s `destructiveCalls`), so a dry run under
+    // 'run-a' and a confirmation appended under 'run-b' for the identical
+    // fingerprint produce two incomplete entries, neither satisfying
+    // `confirmed` — exactly why `mpgm confirm --run <run>` names the run
+    // the dry run happened under rather than defaulting to whichever run is
+    // asking (`contracts/release.deliver.md`). A review found the previous
+    // test's title implying otherwise, with nothing here to say it was
+    // wrong (CONV-6).
+    const state = stateWith([
+      { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+      {
+        runId: 'run-a',
+        type: 'DryRunRecorded',
+        payload: { taskId: '', tool: 'deploy', fingerprint: print },
+      },
+      { runId: 'run-b', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+      {
+        runId: 'run-b',
+        type: 'DestructiveOpConfirmed',
+        payload: {
+          taskId: '',
+          tool: 'deploy',
+          fingerprint: print,
+          by: 'macg',
+        },
+      },
+    ]);
+    const ledger = crossRunLedger(() => state);
+
+    expect(ledger.dryRunSeen(print)).toBe(true);
+    expect(ledger.confirmed(print)).toBe(false);
   });
 
   it('does not confirm a fingerprint nothing has ever recorded', () => {
@@ -655,5 +698,145 @@ describe('gateProvisionRelease', () => {
         },
       ),
     ).toThrow(DeployGateError);
+  });
+
+  describe('down', () => {
+    it('leaves a down for a gated environment that is not up untouched', async () => {
+      // Nothing is being torn down — the same "nothing to replace yet"
+      // reasoning the no-image `up` case makes.
+      const { provider, calls } = fakeProvisionProvider();
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      await gated.down({ repo: 'r', env: 'production' } as never);
+      expect(calls).toEqual(['down:{"repo":"r","env":"production"}']);
+    });
+
+    it('refuses to tear a gated environment down while it is up, without a recorded dry run', async () => {
+      // A fourth review's own gap: an ungated `down` was both a newly
+      // reachable route to production and a way to defeat the no-image `up`
+      // check above (see the regression test below).
+      const { provider, calls } = fakeProvisionProvider({ alreadyUp: true });
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      await expect(gated.down({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+        DeployGateError,
+      );
+      expect(calls).toEqual([]);
+    });
+
+    it('refuses a down for an up gated environment once simulated but still unconfirmed', async () => {
+      const { provider, calls } = fakeProvisionProvider({ alreadyUp: true });
+      const print = deployFingerprint({
+        repo: 'r',
+        env: 'production',
+        digest: TEARDOWN_ENV_DIGEST,
+      });
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(new Set([print])),
+      });
+
+      await expect(gated.down({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+        /simulated but not confirmed/,
+      );
+      expect(calls).toEqual([]);
+    });
+
+    it('lets a down for an up gated environment proceed once confirmed', async () => {
+      const { provider, calls } = fakeProvisionProvider({ alreadyUp: true });
+      const print = deployFingerprint({
+        repo: 'r',
+        env: 'production',
+        digest: TEARDOWN_ENV_DIGEST,
+      });
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(new Set([print]), new Set([print])),
+      });
+
+      await gated.down({ repo: 'r', env: 'production' } as never);
+      expect(calls).toHaveLength(1);
+    });
+
+    it('refuses a down for a gated environment when the provider cannot report status', async () => {
+      // Fail closed (CONV-4): a provider this gate cannot ask is never
+      // assumed already down.
+      const calls: string[] = [];
+      const provider: Provider = {
+        up: (input: never) => {
+          calls.push(`up:${JSON.stringify(input)}`);
+          return Promise.resolve({ env: 'x', up: true, services: [] });
+        },
+        down: (input: never) => {
+          calls.push(`down:${JSON.stringify(input)}`);
+          return Promise.resolve({ env: 'x', up: false, services: [] });
+        },
+      };
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      await expect(gated.down({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+        DeployGateError,
+      );
+      expect(calls).toEqual([]);
+    });
+
+    it('leaves a down for a non-gated environment untouched even while it is up', async () => {
+      const { provider, calls } = fakeProvisionProvider({ alreadyUp: true });
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      await gated.down({ repo: 'r', env: 'staging' } as never);
+      expect(calls).toEqual(['down:{"repo":"r","env":"staging"}']);
+    });
+
+    it('leaves a provider with no down as-is, nothing here to gate', () => {
+      const calls: string[] = [];
+      const provider: Provider = {
+        up: (input: never) => {
+          calls.push(`up:${JSON.stringify(input)}`);
+          return Promise.resolve({ env: 'x', up: true, services: [] });
+        },
+      };
+      const gated = gateProvisionRelease(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      expect((gated as unknown as { down?: unknown }).down).toBeUndefined();
+    });
+
+    it("does not defeat the no-image 'up' check by tearing the environment down first (T4.1.4 fourth rework)", async () => {
+      // The exact end-to-end regression the fourth review demonstrated: an
+      // ungated `down` left production not-up, so the identical no-image
+      // `up` that must be gated while a confirmed release is running found
+      // nothing running and passed too — zero approval events, production
+      // recreated on the compose default. With `down` gated, the first
+      // step is refused, so the environment is still reported up when the
+      // no-image `up` is attempted, and that is refused as well.
+      const { provider, calls } = fakeProvisionProvider({ alreadyUp: true });
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      await expect(gated.down({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+        DeployGateError,
+      );
+      await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+        DeployGateError,
+      );
+      expect(calls).toEqual([]);
+    });
   });
 });

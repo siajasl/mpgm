@@ -57,19 +57,21 @@ The gate DEP-2/HIL-2 ask for lives one layer up
 (`src/policy/deploy-gate.ts`, T4.1.4/DESIGN §9 decision 10/14), applied at
 every route an image can reach a gated environment through, not only one of
 them: `release.deliver#deliver`/`#rollback` (`gateProductionRelease`) *and*
-this contract's own `up`, when it carries an `image` (`gateProvisionRelease`)
-— a caller reaching `up` for a gated environment with an image is refused
-exactly as `release.deliver` would refuse it, unless an operator has
-confirmed the exact `{repo, env, digest}` named. T4.1.4's first review found
-the earlier version of this paragraph's reasoning false: "nothing stops an
-operator running `docker compose up` by hand" is true of an operator's own
-shell but was never a defence for a kernel capability a caller — the CLI, a
-demo script, or a future orchestrator effect — can reach programmatically,
-and nothing did refuse that call before this. `up` with no `image` is left
-untouched by the gate *while the environment is not already up* — standing up
-the declared IaC before any release exists to point it at is this contract's
-own reason to exist, and gating it would gate infrastructure nobody is asking
-to deploy anything onto.
+this contract's own `up`, when it carries an `image`, *and* `down`
+(`gateProvisionRelease`) — a caller reaching `up` for a gated environment with
+an image is refused exactly as `release.deliver` would refuse it, unless an
+operator has confirmed the exact `{repo, env, digest}` named. T4.1.4's first
+review found the earlier version of this paragraph's reasoning false:
+"nothing stops an operator running `docker compose up` by hand" is true of an
+operator's own shell but was never a defence for a kernel capability a caller
+— the CLI, a demo script, or a future orchestrator effect — can reach
+programmatically, and nothing did refuse that call before this. `up` with no
+`image` is left untouched by the gate *while the environment is not already
+up* — standing up the declared IaC before any release exists to point it at
+is this contract's own reason to exist, and gating it would gate
+infrastructure nobody is asking to deploy anything onto. `down` is left
+untouched the same way *while the environment is not already up* — tearing
+down infrastructure nothing is serving asks nothing of an operator either.
 
 T4.1.4's second review found two further gaps in that first fix, both closed
 in the reference provider now: `gateProvisionRelease` was applied by exactly
@@ -113,6 +115,23 @@ one. A provider that does not implement `status` cannot be asked and is
 refused outright (CONV-4) — every provider satisfying this contract
 implements `status` already (see "Operations" below), so this asks nothing
 of a provider the contract did not already require.
+
+A fourth review found `down` itself was never gated at all — it passed
+through `gateProvisionRelease`'s wrapper untouched, which was both a newly
+reachable ungated route (declaring `production` in this project's own
+manifest is what made `env.provision#down` against it reachable
+programmatically in the first place) and a way to defeat the no-image `up`
+check the third review had just added: an ungated `down` leaves the
+environment not-up, so the identical no-image `up` that check refuses while a
+confirmed release is running finds nothing running afterward and proceeds
+too — production recreated on the compose default with no approval event
+anywhere in the path. `down` is now gated the same way the no-image `up` case
+is: not up already, the call proceeds exactly as before; up, it is refused
+under a fingerprint identity fixed for "tear this `{repo, env}` down"
+(`src/policy/deploy-gate.ts`'s `TEARDOWN_ENV_DIGEST`, distinct from
+`RECREATE_ON_DEFAULT_DIGEST` so confirming one does not silently confirm the
+other), until an operator confirms it. `status`'s absence is refused outright
+here too, and a provider with no `down` at all has nothing here to gate.
 
 **Scope.** T4.1.4 originally carried the gate, `mpgm rollback`, and release
 outcome artifacts as one task; three sessions could not close it, and PLAN.md
