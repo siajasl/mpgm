@@ -22,8 +22,9 @@ import {
  * never toward "probably fine" (CONV-4) — executes the rollback through the
  * very `release.deliver#rollback` operation T4.1.2 built and tested,
  * confirms *that* actually worked, and returns the outcome as a single
- * validated record a caller persists (`recordOutcome`/`readOutcomes` in
- * `outcome-log.ts`) — DEP-5's "record the outcome".
+ * validated record a caller persists as a versioned artifact
+ * (`recordOutcome`/`readOutcomes` in `outcome-log.ts`) — DEP-5's "record the
+ * outcome as a release artifact" (DESIGN §9.12).
  *
  * What this module does not do: implement rollout mechanics (still
  * `release.deliver`/`env.provision`'s job), or decide what a project's smoke
@@ -97,6 +98,31 @@ export const releaseDecisions = [
 export type ReleaseDecision = (typeof releaseDecisions)[number];
 
 /**
+ * `env`, kebab-case only — the same shape `roles/<name>.md` and
+ * `phases/<name>.yaml` names already require (`role/definition.ts`,
+ * `playbook/definition.ts`). `outcome-log.ts#outcomeBasePath` interpolates an
+ * outcome's `env` directly into a filesystem path under `artifacts/deploy/`,
+ * so a free-form string reaching that path unconstrained is one
+ * `../../escaped` away from writing outside `artifacts/` altogether. The
+ * pattern lives here, not only as a runtime guard in `outcomeBasePath`,
+ * because a schema check at construction time makes an outcome that could
+ * never be recorded unrepresentable in the first place (CONV-5) — and it is
+ * applied at *both* ends of `verifyRelease`: on {@link verifyReleaseInput},
+ * so a path-unsafe `env` is refused before any smoke check or rollback runs,
+ * and again on {@link releaseOutcomeSchema}, so nothing downstream of
+ * `verifyReleaseInput` (a caller constructing an outcome directly, via the
+ * exported `recordOutcome`) can reintroduce one. Checking only on the
+ * outcome would mean `verifyRelease` discovers an unrecordable `env` at its
+ * closing `releaseOutcomeSchema.parse`, after the deploy (and any rollback)
+ * has already happened, and would then have to throw away the very outcome
+ * that rollback produced — worse than never checking (CONV-4: fail closed
+ * toward a recorded decision, never toward silence). `outcomeBasePath`'s own
+ * check stays as defence for callers that construct a path from an `env`
+ * that arrived some other way (CONV-4, fail closed).
+ */
+export const ENV_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
  * DEP-5's "record the outcome as a release artifact" — the single record a
  * verification run produces, whichever way it went.
  *
@@ -114,7 +140,10 @@ export type ReleaseDecision = (typeof releaseDecisions)[number];
  */
 export const releaseOutcomeSchema = z
   .object({
-    env: z.string().min(1),
+    env: z
+      .string()
+      .min(1)
+      .regex(ENV_NAME_PATTERN, 'must be lowercase kebab-case, e.g. "staging", "prod"'),
     release: releaseRefSchema,
     decision: z.enum(releaseDecisions),
     reason: z.string().min(1),
@@ -276,7 +305,20 @@ export function isHealthy(results: readonly CheckResult[]): boolean {
 }
 
 export const verifyReleaseInput = z.object({
-  env: z.string().min(1),
+  /**
+   * Constrained to {@link ENV_NAME_PATTERN} here, not only on
+   * {@link releaseOutcomeSchema}: a non-kebab `env` refused only at the
+   * closing `releaseOutcomeSchema.parse` inside `verifyRelease` would be
+   * refused after smoke checks ran and any rollback already happened — the
+   * outcome that rollback produced would then be thrown away as a ZodError
+   * instead of returned, which is worse than not checking at all (CONV-4:
+   * fail closed toward a recorded decision, never toward silence). Checking
+   * here refuses the bad input before any of that runs.
+   */
+  env: z
+    .string()
+    .min(1)
+    .regex(ENV_NAME_PATTERN, 'must be lowercase kebab-case, e.g. "staging", "prod"'),
   /** The just-delivered release being verified. */
   release: releaseRefSchema,
   /** Smoke checks describing what a healthy `release` looks like. */
