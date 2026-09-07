@@ -235,7 +235,11 @@ describe('repairUntilGreen', () => {
 
     expect(report.status).toBe('unrepairable');
     expect(report.reason).toContain('scan');
-    expect(report.reason).toContain('CI configuration');
+    // Says what an operator can act on. "CI configuration" sent one to the
+    // workflow file when the cause was a pull request that conflicted with the
+    // trunk — nothing ran, because nothing could be built to run against.
+    expect(report.reason).toMatch(/CI was never asked/);
+    expect(report.reason).toMatch(/cannot be merged into the trunk/);
     expect(repairs).toBe(0);
   });
 
