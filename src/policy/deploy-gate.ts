@@ -47,11 +47,13 @@ import { fingerprint } from './destructive.js';
  * environment path, and declare production" (every `env.provision`
  * operation, `down` included, plus declaring `production` once nothing can
  * reach it unapproved) into two tasks along exactly this contract boundary,
- * and this module is the first of them. `env.provision` declares no gated
- * environment of its own yet (`deploy/environments/environments.yaml`), so
- * there is nothing this gap can reach in this project today; closing it for
- * whichever environment a project *does* mark `approval: required` — this
- * project's own eventual `production` included — is the second task's job.
+ * and this module is the first of them. This project now declares one gated
+ * environment, `staging` (`deploy/environments/environments.yaml`), but only
+ * on the `release.deliver` path this module sits in front of —
+ * `env.provision#up` with an `image` override reaches it ungated until
+ * T4.1.4b lands (`contracts/release.deliver.md`); closing that for whichever
+ * environment a project marks `approval: required` — this project's own
+ * eventual `production` included — is the second task's job.
  */
 
 export class DeployGateError extends Error {}
