@@ -131,7 +131,7 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 | T4.1.3 Health verification + promote/rollback decisions | induced regression auto-rolls back; outcome recorded | §4.7, DEP-2/5 | Sonnet 5 |
 | T4.1.4a Approval gate on the release path | a release to an environment the project marks as requiring approval is impossible without an approval event; which environments those are is project configuration, never a hardcoded name | §4.4, §9.10, HIL-2 | Opus 5 |
 | T4.1.4b Approval gate on the environment path, and declaring production | every `env.provision` operation that can change what a gated environment serves is gated, `down` included; `production` is declared once nothing can reach it unapproved | §4.4, §9.10, HIL-2, DEP-4 | Opus 5 |
-| T4.1.5 The `mpgm rollback` verb (after T4.1.4b) | operator rolls back a declared environment from the CLI; recorded, and gated only when the digest was never confirmed for that environment | §4.4, §9.11, DEP-2, HIL-5 | Sonnet 5 |
+| T4.1.5 The `mpgm rollback` verb (after T4.1.4b) | operator rolls back a declared environment from the CLI; recorded, and — for an environment the project marks as requiring approval — gated only when the digest was never confirmed for that environment | §4.4, §9.11, DEP-2, HIL-5 | Sonnet 5 |
 | T4.1.6 Release outcome artifacts | a deploy outcome is a versioned artifact that survives its run | §4.5, §9.12, DEP-5 | Sonnet 5 |
 
 **Verification:** sample service (T3.2.6) deployed staging → (canary via CD tool) → promoted; a second release with an induced fault auto-rolls back with the outcome recorded per DEP-5 (full incident records arrive with T5.1.2).
