@@ -47,10 +47,26 @@ would provision infrastructure nothing wrote down.
 
 This project declares `test` and `staging`. `production` is deliberately
 undeclared: DEP-4 asks the harness to be *able* to provision production, but
-the hard approval gate that must stand in front of it (DEP-2, HIL-2) is
-T4.1.4's, not yet landed — an IaC file for an environment nothing can gate is
-an environment a compose command could bring up unreviewed. Declaring it is a
-one-line addition to the manifest once the gate exists to sit in front of it.
+the hard approval gate that must stand in front of *this contract's own*
+operations — `up` included, `down` too, since tearing a gated environment
+down and bringing it back up on the compose default is also a way to change
+what it serves — is T4.1.4b's, not yet landed. Declaring it is a one-line
+addition to the manifest once that gate exists to sit in front of it.
+
+Each declared environment also marks `approval: required` or `approval: none`
+(`src/env/compose-provider.ts`'s `environmentEntrySchema`, required per entry
+— CONV-5, a manifest cannot decline to say which) — the single place HIL-2's
+"which environments need an operator's approval" is answered from, read by
+`gatedEnvironmentNames`/`gatedEnvironments` for `src/policy/deploy-gate.ts`'s
+`gateProductionRelease`, which `contracts/release.deliver.md`'s
+`deliver`/`rollback` are wrapped in (T4.1.4a). This project marks `staging`
+`required`, to prove the gate against a real environment without needing
+`production` declared at all. **This contract's own operations do not
+consult `approval` yet** — `up`/`down`/`status` below apply to every declared
+environment exactly as they did before this field existed; gating them, `down`
+included, is T4.1.4b's task, the reason `up`'s own doc below is silent about
+approval even though the manifest each `image`-carrying call reads from
+already marks it.
 
 ## Operations
 

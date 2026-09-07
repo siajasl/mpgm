@@ -57,9 +57,21 @@ rmSync(outcomesPath, { force: true });
 
 const registry = new CapabilityRegistry();
 const env = registry.bind(envProvisionContract, composeProvider());
+// The HIL-2 release-path gate (`src/policy/deploy-gate.ts`) is a required
+// constructor argument as of T4.1.4a — this script only ever delivers to
+// `test`, which this project's own manifest marks `approval: none`
+// (`deploy/environments/environments.yaml`), so the gate's ledger is never
+// actually consulted here; `scripts/demo/deploy-gate.mjs` is what exercises
+// it, against the `staging` environment the manifest does mark gated.
 const release = registry.bind(
   releaseDeliverContract,
-  dockerReleaseProvider({ envProvision: env }),
+  dockerReleaseProvider({
+    envProvision: env,
+    gate: {
+      gatedEnvs: new Set(),
+      ledger: { dryRunSeen: () => false, confirmed: () => false },
+    },
+  }),
 );
 
 const policy = { attempts: 8, intervalMs: 1000 };
