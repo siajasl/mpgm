@@ -286,7 +286,8 @@ export const MPGM_PLAN = {
               title: 'The rollback verb',
               completionCriteria: [
                 'An operator can roll back a declared environment from the CLI, ' +
-                  'and the rollback is recorded without being gated.',
+                  'and the rollback is recorded, gated only when the digest ' +
+                  'was never confirmed for that environment.',
               ],
               dependsOn: ['T4.1.4b'],
               tracesTo: ['DEP-2', 'HIL-5'],
