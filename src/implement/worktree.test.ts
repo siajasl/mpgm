@@ -253,3 +253,84 @@ describe('WorktreeManager', () => {
     await expect(manager.acquire('task-a')).rejects.toThrow(/differ only by case/);
   });
 });
+
+describe('bringing a checkout up to the trunk', () => {
+  // A worktree is created from the trunk as it stood then, and a resumed task
+  // picks the same one up later — often after the merges it depends on have
+  // landed. T4.1.4a was cut before T4.1.6 merged, edited a file T4.1.6 had
+  // rewritten, and its pull request went conflicting; no workflow ran, because
+  // no merge commit could be built to run one against.
+  async function behindTrunk(): Promise<{ repo: string; manager: WorktreeManager }> {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    await manager.acquire('T1');
+    writeFileSync(join(repo, 'from-the-trunk.txt'), 'landed after the branch was cut\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'a merge the branch was cut before']);
+    return { repo, manager };
+  }
+
+  it('says nothing to do when the branch is level with the trunk', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    await manager.acquire('T1');
+
+    expect(await manager.catchUp('T1', 'main')).toStrictEqual({
+      status: 'already-current',
+    });
+  });
+
+  it('merges the trunk in, and the checkout then holds what the trunk holds', async () => {
+    const { manager } = await behindTrunk();
+
+    const result = await manager.catchUp('T1', 'main');
+
+    expect(result).toStrictEqual({ status: 'merged', commits: 1 });
+    const worktree = await manager.find('T1');
+    expect(existsSync(join(worktree?.path ?? '', 'from-the-trunk.txt'))).toBe(true);
+  });
+
+  it('reports which files conflict, and leaves the checkout alone', async () => {
+    // The kernel does not resolve conflicts, the same choice `mergeChange`
+    // makes in the other direction: a half-merged checkout is worse than a
+    // refused merge, and resolving one is a change somebody has to make.
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+    writeFileSync(join(worktree.path, 'contested.txt'), 'what the branch says\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'the branch edits it']);
+    writeFileSync(join(repo, 'contested.txt'), 'what the trunk says\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'the trunk edits it too']);
+
+    const result = await manager.catchUp('T1', 'main');
+
+    expect(result).toStrictEqual({ status: 'conflicted', files: ['contested.txt'] });
+    // Aborted, not left mid-merge: a session opening this checkout must not
+    // find conflict markers nobody told it about.
+    expect(git(worktree.path, ['status', '--porcelain'])).toBe('');
+    expect(git(worktree.path, ['log', '-1', '--format=%s'])).toBe('the branch edits it');
+  });
+
+  it('refuses rather than guesses when it cannot tell how far behind it is', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    await manager.acquire('T1');
+
+    const result = await manager.catchUp('T1', 'no-such-branch');
+
+    expect(result.status).toBe('refused');
+    expect(result.status === 'refused' && result.detail).toContain('no-such-branch');
+  });
+
+  it('says so rather than merging into a checkout that is not there', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+
+    expect(await manager.catchUp('T1', 'main')).toStrictEqual({
+      status: 'refused',
+      detail: "no checkout for 'T1'",
+    });
+  });
+});

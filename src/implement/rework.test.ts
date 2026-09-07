@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1148,6 +1148,90 @@ describe('a review that never approves (NFR-1)', () => {
 
       expect(result.status).toBe('blocked');
       expect(result.reason).toContain('could not read the commit');
+    } finally {
+      log.close();
+    }
+  });
+  it('brings a resumed checkout up to the trunk before the session starts', async () => {
+    // T4.1.4a was cut before T4.1.6 merged and nothing brought it forward, so
+    // its rework edited a file the trunk had rewritten and the pull request
+    // went conflicting — which is a pull request no workflow runs against.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(repo, 'from-the-trunk.txt'), 'landed after the cut\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'a merge this branch was cut before']);
+
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: 'unused',
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: 'unused',
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      await implementTask({ ...baseOptions(repo, provider, log), worktrees });
+
+      // Whatever the outcome of the run itself, the checkout the session was
+      // handed holds what the trunk holds.
+      expect(existsSync(join(worktree.path, 'from-the-trunk.txt'))).toBe(true);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('blocks rather than work in a checkout that cannot be brought up to the trunk', async () => {
+    // The kernel does not resolve conflicts. Saying so here costs one message;
+    // finding out from CI costs a session, a grace period waiting for checks
+    // that cannot exist, and a refusal that blames CI configuration.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(worktree.path, 'contested.txt'), 'what the branch says\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'the branch edits it']);
+    writeFileSync(join(repo, 'contested.txt'), 'what the trunk says\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'the trunk edits it too']);
+
+    const provider = new ScriptedProvider([]);
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('contested.txt');
+      expect(result.reason).toMatch(/behind 'main'/);
+      // No session was spent finding this out.
+      expect(provider.requests).toHaveLength(0);
     } finally {
       log.close();
     }

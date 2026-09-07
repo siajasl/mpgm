@@ -355,6 +355,28 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     };
   };
 
+  // Only now, and deliberately after everything above has been read off the
+  // checkout as it was handed over: a branch cut before its own dependencies
+  // merged is a branch CI may never be asked about at all, because a provider
+  // that builds a merge commit to test cannot build one for a pull request
+  // that conflicts. `priorReview` is read first for the same reason in
+  // reverse — a mechanical trunk merge moves the tip without answering
+  // anything a reviewer said about the author's own work.
+  const caughtUp = await options.worktrees.catchUp(task.id, into);
+  if (caughtUp.status === 'conflicted') {
+    return stop(
+      `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
+        `${caughtUp.files.join(', ')}. Resolving it is a change somebody has to ` +
+        `make; until it is made, a pull request for this branch cannot report ` +
+        `checks at all.`,
+    );
+  }
+  if (caughtUp.status === 'refused') {
+    return stop(
+      `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
+    );
+  }
+
   const context = assembleContext({
     task: {
       description: `${task.id} — ${task.title} (${task.milestone})`,
