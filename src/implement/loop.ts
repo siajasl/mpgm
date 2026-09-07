@@ -363,18 +363,25 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // reverse — a mechanical trunk merge moves the tip without answering
   // anything a reviewer said about the author's own work.
   const caughtUp = await options.worktrees.catchUp(task.id, into);
-  if (caughtUp.status === 'conflicted') {
-    return stop(
-      `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
-        `${caughtUp.files.join(', ')}. Resolving it is a change somebody has to ` +
-        `make; until it is made, a pull request for this branch cannot report ` +
-        `checks at all.`,
-    );
-  }
-  if (caughtUp.status === 'refused') {
-    return stop(
-      `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
-    );
+  if (caughtUp.status === 'conflicted' || caughtUp.status === 'refused') {
+    // Not `stop`, which appends `TaskBlocked`: no session has been dispatched
+    // yet, so the fold has no task for that event to be about and `requireTask`
+    // refuses it — the same shape as the refusals in `cli/commands.ts` that
+    // happen before a run begins. The reason reaches the operator through the
+    // result, which is where a refusal to start belongs.
+    return {
+      status: 'blocked',
+      taskId: task.id,
+      branch: worktree.branch,
+      worktree: worktree.path,
+      reason:
+        caughtUp.status === 'conflicted'
+          ? `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
+            `${caughtUp.files.join(', ')}. Resolving it is a change somebody has ` +
+            `to make; until it is made, a pull request for this branch cannot ` +
+            `report checks at all.`
+          : `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
+    };
   }
 
   const context = assembleContext({
