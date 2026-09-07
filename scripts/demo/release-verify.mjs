@@ -29,6 +29,7 @@ import {
   composeProvider,
   dockerReleaseProvider,
   envProvisionContract,
+  gatedEnvironments,
   readOutcomes,
   recordOutcome,
   releaseDeliverContract,
@@ -58,17 +59,21 @@ rmSync(outcomesPath, { force: true });
 const registry = new CapabilityRegistry();
 const env = registry.bind(envProvisionContract, composeProvider());
 // The HIL-2 release-path gate (`src/policy/deploy-gate.ts`) is a required
-// constructor argument as of T4.1.4a — this script only ever delivers to
-// `test`, which this project's own manifest marks `approval: none`
-// (`deploy/environments/environments.yaml`), so the gate's ledger is never
-// actually consulted here; `scripts/demo/deploy-gate.mjs` is what exercises
-// it, against the `staging` environment the manifest does mark gated.
+// constructor argument as of T4.1.4a. `gatedEnvs` is read from this
+// project's own manifest (`gatedEnvironments`, never a hardcoded set —
+// criterion 2) rather than decided here: this script only ever delivers to
+// `test`, which the manifest marks `approval: none`, so the gate's ledger is
+// never actually consulted by *this* script, but the set it is built from is
+// real, so retargeting this script at a gated environment would be refused
+// instead of silently delivered. `scripts/demo/deploy-gate.mjs` is what
+// exercises the refusal itself, against the `staging` environment the
+// manifest does mark gated.
 const release = registry.bind(
   releaseDeliverContract,
   dockerReleaseProvider({
     envProvision: env,
     gate: {
-      gatedEnvs: new Set(),
+      gatedEnvs: gatedEnvironments(repo),
       ledger: { dryRunSeen: () => false, confirmed: () => false },
     },
   }),
@@ -82,6 +87,17 @@ const smokeCheck = (expectIncludes) => [
 const rollbackTo = (to) => release.invoke('rollback', { repo, env: 'test', to });
 
 try {
+  // Proves this script actually read the manifest rather than a hardcoded
+  // empty set standing in for it — a regression back to `new Set()` here
+  // would leave this assertion the only thing in the offline suite able to
+  // catch it, since this script only ever delivers to `test` and would
+  // otherwise pass either way.
+  check(
+    "gatedEnvs was read from this project's own manifest, not hardcoded",
+    gatedEnvironments(repo).has('staging'),
+    JSON.stringify([...gatedEnvironments(repo)]),
+  );
+
   process.stdout.write('\n1. Deliver a healthy first release\n');
   const v1 = await release.invoke('assemble', {
     repo,

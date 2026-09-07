@@ -35,8 +35,14 @@ import {
  * forget — means there is no code path that produces an *ungated*
  * `deliver`/`rollback` bound to the contract: not the CLI, not a demo
  * script, not a future orchestrator effect. A caller cannot construct a
- * provider whose gated-environment path skips the gate, which is a stronger
- * guarantee than a token on the call would have given (see decision 10).
+ * provider whose gated-environment path skips the gate at all — that
+ * guarantee is structural, at construction time, and is independent of
+ * *how* each call is then checked. Each call is still checked at the point
+ * it is made, against confirmation state an operator supplies later and
+ * out-of-band (`mpgm confirm`, read from the event log) — decision 10, as
+ * corrected, explains why that check cannot instead be a token the call is
+ * built with: nothing available when a call is constructed can attest in
+ * advance to an approval that has not happened yet.
  */
 
 export class ReleaseProviderError extends Error {}
