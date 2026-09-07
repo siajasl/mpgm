@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -168,6 +168,17 @@ describe('what the author is shown', () => {
     // gate — so the author is told the re-review is coming.
     expect(rendered).toMatch(/reviewed again/);
     expect(rendered).toMatch(/not told what you declared/);
+  });
+
+  it('says a declaration is a field, because that is how one was lost', () => {
+    // T4.1.4a wrote "Declaring CONV-5 as a deviation this rework does not
+    // attempt to close" in its commit message. The gate reads the result, not
+    // the log, so the deviation was undeclared and refused an approved change
+    // at attempt three of three.
+    expect(rendered).toMatch(/`deviations` field of the result you return/);
+    expect(rendered).toContain('`convention`');
+    expect(rendered).toContain('`why`');
+    expect(rendered).toMatch(/commit message/);
   });
 
   it('says why the branch has extra commits, so an attempt is not spent on it', () => {
@@ -1148,6 +1159,95 @@ describe('a review that never approves (NFR-1)', () => {
 
       expect(result.status).toBe('blocked');
       expect(result.reason).toContain('could not read the commit');
+    } finally {
+      log.close();
+    }
+  });
+  it('brings a resumed checkout up to the trunk before the session starts', async () => {
+    // T4.1.4a was cut before T4.1.6 merged and nothing brought it forward, so
+    // its rework edited a file the trunk had rewritten and the pull request
+    // went conflicting — which is a pull request no workflow runs against.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(repo, 'from-the-trunk.txt'), 'landed after the cut\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'a merge this branch was cut before']);
+
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: 'unused',
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: 'unused',
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      await implementTask({ ...baseOptions(repo, provider, log), worktrees });
+
+      // Whatever the outcome of the run itself, the checkout the session was
+      // handed holds what the trunk holds.
+      expect(existsSync(join(worktree.path, 'from-the-trunk.txt'))).toBe(true);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('blocks rather than work in a checkout that cannot be brought up to the trunk', async () => {
+    // The kernel does not resolve conflicts. Saying so here costs one message;
+    // finding out from CI costs a session, a grace period waiting for checks
+    // that cannot exist, and a refusal that blames CI configuration.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const worktree = await worktrees.acquire('T1');
+    writeFileSync(join(worktree.path, 'contested.txt'), 'what the branch says\n');
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', 'the branch edits it']);
+    writeFileSync(join(repo, 'contested.txt'), 'what the trunk says\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'the trunk edits it too']);
+
+    const provider = new ScriptedProvider([]);
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('contested.txt');
+      expect(result.reason).toMatch(/behind 'main'/);
+      // No session was spent finding this out.
+      expect(provider.requests).toHaveLength(0);
+      // And nothing was written about a task no session ever ran: a
+      // `TaskBlocked` for a task the run never dispatched is an event the fold
+      // refuses, which CI caught and these tests had not.
+      expect(() => fold(log.read())).not.toThrow();
+      expect(log.read().some((event) => event.type === 'TaskBlocked')).toBe(false);
     } finally {
       log.close();
     }

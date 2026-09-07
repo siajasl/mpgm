@@ -210,6 +210,18 @@ export function implementPrompt(
     'Report the commit you ended at in `ref`, and set `complete` honestly — a',
     'partial change with an account of what remains is recoverable, and a',
     'confident claim of completion is not.',
+    '',
+    // T4.1.4a declared a deviation in its commit message — "Declaring CONV-5
+    // as a deviation this rework does not attempt to close" — and the gate
+    // refused the merge for an undeclared deviation, because the gate reads
+    // the result and not the log. An approved change, one field short.
+    'If you knowingly depart from one of the conventions above, declare it in',
+    '`deviations` — one entry per convention, with its id in `convention` and',
+    'your reason in `why`. That field is the declaration, and it is the only',
+    'thing read: a departure explained in a commit message, a code comment or',
+    'the summary is undeclared as far as the merge is concerned, and an',
+    'undeclared deviation the reviewer finds refuses the merge however good the',
+    'reason was (IMP-4).',
   );
 
   return lines.join('\n');
@@ -354,6 +366,35 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       ...extra,
     };
   };
+
+  // Only now, and deliberately after everything above has been read off the
+  // checkout as it was handed over: a branch cut before its own dependencies
+  // merged is a branch CI may never be asked about at all, because a provider
+  // that builds a merge commit to test cannot build one for a pull request
+  // that conflicts. `priorReview` is read first for the same reason in
+  // reverse — a mechanical trunk merge moves the tip without answering
+  // anything a reviewer said about the author's own work.
+  const caughtUp = await options.worktrees.catchUp(task.id, into);
+  if (caughtUp.status === 'conflicted' || caughtUp.status === 'refused') {
+    // Not `stop`, which appends `TaskBlocked`: no session has been dispatched
+    // yet, so the fold has no task for that event to be about and `requireTask`
+    // refuses it — the same shape as the refusals in `cli/commands.ts` that
+    // happen before a run begins. The reason reaches the operator through the
+    // result, which is where a refusal to start belongs.
+    return {
+      status: 'blocked',
+      taskId: task.id,
+      branch: worktree.branch,
+      worktree: worktree.path,
+      reason:
+        caughtUp.status === 'conflicted'
+          ? `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
+            `${caughtUp.files.join(', ')}. Resolving it is a change somebody has ` +
+            `to make; until it is made, a pull request for this branch cannot ` +
+            `report checks at all.`
+          : `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
+    };
+  }
 
   const context = assembleContext({
     task: {

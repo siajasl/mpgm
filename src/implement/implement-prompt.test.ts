@@ -85,3 +85,23 @@ describe('a checkout handed over mid-task', () => {
     expect(staged).toMatch(/fix what is wrong, finish what is unfinished/);
   });
 });
+
+describe('where a deviation has to be declared', () => {
+  // T4.1.4a declared CONV-5 in its commit message — "Declaring CONV-5 as a
+  // deviation this rework does not attempt to close" — and the gate refused
+  // the merge for an undeclared deviation, because the gate reads the result
+  // and not the log. An approved change, one field short, at attempt three of
+  // three.
+  const rendered = fresh;
+
+  it('names the field, and both of its keys', () => {
+    expect(rendered).toContain('`deviations`');
+    expect(rendered).toContain('`convention`');
+    expect(rendered).toContain('`why`');
+  });
+
+  it('says what does not count, since that is the mistake', () => {
+    expect(rendered).toMatch(/commit message/);
+    expect(rendered).toMatch(/undeclared as far as the merge is concerned/);
+  });
+});
