@@ -210,6 +210,18 @@ export function implementPrompt(
     'Report the commit you ended at in `ref`, and set `complete` honestly — a',
     'partial change with an account of what remains is recoverable, and a',
     'confident claim of completion is not.',
+    '',
+    // T4.1.4a declared a deviation in its commit message — "Declaring CONV-5
+    // as a deviation this rework does not attempt to close" — and the gate
+    // refused the merge for an undeclared deviation, because the gate reads
+    // the result and not the log. An approved change, one field short.
+    'If you knowingly depart from one of the conventions above, declare it in',
+    '`deviations` — one entry per convention, with its id in `convention` and',
+    'your reason in `why`. That field is the declaration, and it is the only',
+    'thing read: a departure explained in a commit message, a code comment or',
+    'the summary is undeclared as far as the merge is concerned, and an',
+    'undeclared deviation the reviewer finds refuses the merge however good the',
+    'reason was (IMP-4).',
   );
 
   return lines.join('\n');

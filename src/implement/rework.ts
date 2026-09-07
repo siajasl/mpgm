@@ -115,6 +115,12 @@ export function renderReview(request: {
       'on the record for an operator to read, not a formality. Declaring one you',
       'have not thought about wastes the attempt: the change is reviewed again',
       'after this, by an agent that is not told what you declared.',
+      '',
+      'The declaration is the `deviations` field of the result you return, with',
+      'the convention id in `convention` and your reason in `why`. Nothing else',
+      'counts: saying it in your commit message, in a comment or in `summary`',
+      'leaves the deviation undeclared and refuses the merge exactly as saying',
+      'nothing would.',
     );
   }
 
