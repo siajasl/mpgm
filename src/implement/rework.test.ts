@@ -170,6 +170,17 @@ describe('what the author is shown', () => {
     expect(rendered).toMatch(/not told what you declared/);
   });
 
+  it('says a declaration is a field, because that is how one was lost', () => {
+    // T4.1.4a wrote "Declaring CONV-5 as a deviation this rework does not
+    // attempt to close" in its commit message. The gate reads the result, not
+    // the log, so the deviation was undeclared and refused an approved change
+    // at attempt three of three.
+    expect(rendered).toMatch(/`deviations` field of the result you return/);
+    expect(rendered).toContain('`convention`');
+    expect(rendered).toContain('`why`');
+    expect(rendered).toMatch(/commit message/);
+  });
+
   it('says why the branch has extra commits, so an attempt is not spent on it', () => {
     // The loop adds a commit per round, so it creates the departure from a
     // one-commit-per-change convention that the next review reports. Round 2
