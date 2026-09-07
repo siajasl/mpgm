@@ -1232,6 +1232,11 @@ describe('a review that never approves (NFR-1)', () => {
       expect(result.reason).toMatch(/behind 'main'/);
       // No session was spent finding this out.
       expect(provider.requests).toHaveLength(0);
+      // And nothing was written about a task no session ever ran: a
+      // `TaskBlocked` for a task the run never dispatched is an event the fold
+      // refuses, which CI caught and these tests had not.
+      expect(() => fold(log.read())).not.toThrow();
+      expect(log.read().some((event) => event.type === 'TaskBlocked')).toBe(false);
     } finally {
       log.close();
     }
