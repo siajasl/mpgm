@@ -34,14 +34,22 @@ function gate(provider: Provider, options: DeployGateOptions): GatedReleaseProvi
 }
 
 /**
- * `gatedEnvs` naming only `production` — every test below that does not
- * exercise `gatedEnvs` itself uses this, the same set a caller reading a
- * project's own manifest (`env/compose-provider.ts`'s `gatedEnvironments`)
- * would build for a project that marks that environment `approval:
- * required` (this repository's own manifest marks `staging`, never a name
- * this module assumes on its own).
+ * `gatedEnvs` naming only `production`, for every `repo` — every test below
+ * that does not exercise `gatedEnvs` itself uses this. `gatedEnvs` is a
+ * function of `repo` (`DeployGateOptions.gatedEnvs`), the same shape a
+ * caller reading a project's own manifest (`env/compose-provider.ts`'s
+ * `gatedEnvironments`) would wire in for a project that marks that
+ * environment `approval: required` (this repository's own manifest marks
+ * `staging`, never a name this module assumes on its own) — these tests
+ * ignore `repo` because none of them exercises resolving a different set per
+ * repo; `docker-provider.test.ts` covers that.
  */
-const PRODUCTION_GATED: ReadonlySet<string> = new Set(['production']);
+function fixedGate(envs: ReadonlySet<string>): (repo: string) => ReadonlySet<string> {
+  return () => envs;
+}
+const PRODUCTION_GATED: (repo: string) => ReadonlySet<string> = fixedGate(
+  new Set(['production']),
+);
 
 /** A ledger over in-memory sets, mirroring `stateLedger`'s shape. */
 function ledger(seen = new Set<string>(), confirmed = new Set<string>()): DeployLedger {
@@ -192,7 +200,7 @@ describe('gateProductionRelease — deliver', () => {
   it('gates whichever environments the caller names, not a hardcoded one', async () => {
     const { provider, calls } = fakeProvider();
     const gated = gate(provider, {
-      gatedEnvs: new Set(['prod-eu']),
+      gatedEnvs: fixedGate(new Set(['prod-eu'])),
       ledger: ledger(),
     });
 
@@ -210,6 +218,43 @@ describe('gateProductionRelease — deliver', () => {
     await expect(
       gated.deliver({ repo: 'r', env: 'prod-eu', release: release('1.0.0') } as never),
     ).rejects.toThrow(DeployGateError);
+  });
+
+  /**
+   * `gatedEnvs` is resolved against the `repo` *the call itself names*, not
+   * a set fixed once at construction — a regression to reading `repo` at
+   * construction time (or ignoring it altogether) would make this gate judge
+   * every call by whichever repo happened to be at hand when it was built,
+   * which is criterion 2 ("read from project configuration") failing for
+   * any repo other than that one (the major finding this test closes:
+   * `docker-provider.test.ts` covers the same property through the real
+   * provider).
+   */
+  it('resolves gatedEnvs from the repo named on each call, not a repo fixed at construction', async () => {
+    const { provider, calls } = fakeProvider();
+    const seenRepos: string[] = [];
+    const gated = gate(provider, {
+      gatedEnvs: (repo) => {
+        seenRepos.push(repo);
+        return repo === 'repo-a' ? new Set(['prod']) : new Set();
+      },
+      ledger: ledger(),
+    });
+
+    // 'repo-a' marks 'prod' gated; 'repo-b' does not. The same gate instance
+    // answers each call by the repo that call names.
+    await expect(
+      gated.deliver({ repo: 'repo-a', env: 'prod', release: release('1.0.0') } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toEqual([]);
+
+    await gated.deliver({
+      repo: 'repo-b',
+      env: 'prod',
+      release: release('1.0.0'),
+    } as never);
+    expect(calls).toHaveLength(1);
+    expect(seenRepos).toEqual(['repo-a', 'repo-b']);
   });
 
   it('calls onDryRunNeeded and onConfirmationNeeded exactly when each is refused', async () => {

@@ -57,12 +57,20 @@ operator has confirmed the exact call — `src/policy/deploy-gate.ts`'s
 module or this contract hardcodes: `<repo>`'s own
 `deploy/environments/environments.yaml` marks each declared environment
 `approval: required` or `approval: none` (`contracts/env.provision.md`,
-`env/compose-provider.ts`'s `gatedEnvironments`), and a caller builds
-`gatedEnvs` from that before constructing the provider — this project marks
-`staging` required, to demonstrate the gate without needing `production`
-declared at all (PLAN.md splits "gate the release path" from "gate the
-environment path, and declare production" along the `release.deliver`/
-`env.provision` contract boundary; this is the first of the two). HIL-2 asks
+`env/compose-provider.ts`'s `gatedEnvironments`), and `gatedEnvs`
+(`DeployGateOptions.gatedEnvs`) is a function of `repo`, resolved fresh on
+every call rather than a set built once before the provider is constructed
+— wiring `gatedEnvs: gatedEnvironments` directly is what every caller in
+this repository does. That is deliberate, not incidental: `repo` arrives on
+every `deliver`/`rollback` input, the same as it does on every
+`env.provision` call, so a set fixed at construction would judge a call
+naming a *different* repo by the manifest of whichever repo happened to
+build the provider, rather than by that call's own project — this project
+marks `staging` required, to demonstrate the gate without needing
+`production` declared at all (PLAN.md splits "gate the release path" from
+"gate the environment path, and declare production" along the
+`release.deliver`/`env.provision` contract boundary; this is the first of
+the two). HIL-2 asks
 for explicit approval on an irreversible, outward-facing action *regardless
 of gate settings*, which a phase gate cannot promise (HIL-1 lets one be
 auto-approved) and which the `PreToolUse` destructive-tool guard

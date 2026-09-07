@@ -193,8 +193,24 @@ export interface DeployGateOptions {
    * its target project gates cannot gate any of them, and defaulting to
    * "none" or to a guessed name is the ambiguity CONV-4 asks a security
    * control to refuse rather than paper over.
+   *
+   * A function of `repo`, not a set fixed once — `repo` arrives on every
+   * `deliver`/`rollback` call (`env/compose-provider.ts`'s `composeProvider`
+   * reads its manifest the same way, per call, for the same reason: a
+   * provider bound to one checkout at construction would let a caller name
+   * one repo and silently act against another's tree, exactly what
+   * `docker-provider.ts`'s own module doc says this provider refuses). A
+   * `ReadonlySet` fixed at construction would tie the gated set to whichever
+   * repo built it, so a single long-lived instance handed a *different*
+   * repo's call would judge that call against the wrong project's manifest
+   * — gating it by a name repo A happens to use, or leaving it ungated
+   * because repo A's manifest never mentions it, either way not reading it
+   * from the environment's own project (CONV-4). Wiring this straight to
+   * `gatedEnvironments` (`../env/compose-provider.js`) — which already takes
+   * `repo` and re-reads that repo's manifest — is what every caller in this
+   * repository does.
    */
-  readonly gatedEnvs: ReadonlySet<string>;
+  readonly gatedEnvs: (repo: string) => ReadonlySet<string>;
   readonly ledger: DeployLedger;
   /**
    * A call was refused for want of a dry run. The gate itself performs no
@@ -276,10 +292,11 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
  * impossible to reach without a matching confirmation event (HIL-2, DESIGN
  * §9 decision 10).
  *
- * Every other operation, and every environment `options.gatedEnvs` does not
- * name, passes straight through unchanged — `assemble` never touches an
- * environment at all, and a non-gated `deliver`/`rollback` is exactly as
- * ungated as it was before this wrapper existed.
+ * Every other operation, and every environment `options.gatedEnvs(repo)` does
+ * not name for the `repo` the call itself names, passes straight through
+ * unchanged — `assemble` never touches an environment at all, and a
+ * non-gated `deliver`/`rollback` is exactly as ungated as it was before this
+ * wrapper existed.
  */
 export function gateProductionRelease(
   provider: Provider,
@@ -305,7 +322,7 @@ export function gateProductionRelease(
 
     deliver: async (input: never): Promise<unknown> => {
       const parsed = releaseDeliverInput.parse(input);
-      if (!options.gatedEnvs.has(parsed.env)) {
+      if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
         return deliver(input);
       }
       assertReady(
@@ -322,7 +339,7 @@ export function gateProductionRelease(
 
     rollback: async (input: never): Promise<unknown> => {
       const parsed = releaseRollbackInput.parse(input);
-      if (!options.gatedEnvs.has(parsed.env)) {
+      if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
         return rollbackOp(input);
       }
       // Deliberately the *same* fingerprint a `deliver` of `to` would have

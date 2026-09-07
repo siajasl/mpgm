@@ -66,7 +66,6 @@ async function refused(promise) {
 }
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
-const gatedEnvs = gatedEnvironments(repo);
 
 const scratch = mkdtempSync(join(tmpdir(), 'mpgm-deploy-gate-'));
 const log = EventLog.open(join(scratch, 'events.db'), { registry: kernelRegistry() });
@@ -110,7 +109,12 @@ function operatorConfirms(fingerprint, tool) {
   });
 }
 
-const gate = { gatedEnvs, ledger, onDryRunNeeded };
+// `gatedEnvs` is `gatedEnvironments` itself, not a set precomputed from
+// `repo` — a function of the `repo` each call names, re-reading that repo's
+// own manifest every time (DESIGN §9 decision 10; `deploy-gate.ts`'s own
+// doc on `DeployGateOptions.gatedEnvs`), so a provider built once never
+// judges a different repo's call by this repo's manifest.
+const gate = { gatedEnvs: gatedEnvironments, ledger, onDryRunNeeded };
 
 const registry = new CapabilityRegistry();
 const envContract = registry.bind(envProvisionContract, composeProvider());

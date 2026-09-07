@@ -42,21 +42,23 @@ const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const registry = new CapabilityRegistry();
 const env = registry.bind(envProvisionContract, composeProvider());
 // The HIL-2 release-path gate (`src/policy/deploy-gate.ts`) is a required
-// constructor argument as of T4.1.4a. `gatedEnvs` is read from this
-// project's own manifest (`gatedEnvironments`, never a hardcoded set —
-// criterion 2) rather than decided here: this script only ever delivers to
-// `test`, which the manifest marks `approval: none`, so the gate's ledger is
-// never actually consulted by *this* script, but the set it is built from is
-// real, so retargeting this script at a gated environment would be refused
-// instead of silently delivered. `scripts/demo/deploy-gate.mjs` is what
-// exercises the refusal itself, against the `staging` environment the
-// manifest does mark gated.
+// constructor argument as of T4.1.4a. `gatedEnvs` is wired straight to
+// `gatedEnvironments` — a function of the `repo` each call names, re-reading
+// that repo's own manifest every time (never a hardcoded set, and never a
+// set fixed to whichever repo happened to be at hand when this provider was
+// built — criterion 2) rather than a set decided here: this script only ever
+// delivers to `test`, which the manifest marks `approval: none`, so the
+// gate's ledger is never actually consulted by *this* script, but the
+// resolver it is built from is real, so retargeting this script at a gated
+// environment would be refused instead of silently delivered.
+// `scripts/demo/deploy-gate.mjs` is what exercises the refusal itself,
+// against the `staging` environment the manifest does mark gated.
 const release = registry.bind(
   releaseDeliverContract,
   dockerReleaseProvider({
     envProvision: env,
     gate: {
-      gatedEnvs: gatedEnvironments(repo),
+      gatedEnvs: gatedEnvironments,
       ledger: { dryRunSeen: () => false, confirmed: () => false },
     },
   }),

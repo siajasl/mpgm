@@ -67,14 +67,20 @@ function writeIid(path: string, digest: string): void {
  * 10) — every test in this file delivers to `env: 'test'`, and `gatedEnvs`
  * defaults to empty here, which `gateProductionRelease` never consults for
  * any environment, so this ledger only has to exist, not answer anything in
- * particular. `gatedEnvs` is a caller-supplied set, not a hardcoded name —
- * the one test that needs an environment actually gated names it explicitly.
+ * particular. `gatedEnvs` is a caller-supplied resolver, not a hardcoded
+ * name — a function of `repo` (`DeployGateOptions.gatedEnvs`,
+ * `../policy/deploy-gate.ts`), here fixed to the same set regardless of
+ * `repo` because no test in this file needs it to vary; the one test that
+ * needs an environment actually gated names it explicitly.
  */
 function noProductionGate(gatedEnvs: ReadonlySet<string> = new Set()): {
-  gatedEnvs: ReadonlySet<string>;
+  gatedEnvs: (repo: string) => ReadonlySet<string>;
   ledger: DeployLedger;
 } {
-  return { gatedEnvs, ledger: { dryRunSeen: () => false, confirmed: () => false } };
+  return {
+    gatedEnvs: () => gatedEnvs,
+    ledger: { dryRunSeen: () => false, confirmed: () => false },
+  };
 }
 
 function boundEnvProvision(overrides: Partial<Provider> = {}) {
@@ -419,5 +425,77 @@ describe('dockerReleaseProvider — the release-path gate is not optional', () =
       } as never),
     ).rejects.toThrow(/has not been simulated/);
     expect(reached).toBe(false);
+  });
+});
+
+describe('dockerReleaseProvider — gatedEnvs is resolved per call, not fixed at construction', () => {
+  /**
+   * `gate.gatedEnvs` is a function of `repo` (`DeployGateOptions.gatedEnvs`),
+   * not a `ReadonlySet` computed once when this provider was built — a
+   * regression back to a fixed set would have this provider judge *every*
+   * call by whichever repo's manifest happened to build it, which is exactly
+   * criterion 2 ("which environments require approval is read from project
+   * configuration") failing for any repo other than that one. A single
+   * `dockerReleaseProvider` instance here serves two repos whose manifests
+   * disagree about the very same environment name — 'repo-a' marks 'prod'
+   * `approval: required`, 'repo-b' marks it `approval: none` — and each call
+   * is gated (or not) by the repo *that call itself names*, never by the
+   * other's.
+   */
+  it('gates the same environment name differently for two repos named on different calls', async () => {
+    const registry = new CapabilityRegistry();
+    const reached: string[] = [];
+    const envProvision = registry.bind(envProvisionContract, {
+      up: (input: never) => {
+        reached.push((input as { repo: string }).repo);
+        return Promise.resolve({
+          env: 'prod',
+          up: true,
+          services: [
+            { name: 'service', state: 'running', health: 'healthy', containerId: 'c1' },
+          ],
+        });
+      },
+      down: () => Promise.resolve({ env: 'prod', up: false, services: [] }),
+      status: () => Promise.resolve({ env: 'prod', up: false, services: [] }),
+    });
+    const manifests: Record<string, ReadonlySet<string>> = {
+      'repo-a': new Set(['prod']),
+      'repo-b': new Set(),
+    };
+    const provider = dockerReleaseProvider({
+      envProvision,
+      gate: {
+        gatedEnvs: (repo) => manifests[repo] ?? new Set(),
+        ledger: { dryRunSeen: () => false, confirmed: () => false },
+      },
+    });
+    const releaseOne = {
+      version: '1.0.0',
+      image: 'mpgm-sample-service:1.0.0',
+      digest: 'sha256:aaa',
+      changelog: 'Initial release.',
+      rollbackTo: null,
+    };
+
+    await expect(
+      operation(
+        provider,
+        'deliver',
+      )({ repo: 'repo-a', env: 'prod', release: releaseOne } as never),
+    ).rejects.toThrow(/has not been simulated/);
+
+    await operation(
+      provider,
+      'deliver',
+    )({ repo: 'repo-b', env: 'prod', release: releaseOne } as never);
+
+    // 'repo-a' was refused before env.provision#up was ever reached; only
+    // 'repo-b' — read from its own, ungated manifest — got through. A fixed
+    // set derived from either repo would make one of these two assertions
+    // false: derived from 'repo-a', 'repo-b' would be refused too; derived
+    // from 'repo-b', 'repo-a' would pass straight through with nothing
+    // recorded and nothing refused.
+    expect(reached).toEqual(['repo-b']);
   });
 });

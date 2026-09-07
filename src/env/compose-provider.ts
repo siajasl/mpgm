@@ -173,9 +173,11 @@ export function gatedEnvironmentNames(
 
 /**
  * {@link gatedEnvironmentNames}, reading `repo`'s own manifest the same way
- * {@link loadDeclaredEnvironments} does — the single place a caller building
- * a `DeployGateOptions.gatedEnvs` (`../policy/deploy-gate.js`) should get it
- * from, rather than a name it decided on its own.
+ * {@link loadDeclaredEnvironments} does. Its signature is exactly
+ * `DeployGateOptions.gatedEnvs` (`../policy/deploy-gate.js`) — a function of
+ * `repo`, resolved per call — so a caller wires `gatedEnvs: gatedEnvironments`
+ * directly, rather than reading a name once and fixing it to whichever repo
+ * happened to be at hand when the provider was built.
  */
 export function gatedEnvironments(
   repo: string,

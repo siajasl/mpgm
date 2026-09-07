@@ -97,13 +97,19 @@ export interface DockerReleaseProviderOptions {
    * The HIL-2 deploy gate's options (`../policy/deploy-gate.ts`) — required,
    * not optional: see the module doc above for why this provider gates its
    * own gated-environment path rather than trusting a caller to wrap it.
-   * `gatedEnvs` names which environments those are, read from the target
-   * project's own manifest (`gatedEnvironments`,
+   * `gatedEnvs` names which environments those are for a given `repo`,
+   * resolved per call — the same `repo` `deliver`/`rollback` themselves take
+   * (`../policy/deploy-gate.ts`'s `DeployGateOptions.gatedEnvs`), read from
+   * that repo's own manifest (`gatedEnvironments`,
    * `deploy/environments/environments.yaml`) — never a name this provider
-   * assumes. A caller whose `gatedEnvs` is empty, or that never touches an
-   * environment it names (every test in this file, both release demo
-   * scripts), still supplies a ledger; it is simply never consulted, the
-   * same way `gateProductionRelease` leaves any other environment untouched.
+   * assumes, and never a set fixed to whichever repo happened to build this
+   * provider: this provider itself takes no `repo` at construction (see
+   * below), so a `gatedEnvs` bound to one at construction would gate a
+   * *different* repo's call by the wrong project's manifest. A caller whose
+   * `gatedEnvs` always answers empty, or that never touches an environment
+   * it names (every test in this file, both release demo scripts), still
+   * supplies a ledger; it is simply never consulted, the same way
+   * `gateProductionRelease` leaves any other environment untouched.
    */
   readonly gate: DeployGateOptions;
 }
