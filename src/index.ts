@@ -21,6 +21,7 @@ export type { ArtifactRef } from './event/catalog.js';
 export {
   artifactRefSchema,
   blobRefSchema,
+  KERNEL_TASK,
   kernelEvents,
   kernelRegistry,
 } from './event/catalog.js';

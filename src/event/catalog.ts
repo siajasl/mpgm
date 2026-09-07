@@ -408,6 +408,16 @@ export const changeMerged = defineEvent(
 );
 
 /**
+ * The `taskId` a destructive-call event carries when no task made the call.
+ *
+ * The release-path deploy gate guards a call the kernel makes itself, so
+ * there is no task to name and `requireTask` is not applied to it. Reserved:
+ * it is not a plan task id and the colon keeps it from ever colliding with
+ * one.
+ */
+export const KERNEL_TASK = 'kernel:deploy-gate';
+
+/**
  * A destructive operation was simulated (SAF-4).
  *
  * The fingerprint covers every parameter except the dry-run flag, so a
@@ -415,22 +425,22 @@ export const changeMerged = defineEvent(
  * operation in general — otherwise one approved deploy would approve every
  * later one.
  *
- * `taskId` names the task whose tool call this was — empty only for the
- * release-path deploy gate (`policy/deploy-gate.ts`, HIL-2), which guards a
- * call the kernel makes itself rather than a tool call inside a task, the
- * same reason `OperatorIntervened` carries no `taskId` either. Required, not
- * defaulted (CONV-5): `.default('')` would let a caller building this
- * payload simply omit the field and have it silently become the deploy
- * gate's sentinel, which is exactly backwards — a normal destructive tool
- * call losing its task attribution by omission, not by a decision anyone
- * made, is the ambiguity a required field with no default refuses to let
- * exist. A caller naming the deploy-gate sentinel writes `taskId: ''`
- * explicitly instead; every real caller in this repository already does.
+ * `taskId` names the task whose tool call this was, or {@link KERNEL_TASK}
+ * for the release-path deploy gate (`policy/deploy-gate.ts`, HIL-2), which
+ * guards a call the kernel makes itself rather than a tool call inside a
+ * task — the same reason `OperatorIntervened` carries no `taskId` either.
+ *
+ * A reserved name rather than an empty string, and still `nonEmpty`
+ * (CONV-5). An empty sentinel would mean a caller that computed a task id
+ * and got nothing lands silently on the kernel's own attribution: the field
+ * would say "no task" for a call that has one and lost it, which is
+ * precisely the ambiguity the schema is there to make unrepresentable. A
+ * caller that means the kernel says so.
  */
 export const dryRunRecorded = defineEvent(
   'DryRunRecorded',
   z.object({
-    taskId: z.string(),
+    taskId: nonEmpty,
     tool: nonEmpty,
     fingerprint: nonEmpty,
     summary: z.string().default(''),
@@ -439,14 +449,13 @@ export const dryRunRecorded = defineEvent(
 
 /**
  * An operator confirmed a simulated destructive call may proceed (SAF-4,
- * HIL-2). `taskId` echoes the `DryRunRecorded` it confirms (see above) —
- * empty for the same reason there, and required rather than defaulted for
- * the same CONV-5 reason.
+ * HIL-2). `taskId` echoes the `DryRunRecorded` it confirms (see above), and
+ * is {@link KERNEL_TASK} for the same calls and the same reason.
  */
 export const destructiveOpConfirmed = defineEvent(
   'DestructiveOpConfirmed',
   z.object({
-    taskId: z.string(),
+    taskId: nonEmpty,
     tool: nonEmpty,
     fingerprint: nonEmpty,
     by: nonEmpty,

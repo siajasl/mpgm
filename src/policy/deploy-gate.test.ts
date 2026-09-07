@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Provider } from '../contract/capability.js';
 import { MEMORY } from '../database.js';
-import { kernelRegistry } from '../event/catalog.js';
+import { KERNEL_TASK, kernelRegistry } from '../event/catalog.js';
 import type { EventInput } from '../event/envelope.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
 import { EventLog } from '../event/store.js';
@@ -352,13 +352,13 @@ describe('crossRunLedger', () => {
       {
         runId: 'run-a',
         type: 'DryRunRecorded',
-        payload: { taskId: '', tool: 'deploy', fingerprint: print },
+        payload: { taskId: KERNEL_TASK, tool: 'deploy', fingerprint: print },
       },
       {
         runId: 'run-a',
         type: 'DestructiveOpConfirmed',
         payload: {
-          taskId: '',
+          taskId: KERNEL_TASK,
           tool: 'deploy',
           fingerprint: print,
           by: 'macg',
@@ -391,13 +391,13 @@ describe('crossRunLedger', () => {
       {
         runId: 'run-a',
         type: 'DryRunRecorded',
-        payload: { taskId: '', tool: 'deploy', fingerprint: print },
+        payload: { taskId: KERNEL_TASK, tool: 'deploy', fingerprint: print },
       },
       {
         runId: 'run-a',
         type: 'DestructiveOpConfirmed',
         payload: {
-          taskId: '',
+          taskId: KERNEL_TASK,
           tool: 'deploy',
           fingerprint: print,
           by: 'macg',

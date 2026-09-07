@@ -40,6 +40,7 @@ import {
   EventLog,
   fold,
   gatedEnvironments,
+  KERNEL_TASK,
   kernelRegistry,
   releaseDeliverContract,
 } from '../../dist/index.js';
@@ -86,7 +87,7 @@ const onDryRunNeeded = (record) => {
     runId: RUN,
     type: 'DryRunRecorded',
     payload: {
-      taskId: '',
+      taskId: KERNEL_TASK,
       tool: record.tool,
       fingerprint: record.fingerprint,
       summary: `deploy ${record.target.env} -> ${record.target.label ?? record.target.digest.slice(0, 12)}`,
@@ -100,7 +101,7 @@ function operatorConfirms(fingerprint, tool) {
     runId: RUN,
     type: 'DestructiveOpConfirmed',
     payload: {
-      taskId: '',
+      taskId: KERNEL_TASK,
       tool,
       fingerprint,
       by: 'macg',
