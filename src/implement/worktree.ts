@@ -145,6 +145,19 @@ export interface ReleaseResult {
   readonly reason?: string;
 }
 
+/**
+ * What bringing a task's checkout up to the trunk did.
+ *
+ * `conflicted` carries the files git could not merge, because that is the
+ * whole of what an operator or an author needs to act, and a message that
+ * says only "conflict" makes them go and find out (CONV-3).
+ */
+export type CatchUp =
+  | { readonly status: 'already-current' }
+  | { readonly status: 'merged'; readonly commits: number }
+  | { readonly status: 'conflicted'; readonly files: readonly string[] }
+  | { readonly status: 'refused'; readonly detail: string };
+
 export class WorktreeManager {
   readonly #repo: string;
   readonly #root: string;
@@ -427,6 +440,69 @@ export class WorktreeManager {
       return Number.isInteger(parsed) ? parsed : undefined;
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * Bring a task's checkout up to `into` before a session works in it.
+   *
+   * A worktree is created from the trunk as it stood at that moment, and a
+   * task that blocks and is resumed days later picks the same checkout up
+   * again — by which time the trunk has usually moved, sometimes by the very
+   * merges this task depends on. Nothing brought it forward. T4.1.4a was cut
+   * before T4.1.6 merged, edited a file T4.1.6 had rewritten, and its pull
+   * request went conflicting; GitHub cannot compute `refs/pull/N/merge` for a
+   * conflicting pull request, so no workflow ran, no check reported, and the
+   * merge gate blocked the task on the absence (IMP-2) after waiting out the
+   * grace period for checks that were never going to exist.
+   *
+   * A clean merge is made here, by the kernel, because it is mechanical and
+   * because the alternative is spending an expensive session on it. A
+   * conflicting one is not: it is left untouched and reported, the same
+   * choice `mergeChange` makes in the other direction — a half-merged
+   * checkout is worse than a refused merge, and resolving one is a task for
+   * an agent rather than a state for the kernel to sit in.
+   */
+  async catchUp(taskId: string, into: string): Promise<CatchUp> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return { status: 'refused', detail: `no checkout for '${taskId}'` };
+    }
+    let behind: number;
+    try {
+      const count = await this.#git(['rev-list', '--count', `HEAD..${into}`], found.path);
+      behind = Number(count);
+    } catch (cause) {
+      // An unknown `into` is the usual reason, and it is worth saying which
+      // rather than carrying on as though the branch were current.
+      return {
+        status: 'refused',
+        detail: `could not tell how far '${found.branch}' is behind '${into}': ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      };
+    }
+    if (!Number.isInteger(behind) || behind === 0) {
+      return { status: 'already-current' };
+    }
+
+    try {
+      await this.#git(['merge', '--no-edit', into], found.path);
+      return { status: 'merged', commits: behind };
+    } catch (cause) {
+      const files = await this.#git(
+        ['diff', '--name-only', '--diff-filter=U'],
+        found.path,
+      ).catch(() => '');
+      await this.#git(['merge', '--abort'], found.path).catch(() => '');
+      // No conflicted paths and a failed merge means git refused before it
+      // started — a dirty checkout it would have overwritten, most often.
+      return files === ''
+        ? {
+            status: 'refused',
+            detail: cause instanceof Error ? cause.message : String(cause),
+          }
+        : { status: 'conflicted', files: files.split('\n') };
     }
   }
 
