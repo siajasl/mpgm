@@ -404,6 +404,6 @@ describe('crash between intent and effect', () => {
       } finally {
         db.close();
       }
-    }, 30_000);
+    });
   }
 });

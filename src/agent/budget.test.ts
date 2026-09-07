@@ -184,7 +184,7 @@ describe('budget enforcement in the runner', () => {
     } finally {
       db.close();
     }
-  }, 10_000);
+  });
 
   it('retries a session that spent its whole step allowance (AGT-3, AGT-4)', async () => {
     // Steps bound a session, not a task. They used to bound the task, which

@@ -101,7 +101,12 @@ describe('WorktreeManager', () => {
         }
       }
     }
-  });
+    // Twice the suite's own budget, because this is the most expensive test in
+    // it by a factor of three: eight worktree adds and eight commits is about
+    // forty process spawns, and the eight is the completion criterion rather
+    // than a number to tune. It is the one test the raised default did not
+    // cover on a machine running two suites at once.
+  }, 60_000);
 
   it('counts what a branch carries beyond the trunk', async () => {
     // Read at acquire time to tell a checkout picked up mid-task from a fresh

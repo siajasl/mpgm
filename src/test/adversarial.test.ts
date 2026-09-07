@@ -547,7 +547,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     expect(new Set(verdict.defects.map((row) => row.kind))).toEqual(
       new Set(['boundary', 'property']),
     );
-  }, 30_000);
+  });
 
   it('still catches the defect when another case’s message names the catching case', async () => {
     // The end-to-end version of the `parseTapResults` reproduction above, run
@@ -610,7 +610,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     expect(verdict.rows.find((row) => row.id === 'zero-ways-is-refused')?.outcome).toBe(
       'passed',
     );
-  }, 30_000);
+  });
 
   it('passes the same generated tests once the defect is fixed', async () => {
     // The other half of CONV-6: a suite that fails whatever the subject does
@@ -629,7 +629,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
 
     expect(verdict.defects).toEqual([]);
     expect(verdict.clean).toBe(true);
-  }, 30_000);
+  });
 
   it('leaves no generated file behind in the project it ran against', async () => {
     const directory = sampleCheckout();
@@ -641,7 +641,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     });
 
     expect(execFileSync('ls', [directory], { encoding: 'utf8' })).toBe(before);
-  }, 30_000);
+  });
 
   it('runs case bodies as trusted code, reaching whatever the kernel reaches', async () => {
     // Pins the trust assumption documented on `nodeTestExecutor` rather than
@@ -697,7 +697,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
 
     expect(verdict.clean).toBe(true);
     expect(readFileSync(outside, 'utf8')).toBe('reached');
-  }, 30_000);
+  });
 
   it("does not hand a case body the kernel's credentials", async () => {
     // The other half of the trust assumption above, and the half that needs no
@@ -756,7 +756,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     } finally {
       delete process.env.MPGM_FAKE_CREDENTIAL;
     }
-  }, 30_000);
+  });
 
   it('runs with the environment it was given, and with nothing else', async () => {
     // A subject that reads configuration from the environment is served by
@@ -807,7 +807,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     } finally {
       delete process.env.MPGM_FAKE_CREDENTIAL;
     }
-  }, 30_000);
+  });
 
   it('reports why a run produced no results rather than calling it unreported', async () => {
     // A suite that will not parse: node reports the file as failed and no case
@@ -829,7 +829,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
         execute: nodeTestExecutor({ projectDir: directory }),
       }),
     ).rejects.toThrow(AdversarialRunError);
-  }, 30_000);
+  });
 
   it('kills a case body that loops for ever, rather than hanging on it', async () => {
     // The wall-clock bound is the only defence this module has against what
@@ -903,7 +903,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     const lastBeat = readFileSync(heartbeat, 'utf8');
     await new Promise((resolve) => setTimeout(resolve, 750));
     expect(readFileSync(heartbeat, 'utf8')).toBe(lastBeat);
-  }, 15_000);
+  });
 });
 
 describe('the adversarial-tester role', () => {

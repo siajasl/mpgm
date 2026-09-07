@@ -129,7 +129,7 @@ describe('crash and resume', () => {
       } finally {
         db.close();
       }
-    }, 30_000);
+    });
   }
 
   it('a killed run is indistinguishable from a clean one with the same events', async () => {
@@ -178,5 +178,5 @@ describe('crash and resume', () => {
     } finally {
       crashedDb.close();
     }
-  }, 30_000);
+  });
 });
