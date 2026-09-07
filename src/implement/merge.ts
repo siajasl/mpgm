@@ -5,6 +5,7 @@ import type { EffectContract, EffectIntent } from '../effect/contract.js';
 import type { EventInput } from '../event/envelope.js';
 import { undeclaredDeviations } from '../context/conventions.js';
 import { blockingReasons, type MergeVerdict } from './checks.js';
+import { refsAgree } from './commit-ref.js';
 
 /**
  * Reviewed merge (IMP-1, IMP-3, IMP-5, DESIGN §4.1/§4.7).
@@ -93,7 +94,7 @@ export function decideMerge(request: MergeDecisionRequest): MergeDecision {
     reasons.push(reason);
   };
 
-  if (request.verdict.ref !== request.ref) {
+  if (!refsAgree(request.verdict.ref, request.ref)) {
     refuse(
       'checks-are-stale',
       `checks were reported for ${request.verdict.ref}, not ${request.ref}`,
@@ -115,7 +116,7 @@ export function decideMerge(request: MergeDecisionRequest): MergeDecision {
       `reviewer role '${review.reviewerRole}' is the author's own (IMP-3)`,
     );
   }
-  if (review.ref !== request.ref) {
+  if (!refsAgree(review.ref, request.ref)) {
     refuse(
       'review-is-stale',
       `the review approved ${review.ref}; the change is now ${request.ref}`,

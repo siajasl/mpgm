@@ -326,7 +326,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   /** An implementer that says it is done, and a reviewer that refuses. */
   function refusingProvider(ref: string): ScriptedProvider {
@@ -420,7 +420,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('says nothing about inherited work to a session given a fresh checkout', async () => {
     const repo = newRepo();
@@ -445,7 +445,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('tells the first review of a reused checkout whose commits those are', async () => {
     // The gap the round-number version left. A checkout picked up from a run
@@ -524,7 +524,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('does not blame the loop for a trunk the branch was simply taken past', async () => {
     // A fresh checkout is based on the repository's HEAD, which need not be
@@ -559,7 +559,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('claims nothing when it cannot tell what the checkout was carrying', async () => {
     // `commitsAhead` answers undefined when it cannot say — an unreadable
@@ -598,7 +598,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('tells the second review that the extra commits are the loop’s', async () => {
     // The unit tests over `reviewPrompt` cannot see whether the loop passes it
@@ -616,7 +616,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('grants one more round when a deviation arrives too late to declare', async () => {
     // T4.1.6: the reviewer approved, and the gate refused over a CONV-1 that
@@ -681,7 +681,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 30_000);
+  });
 
   it('does not grant it twice, nor for a deviation already shown', async () => {
     // The grace is once, and only for what nobody said. A reviewer that keeps
@@ -732,7 +732,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 30_000);
+  });
 
   it('grants the grace once, even when a second deviation is also new', async () => {
     // The guard that makes this bounded. Without it a reviewer reporting a
@@ -799,7 +799,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 30_000);
+  });
 
   it('carries the last run’s review into the session that resumes it', async () => {
     // T4.1.6's second run re-found a gap its first run's final review had
@@ -861,7 +861,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('carries nothing when the branch has moved past the review', async () => {
     // The guard. A review of an older commit has been partly answered by
@@ -917,7 +917,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('carries nothing into a fresh checkout, even if a review names its base', async () => {
     // Re-dispatching a task that already merged gives it a fresh worktree off
@@ -970,7 +970,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 20_000);
+  });
 
   it('records the block in the log, whatever gave up', async () => {
     // Two different paths, because the block used to be recorded only where a
@@ -1036,7 +1036,7 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 30_000);
+  });
 
   it('takes DEFAULT_REVIEW_ATTEMPTS reviews when the caller names no bound', async () => {
     // Asserted against the constant rather than against a literal: what would
@@ -1052,5 +1052,104 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
-  }, 30_000);
+  });
+  it('records the commit a reviewer named, not the abbreviation it wrote', async () => {
+    // The log is what a later run reads to carry findings forward, and it held
+    // whatever string the reviewer typed. T4.1.6's blocking review recorded
+    // `ed8541d`; the run that resumed it asked about the same commit in full,
+    // matched nothing, and told the author nothing. A unit test of
+    // `reconcileRef` cannot see which ref the loop writes down.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        // As a reviewer writes it, and as the gate used to refuse it.
+        ref: head.slice(0, 7),
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('merged');
+
+      const reviewed = log
+        .read()
+        .filter((event) => event.type === 'ChangeReviewed')
+        .at(-1);
+      expect((reviewed?.payload as { ref: string }).ref).toBe(head);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('stops rather than gate a review against a commit it cannot read', async () => {
+    // Fail closed (CONV-4). Without the head there is nothing to compare a
+    // review against but the reviewer's own account of what it read, which is
+    // the state this ended.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const worktrees = new (class extends WorktreeManager {
+      override head(): Promise<string | undefined> {
+        return Promise.resolve(undefined);
+      }
+    })({ repo });
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('could not read the commit');
+    } finally {
+      log.close();
+    }
+  });
 });

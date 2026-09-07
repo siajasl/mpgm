@@ -430,6 +430,32 @@ export class WorktreeManager {
     }
   }
 
+  /**
+   * The commit a task's checkout is actually on.
+   *
+   * The one ref in the loop that no model wrote. Sessions report the commit
+   * they think they made or read, and a report is worth having — but what the
+   * gate compares and the log records has to be what git says, or the
+   * comparison is between two pieces of prose (see `commit-ref.ts`).
+   *
+   * `undefined` when there is no checkout to ask, or when git will not answer:
+   * a branch with no commits on it yet has no `HEAD` to resolve. Callers treat
+   * that as "cannot tell" and stop rather than carry on with a ref they made
+   * up, because every use of this is a comparison that decides a merge.
+   */
+  async head(taskId: string): Promise<string | undefined> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return undefined;
+    }
+    try {
+      const sha = await this.#git(['rev-parse', 'HEAD'], found.path);
+      return sha === '' ? undefined : sha;
+    } catch {
+      return undefined;
+    }
+  }
+
   release(taskId: string, options: ReleaseOptions = {}): Promise<ReleaseResult> {
     assertUsableTaskId(taskId);
     return this.#serial(() => this.#release(taskId, options));

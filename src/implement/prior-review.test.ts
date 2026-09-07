@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { StoredEvent } from '../event/envelope.js';
 import { lastReviewOf, renderPriorReview, type PriorReview } from './prior-review.js';
 
-const TIP = 'abc123def456';
+// A full object name, because the tip is always a `rev-parse HEAD` answer and
+// comparing two abbreviations would let different commits agree.
+const TIP = 'abc123def4567890abc123def4567890abc123de';
 
 function reviewed(overrides: Record<string, unknown> = {}, seq = 1): StoredEvent {
   return {
@@ -50,11 +52,26 @@ describe('which review is still worth carrying', () => {
     expect(found?.undeclared).toStrictEqual(['CONV-5']);
   });
 
+  it('takes a review that recorded the commit in the short form a model wrote', () => {
+    // The miss this exists to end: T4.1.6's blocking review recorded `ed8541d`
+    // and the resuming run asked about the same commit in full, so the carry
+    // said nothing on the one task it was built for.
+    const found = lastReviewOf([reviewed({ ref: TIP.slice(0, 7) })], 'T1', TIP);
+
+    expect(found?.summary).toContain('the env constraint is missing');
+  });
+
+  it('says nothing for a prefix too short to name a commit', () => {
+    expect(lastReviewOf([reviewed({ ref: TIP.slice(0, 6) })], 'T1', TIP)).toBeUndefined();
+  });
+
   it('says nothing when the tip has moved since', () => {
     // A rework landed after that review, so some of its points are answered
     // and there is no way to tell which from here. Sending an author to chase
     // what is already fixed is worse than sending it nothing.
-    expect(lastReviewOf([reviewed()], 'T1', 'a-later-commit')).toBeUndefined();
+    expect(
+      lastReviewOf([reviewed()], 'T1', 'f00dcafe0000000000000000000000000000beef'),
+    ).toBeUndefined();
   });
 
   it('does not reach past the last review to an older one that still matches', () => {
@@ -106,7 +123,7 @@ describe('what the resuming author is told', () => {
   const rendered = renderPriorReview(base);
 
   it('names the commit and says why the review still applies', () => {
-    expect(rendered).toContain('abc123def456'.slice(0, 12));
+    expect(rendered).toContain(TIP.slice(0, 12));
     expect(rendered).toMatch(/Nothing has been committed since/);
     expect(rendered).toContain('the env constraint is missing at the input boundary');
   });

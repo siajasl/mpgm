@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -547,7 +554,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     expect(new Set(verdict.defects.map((row) => row.kind))).toEqual(
       new Set(['boundary', 'property']),
     );
-  }, 30_000);
+  });
 
   it('still catches the defect when another case’s message names the catching case', async () => {
     // The end-to-end version of the `parseTapResults` reproduction above, run
@@ -610,7 +617,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     expect(verdict.rows.find((row) => row.id === 'zero-ways-is-refused')?.outcome).toBe(
       'passed',
     );
-  }, 30_000);
+  });
 
   it('passes the same generated tests once the defect is fixed', async () => {
     // The other half of CONV-6: a suite that fails whatever the subject does
@@ -629,7 +636,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
 
     expect(verdict.defects).toEqual([]);
     expect(verdict.clean).toBe(true);
-  }, 30_000);
+  });
 
   it('leaves no generated file behind in the project it ran against', async () => {
     const directory = sampleCheckout();
@@ -641,7 +648,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     });
 
     expect(execFileSync('ls', [directory], { encoding: 'utf8' })).toBe(before);
-  }, 30_000);
+  });
 
   it('runs case bodies as trusted code, reaching whatever the kernel reaches', async () => {
     // Pins the trust assumption documented on `nodeTestExecutor` rather than
@@ -697,7 +704,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
 
     expect(verdict.clean).toBe(true);
     expect(readFileSync(outside, 'utf8')).toBe('reached');
-  }, 30_000);
+  });
 
   it("does not hand a case body the kernel's credentials", async () => {
     // The other half of the trust assumption above, and the half that needs no
@@ -756,7 +763,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     } finally {
       delete process.env.MPGM_FAKE_CREDENTIAL;
     }
-  }, 30_000);
+  });
 
   it('runs with the environment it was given, and with nothing else', async () => {
     // A subject that reads configuration from the environment is served by
@@ -807,7 +814,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
     } finally {
       delete process.env.MPGM_FAKE_CREDENTIAL;
     }
-  }, 30_000);
+  });
 
   it('reports why a run produced no results rather than calling it unreported', async () => {
     // A suite that will not parse: node reports the file as failed and no case
@@ -829,7 +836,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
         execute: nodeTestExecutor({ projectDir: directory }),
       }),
     ).rejects.toThrow(AdversarialRunError);
-  }, 30_000);
+  });
 
   it('kills a case body that loops for ever, rather than hanging on it', async () => {
     // The wall-clock bound is the only defence this module has against what
@@ -889,21 +896,33 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
       ],
     });
 
+    // The bound has to outlast the child's own start-up, not merely the loop:
+    // node boots, `node:test` loads and the rendered subject is imported before
+    // the body runs at all. At 1500ms this test failed intermittently with
+    // ENOENT on the heartbeat — under load the child was killed before it ever
+    // reached the loop, so there was no tick to observe and nothing the
+    // assertion below could mean. Eight seconds is spent deliberately: the body
+    // never returns, so the run always costs the whole bound.
     await expect(
       runAdversarialSuite({
         suite: hanging,
-        execute: nodeTestExecutor({ projectDir: directory, timeoutMs: 1_500 }),
+        execute: nodeTestExecutor({ projectDir: directory, timeoutMs: 8_000 }),
       }),
-    ).rejects.toThrow(/killed after 1500ms/);
+    ).rejects.toThrow(/killed after 8000ms/);
 
     // The heartbeat was ticking every 50ms; by the time the promise above
     // rejected, at least one had already landed. If the body's own process
     // is really dead, no further heartbeat follows it — wait well past
     // another tick and check the file stopped changing.
+    expect(
+      existsSync(heartbeat),
+      'the body never ticked, so the kill cannot be observed — the child was ' +
+        'killed before it started rather than while it looped',
+    ).toBe(true);
     const lastBeat = readFileSync(heartbeat, 'utf8');
     await new Promise((resolve) => setTimeout(resolve, 750));
     expect(readFileSync(heartbeat, 'utf8')).toBe(lastBeat);
-  }, 15_000);
+  });
 });
 
 describe('the adversarial-tester role', () => {

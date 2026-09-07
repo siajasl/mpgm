@@ -10,6 +10,7 @@ import {
   elicitationOutputSchema,
   exchangeSchema,
 } from './elicit/session.js';
+import { releaseOutcomeSchema } from './release/verify.js';
 import { adversarialSuiteSchema } from './test/adversarial.js';
 import { defectSchema } from './test/defect.js';
 
@@ -676,6 +677,13 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
  * {@link OutputSchemaRegistry.jsonSchema}'s object-at-the-top-level
  * requirement regardless (`schemas.test.ts`'s "object-topped" check exists
  * for exactly this shape).
+ *
+ * `release-outcome` is registered here for the same reason: a
+ * {@link releaseOutcomeSchema} value is built by `verifyRelease`
+ * (`src/release/verify.ts`) from a real health check run, not asserted by an
+ * agent session — but it is still DEP-5's "release artifact" (DESIGN
+ * §9.12), so it goes through the same versioned-markdown-in-git store as
+ * everything else `write()`s (`src/release/outcome-log.ts`).
  */
 export function projectArtifactSchemas(): ArtifactSchemaRegistry {
   return new ArtifactSchemaRegistry([
@@ -688,5 +696,6 @@ export function projectArtifactSchemas(): ArtifactSchemaRegistry {
     defineArtifactSchema('design', designSchema),
     defineArtifactSchema('elicitation', elicitationSchema),
     defineArtifactSchema('defect', defectSchema),
+    defineArtifactSchema('release-outcome', releaseOutcomeSchema),
   ]);
 }
