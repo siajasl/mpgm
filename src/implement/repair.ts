@@ -211,10 +211,17 @@ export async function repairUntilGreen(options: RepairOptions): Promise<RepairRe
       return stop('unsettled', `checks were still running: ${verdict.summary}`);
     }
 
-    // Nothing failed; a required kind simply never reported. That is a CI
-    // configuration the agent cannot fix from inside its worktree, and three
-    // sessions spent discovering so would cost real money to produce plausible
-    // nonsense. Escalate at once, naming the kinds.
+    // Nothing failed; a required kind simply never reported. Not something an
+    // agent can fix from inside its worktree, and three sessions spent
+    // discovering so would cost real money to produce plausible nonsense — so
+    // escalate at once, naming the kinds.
+    //
+    // The reason says what nobody could work out from "CI configuration": that
+    // phrase sent an operator to the workflow file when the actual cause was a
+    // pull request that conflicted with the trunk, which a provider testing a
+    // merge commit cannot build one for, so nothing ran and nothing reported.
+    // A wrong diagnosis in a refusal is worse than none, because it is acted
+    // on (CONV-3).
     if (verdict.failing.length === 0) {
       const missing = verdict.kinds
         .filter((kind) => !kind.satisfied)
@@ -222,7 +229,13 @@ export async function repairUntilGreen(options: RepairOptions): Promise<RepairRe
         .join(', ');
       return stop(
         'unrepairable',
-        `no check reported a result for: ${missing} — CI configuration, not a code failure`,
+        `no check reported a result for: ${missing}. Nothing ran against this ` +
+          `commit, so this is not a code failure: CI was never asked. Either the ` +
+          `branch is outside the workflow's triggers, or no pull request was ` +
+          `opened for it, or its pull request cannot be merged into the trunk — ` +
+          `a provider that tests a pull request by building a merge commit ` +
+          `cannot build one that conflicts, and reports nothing at all rather ` +
+          `than failing.`,
       );
     }
 
