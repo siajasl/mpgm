@@ -375,6 +375,53 @@ describe('crossRunLedger', () => {
     expect(gateLedger.confirmed(print)).toBe(true);
   });
 
+  it('does not confirm a dry run in one run against a confirmation recorded in another with no dry run of its own', async () => {
+    // The scenario `confirmed`'s "both, not either" comment defends against:
+    // a dry run folds in run-a, and — because an operator forgot `--run` or
+    // named the wrong one — a confirmation for the identical fingerprint
+    // folds into run-b instead, where nothing else ever recorded a dry run.
+    // Cross-run `dryRunSeen` is true (run-a saw one) and a naive cross-run
+    // `confirmed` reading either flag on either run's record would be true
+    // too (run-b has `confirmedBy`), but neither run's own record carries
+    // *both* flags, so an operator has not actually confirmed a call that
+    // was ever simulated — `confirmed` must stay false and `deliver` must
+    // still refuse.
+    const state = stateWith([
+      { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+      {
+        runId: 'run-a',
+        type: 'DryRunRecorded',
+        payload: { taskId: KERNEL_TASK, tool: 'deploy', fingerprint: print },
+      },
+      { runId: 'run-b', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+      {
+        runId: 'run-b',
+        type: 'DestructiveOpConfirmed',
+        payload: {
+          taskId: KERNEL_TASK,
+          tool: 'deploy',
+          fingerprint: print,
+          by: 'macg',
+        },
+      },
+    ]);
+    const gateLedger = crossRunLedger(() => state);
+
+    expect(gateLedger.dryRunSeen(print)).toBe(true);
+    expect(gateLedger.confirmed(print)).toBe(false);
+
+    const { provider, calls } = fakeProvider();
+    const gated = gate(provider, { gatedEnvs: PRODUCTION_GATED, ledger: gateLedger });
+    await expect(
+      gated.deliver({
+        repo: target.repo,
+        env: target.env,
+        release: release('1.0.0'),
+      } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toHaveLength(0);
+  });
+
   it('does not confirm a fingerprint nothing has ever recorded', () => {
     const state = stateWith([
       { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },

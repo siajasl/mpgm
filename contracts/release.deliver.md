@@ -44,6 +44,7 @@ rollout mechanics." `release.deliver` is the "supplies release artifacts" and
   and therefore no credential to hold. It does not outlive the machine that
   built it — the same gap §8's "release distribution" revisit trigger names
   for the substrate as a whole, and it moves at the same time.
+
 `assemble` and delivery to an environment `<repo>`'s manifest does not mark
 `approval: required` are otherwise exactly as before — the approval gate below
 is additive, not a change to what already worked.
@@ -83,11 +84,31 @@ session, but a deploy confirmation has to outlive the run that asked for it
 — `deploy-gate.ts`'s `crossRunLedger` looks across every run for a match
 instead, which is what makes the next paragraph's "asks nothing new of
 HIL-2" literally true rather than true only until the confirming run ends.
+`repo` in the fingerprint is `releaseDeliverInput`/`releaseRollbackInput`'s
+`repo` — the checkout path a caller resolves the target project's manifest
+from, an absolute filesystem path in every caller this repository ships
+(the demos derive it from `import.meta.url`) — not a stable identity for
+the project independent of where it happens to be checked out. A
+confirmation is therefore scoped to the checkout it was given for: the same
+project checked out twice, or worked from a `.mpgm/worktrees/<taskId>` tree
+distinct from the checkout a dry run and confirmation were recorded
+against, computes a different fingerprint and finds no confirmation there,
+however identical `env` and `digest` are. That fails closed (CONV-4) rather
+than silently, but it does mean a confirmation does not travel between
+checkouts of the same project, which an operator relying on DEP-2's
+automatic rollback firing from whatever checkout the kernel happens to act
+from needs to know.
 
 The gate is applied inside `dockerReleaseProvider`'s own construction, not
 left for a caller to wrap on afterward: its `gate` option is required, so
-there is no way to obtain an unguarded `deliver`/`rollback` bound to this
-contract at all (DESIGN §9 decision 10). A caller wires the gate's
+there is no code path in this repository — not the CLI, not a demo script,
+not a future orchestrator effect — that obtains an unguarded `deliver`/
+`rollback` from the one concrete provider this contract has here
+(`dockerReleaseProvider`; DESIGN §9 decision 10). That guarantee is about
+this repository's only provider, not the contract itself: `Provider` is a
+bare, untyped record and `CapabilityRegistry.bind` accepts any object
+shaped to match, so nothing stops a *different* provider satisfying this
+contract with no gate at all. A caller wires the gate's
 `onDryRunNeeded` to append the `DryRunRecorded` event its own refusal names
 — the gate has no separate dry-run mode to call first, so a refusal for want
 of one *is* the simulation, and this records it the instant that happens.
