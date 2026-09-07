@@ -63,17 +63,6 @@ const release = registry.bind(
 );
 
 try {
-  // Proves this script actually read the manifest rather than a hardcoded
-  // empty set standing in for it — a regression back to `new Set()` here
-  // would leave this assertion the only thing in the offline suite able to
-  // catch it, since this script only ever delivers to `test` and would
-  // otherwise pass either way.
-  check(
-    "gatedEnvs was read from this project's own manifest, not hardcoded",
-    gatedEnvironments(repo).has('staging'),
-    JSON.stringify([...gatedEnvironments(repo)]),
-  );
-
   process.stdout.write('\n1. Assemble the first release from the sample service\n');
   const v1 = await release.invoke('assemble', {
     repo,
@@ -88,6 +77,24 @@ try {
     'the artifact is immutable, versioned, and carries no rollback path yet',
     v1.version === '1.0.0' && v1.digest.startsWith('sha256:') && v1.rollbackTo === null,
     JSON.stringify(v1),
+  );
+
+  // Proves this script's provider was built from the manifest rather than
+  // from a hardcoded empty set. Asked of the provider rather than of the
+  // manifest: re-reading `gatedEnvironments(repo)` here and asserting it
+  // contains `staging` would pass whatever this provider was constructed
+  // with, which is the one thing the assertion is for. A `deliver` to
+  // `staging` — `approval: required`, and a ledger below that answers "never
+  // confirmed" — has to be refused before the provider is reached; a
+  // regression to `new Set()` leaves staging ungated and this call proceeds.
+  const probe = await release
+    .invoke('deliver', { repo, env: 'staging', release: v1 })
+    .then(() => undefined)
+    .catch((cause) => (cause instanceof Error ? cause.message : String(cause)));
+  check(
+    'the gate this script built refuses a delivery to a gated environment',
+    probe !== undefined && probe.includes("to 'staging' has not been simulated"),
+    probe ?? 'the delivery was not refused',
   );
 
   process.stdout.write('\n2. Deliver it to the test environment\n');
