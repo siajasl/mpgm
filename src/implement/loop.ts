@@ -17,6 +17,7 @@ import {
 } from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
+import { reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview } from './prior-review.js';
 import {
   earnsAnotherRound,
@@ -489,6 +490,25 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       });
     }
 
+    // What the checkout is on now that the round's commits have settled. Every
+    // ref below is compared against this rather than against the one a session
+    // reported, because a review is of a commit and git is the only thing here
+    // that knows which commit that is (see `commit-ref.ts`).
+    const tip = await options.worktrees.head(task.id);
+    if (tip === undefined) {
+      // Fail closed (CONV-4). Carrying on would leave the gate comparing one
+      // model's account of the branch against another's, which is the state
+      // this exists to end.
+      return stop(
+        `could not read the commit '${worktree.branch}' is on, so nothing can be checked against it`,
+        {
+          ref: repair.ref,
+          repair,
+          ...(pullRequest === undefined ? {} : { pullRequest }),
+        },
+      );
+    }
+
     // Each round's review is its own task, so a rework's review does not
     // overwrite the record of the one that asked for it (OBS-1).
     const reviewTaskId =
@@ -497,7 +517,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       runId,
       taskId: reviewTaskId,
       role: reviewerRole,
-      prompt: reviewPrompt(task, repair.ref, into, round > 1 || inheritedCommits > 0),
+      prompt: reviewPrompt(task, tip, into, round > 1 || inheritedCommits > 0),
       policyRoot: worktree.path,
     });
 
@@ -520,7 +540,11 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     review = {
       reviewTaskId,
       reviewerRole: reviewerRole.name,
-      ref: parsed.data.ref,
+      // Recorded as the commit it names, not as the session wrote it. The log
+      // is what a later run reads to carry these findings forward, and a
+      // seven-character ref matches nothing there. A ref that names some other
+      // commit is left as written, so the gate below still refuses it as stale.
+      ref: reconcileRef(parsed.data.ref, tip),
       approved: parsed.data.verdict === 'approve',
       summary: parsed.data.summary,
       deviations: parsed.data.deviations.map((entry) => entry.convention),
@@ -532,7 +556,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     request = {
       taskId: task.id,
       authorRole: implementerRole.name,
-      ref: repair.ref,
+      ref: tip,
       verdict: repair.verdict,
       review,
       declaredDeviations: declared,

@@ -1,4 +1,5 @@
 import type { StoredEvent } from '../event/envelope.js';
+import { namesCommit } from './commit-ref.js';
 
 /**
  * What the last run's reviewer said, carried into the run that resumes it.
@@ -67,7 +68,12 @@ export function lastReviewOf(
     // The first one found going backwards is the last one recorded. If it is
     // about a different commit, a later rework answered it and this returns
     // nothing rather than guessing which parts survived.
-    return payload.ref === tip
+    //
+    // Compared by the commit named rather than by the string, because the log
+    // holds refs a model typed and models abbreviate. This once compared
+    // `ed8541d` against the same commit written out in full, found no match,
+    // and told a resuming author nothing.
+    return namesCommit(payload.ref, tip)
       ? {
           reviewTaskId: payload.reviewTaskId,
           ref: payload.ref,
