@@ -1053,4 +1053,103 @@ describe('a review that never approves (NFR-1)', () => {
       log.close();
     }
   }, 30_000);
+  it('records the commit a reviewer named, not the abbreviation it wrote', async () => {
+    // The log is what a later run reads to carry findings forward, and it held
+    // whatever string the reviewer typed. T4.1.6's blocking review recorded
+    // `ed8541d`; the run that resumed it asked about the same commit in full,
+    // matched nothing, and told the author nothing. A unit test of
+    // `reconcileRef` cannot see which ref the loop writes down.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        // As a reviewer writes it, and as the gate used to refuse it.
+        ref: head.slice(0, 7),
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('merged');
+
+      const reviewed = log
+        .read()
+        .filter((event) => event.type === 'ChangeReviewed')
+        .at(-1);
+      expect((reviewed?.payload as { ref: string }).ref).toBe(head);
+    } finally {
+      log.close();
+    }
+  }, 30_000);
+
+  it('stops rather than gate a review against a commit it cannot read', async () => {
+    // Fail closed (CONV-4). Without the head there is nothing to compare a
+    // review against but the reviewer's own account of what it read, which is
+    // the state this ended.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const worktrees = new (class extends WorktreeManager {
+      override head(): Promise<string | undefined> {
+        return Promise.resolve(undefined);
+      }
+    })({ repo });
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('could not read the commit');
+    } finally {
+      log.close();
+    }
+  }, 30_000);
 });

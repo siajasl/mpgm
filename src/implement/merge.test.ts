@@ -139,6 +139,43 @@ describe('decideMerge', () => {
     expect(decision.refusals).toEqual(['checks-are-stale']);
   });
 
+  // Models abbreviate. The loop now merges the commit git reports, in full,
+  // while CI was asked about whatever ref the session wrote — so the gate has
+  // to read those as the same commit or every abbreviated round is refused as
+  // stale.
+  it('reads an abbreviated ref and the commit it names as the same commit', () => {
+    const head = 'ed8541d047f6c088dc6704bfc931bf71d17badea';
+    const decision = decideMerge({
+      ...request({ ref: head }),
+      verdict: mergeVerdict({ ref: 'ed8541d', runs: GREEN }),
+      review: approval('ED8541D047F6'),
+    });
+
+    expect(decision.allowed).toBe(true);
+  });
+
+  it('still refuses an abbreviation of some other commit', () => {
+    const head = 'ed8541d047f6c088dc6704bfc931bf71d17badea';
+    const decision = decideMerge({
+      ...request({ ref: head }),
+      review: approval('2c0d089'),
+    });
+
+    expect(decision.refusals).toEqual(['review-is-stale']);
+  });
+
+  it('refuses a prefix too short to name a commit', () => {
+    // Six characters is a prefix of a great many commits, so a match there is
+    // not evidence that the reviewer read this one.
+    const head = 'ed8541d047f6c088dc6704bfc931bf71d17badea';
+    const decision = decideMerge({
+      ...request({ ref: head }),
+      review: approval('ed8541'),
+    });
+
+    expect(decision.refusals).toEqual(['review-is-stale']);
+  });
+
   it('refuses a red change', () => {
     const decision = decideMerge(
       request({ verdict: mergeVerdict({ ref: 'abc123', runs: GREEN.slice(0, 2) }) }),
