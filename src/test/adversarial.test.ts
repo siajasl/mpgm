@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -889,17 +896,29 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
       ],
     });
 
+    // The bound has to outlast the child's own start-up, not merely the loop:
+    // node boots, `node:test` loads and the rendered subject is imported before
+    // the body runs at all. At 1500ms this test failed intermittently with
+    // ENOENT on the heartbeat — under load the child was killed before it ever
+    // reached the loop, so there was no tick to observe and nothing the
+    // assertion below could mean. Eight seconds is spent deliberately: the body
+    // never returns, so the run always costs the whole bound.
     await expect(
       runAdversarialSuite({
         suite: hanging,
-        execute: nodeTestExecutor({ projectDir: directory, timeoutMs: 1_500 }),
+        execute: nodeTestExecutor({ projectDir: directory, timeoutMs: 8_000 }),
       }),
-    ).rejects.toThrow(/killed after 1500ms/);
+    ).rejects.toThrow(/killed after 8000ms/);
 
     // The heartbeat was ticking every 50ms; by the time the promise above
     // rejected, at least one had already landed. If the body's own process
     // is really dead, no further heartbeat follows it — wait well past
     // another tick and check the file stopped changing.
+    expect(
+      existsSync(heartbeat),
+      'the body never ticked, so the kill cannot be observed — the child was ' +
+        'killed before it started rather than while it looped',
+    ).toBe(true);
     const lastBeat = readFileSync(heartbeat, 'utf8');
     await new Promise((resolve) => setTimeout(resolve, 750));
     expect(readFileSync(heartbeat, 'utf8')).toBe(lastBeat);
