@@ -7,6 +7,8 @@ import {
   ComposeProviderError,
   UndeclaredEnvironmentError,
   composeProvider,
+  gatedEnvironmentNames,
+  gatedEnvironments,
   loadDeclaredEnvironments,
   parseComposePs,
   type ComposeCli,
@@ -56,9 +58,11 @@ function seedManifest(): void {
       '    compose: deploy/environments/test/compose.yaml',
       '    project: mpgm-test',
       '    releaseOverride: deploy/environments/test/compose.release.yaml',
+      '    approval: none',
       '  - name: staging',
       '    compose: deploy/environments/staging/compose.yaml',
       '    project: mpgm-staging',
+      '    approval: required',
       '',
     ].join('\n'),
   );
@@ -73,11 +77,13 @@ describe('loadDeclaredEnvironments', () => {
         compose: 'deploy/environments/test/compose.yaml',
         project: 'mpgm-test',
         releaseOverride: 'deploy/environments/test/compose.release.yaml',
+        approval: 'none',
       },
       {
         name: 'staging',
         compose: 'deploy/environments/staging/compose.yaml',
         project: 'mpgm-staging',
+        approval: 'required',
       },
     ]);
   });
@@ -95,9 +101,76 @@ describe('loadDeclaredEnvironments', () => {
 
   it('names what was wrong when an entry is missing a required field', () => {
     writeManifest(
-      ['environments:', '  - name: test', '    compose: some/file.yaml', ''].join('\n'),
+      [
+        'environments:',
+        '  - name: test',
+        '    compose: some/file.yaml',
+        '    approval: none',
+        '',
+      ].join('\n'),
     );
     expect(() => loadDeclaredEnvironments(repo)).toThrow(/project/);
+  });
+
+  /**
+   * CONV-4/CONV-5: a manifest that never says whether an environment needs
+   * approval is refused outright, not read as "no" — the ambiguity a
+   * hardcoded gated-environment name would otherwise hide must not
+   * resurface as a manifest that simply omits the field and gets treated as
+   * ungated.
+   */
+  it('refuses an entry that never says whether it needs approval', () => {
+    writeManifest(
+      [
+        'environments:',
+        '  - name: test',
+        '    compose: some/file.yaml',
+        '    project: mpgm-test',
+        '',
+      ].join('\n'),
+    );
+    expect(() => loadDeclaredEnvironments(repo)).toThrow(/approval/);
+  });
+});
+
+describe('gatedEnvironmentNames / gatedEnvironments', () => {
+  it('names only the environments a manifest marks approval: required', () => {
+    seedManifest();
+    expect(gatedEnvironmentNames(loadDeclaredEnvironments(repo))).toEqual(
+      new Set(['staging']),
+    );
+    expect(gatedEnvironments(repo)).toEqual(new Set(['staging']));
+  });
+
+  it('gates whichever name a project’s manifest actually uses, not a hardcoded one', () => {
+    // A project whose own manifest calls its gated environment something
+    // else entirely — the release-path gate must be reachable through
+    // whatever name a project actually declares (CONV-4).
+    writeManifest(
+      [
+        'environments:',
+        '  - name: prod-eu',
+        '    compose: deploy/environments/prod-eu/compose.yaml',
+        '    project: mpgm-prod-eu',
+        '    approval: required',
+        '',
+      ].join('\n'),
+    );
+    expect(gatedEnvironments(repo)).toEqual(new Set(['prod-eu']));
+  });
+
+  it('names nothing when every entry declares approval: none', () => {
+    writeManifest(
+      [
+        'environments:',
+        '  - name: test',
+        '    compose: deploy/environments/test/compose.yaml',
+        '    project: mpgm-test',
+        '    approval: none',
+        '',
+      ].join('\n'),
+    );
+    expect(gatedEnvironments(repo)).toEqual(new Set());
   });
 });
 
@@ -370,6 +443,7 @@ describe('composeProvider', () => {
           '  - name: test',
           '    compose: deploy/environments/test/compose.yaml',
           '    project: other-test',
+          '    approval: none',
           '',
         ].join('\n'),
       );

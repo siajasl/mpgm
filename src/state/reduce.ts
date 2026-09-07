@@ -31,6 +31,7 @@ import type {
   validationFailed,
   voteTallied,
 } from '../event/catalog.js';
+import { KERNEL_TASK } from '../event/catalog.js';
 import {
   emptyState,
   zeroUsage,
@@ -472,7 +473,13 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
     case 'DryRunRecorded': {
       const payload = event.payload as PayloadOf<typeof dryRunRecorded>;
       const run = requireRun(state, event.runId, type);
-      requireTask(run, payload.taskId, type);
+      // `KERNEL_TASK` only for the release-path deploy gate, which guards a
+      // call the kernel makes itself rather than a task's tool call (see the
+      // event's own doc in `event/catalog.ts`) — there is no task to require
+      // then, and the id is reserved so no real task can reach this branch.
+      if (payload.taskId !== KERNEL_TASK) {
+        requireTask(run, payload.taskId, type);
+      }
       const existing = run.destructiveCalls[payload.fingerprint];
       const call: DestructiveCallState = {
         fingerprint: payload.fingerprint,
@@ -497,7 +504,12 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
     case 'DestructiveOpConfirmed': {
       const payload = event.payload as PayloadOf<typeof destructiveOpConfirmed>;
       const run = requireRun(state, event.runId, type);
-      requireTask(run, payload.taskId, type);
+      // Same exception as 'DryRunRecorded' above, for the same reason: an
+      // operator confirming a release-path deploy gate call echoes that
+      // call's reserved `taskId` rather than inventing a task for it.
+      if (payload.taskId !== KERNEL_TASK) {
+        requireTask(run, payload.taskId, type);
+      }
       const existing = run.destructiveCalls[payload.fingerprint];
       const call: DestructiveCallState = {
         fingerprint: payload.fingerprint,

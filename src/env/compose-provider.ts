@@ -22,6 +22,18 @@ import {
  * vocabulary, and nothing here decides whether an environment is "up" — that
  * decision is {@link environmentUp} in `provision.ts`, and is the same
  * whichever provider answered.
+ *
+ * The manifest each project declares its environments in also carries
+ * `approval: required | none` per entry — the single place HIL-2's "which
+ * environments need an operator's approval" is answered from, read by
+ * {@link gatedEnvironmentNames}/{@link gatedEnvironments} for
+ * `../policy/deploy-gate.ts`'s `gateProductionRelease` (which
+ * `../release/docker-provider.ts` applies to `release.deliver`). This
+ * provider's own `up`/`down`/`status` do not consult it: gating
+ * `env.provision` itself — every operation that can change what a gated
+ * environment serves, `down` included — is the deliberately separate task
+ * PLAN.md's split names next, not a gap this file's parsing leaves by
+ * accident.
  */
 
 export class ComposeProviderError extends Error {}
@@ -69,6 +81,24 @@ const environmentEntrySchema = z.object({
    * Optional — an environment with nothing to undo declares none.
    */
   releaseOverride: z.string().min(1).optional(),
+  /**
+   * Whether the HIL-2 deploy gate (`../policy/deploy-gate.ts`) must see an
+   * operator's confirmation before a release may reach this environment —
+   * `required`, or explicitly `none`.
+   *
+   * Required, not defaulted (CONV-5): a project cannot declare an
+   * environment without saying which it means. A default of `none` would
+   * make silence mean "open," letting a manifest that never mentions
+   * approval at all pass every environment through ungated with nothing
+   * reporting that it did — the ambiguity a security control must refuse
+   * rather than paper over (CONV-4). A default of `required` would be the
+   * safer failure direction, but is still a default standing in for a
+   * decision nobody wrote down; parsing refuses the entry instead. The
+   * manifest is where "does this environment need an approval event" is
+   * decided, not a string this or any other module hardcodes — this is the
+   * whole of what `gatedEnvironmentNames` below reads.
+   */
+  approval: z.enum(['required', 'none']),
 });
 
 export type EnvironmentEntry = z.infer<typeof environmentEntrySchema>;
@@ -123,6 +153,37 @@ export function loadDeclaredEnvironments(
     );
   }
   return parsed.data.environments;
+}
+
+/**
+ * The declared environments, of `entries`, whose manifest marks
+ * `approval: required` — what `gateProductionRelease`
+ * (`../policy/deploy-gate.ts`) refuses to deliver a release to without a
+ * confirmed dry run (HIL-2). Never a hardcoded name: two projects can name
+ * their gated environment differently, and each is read from its own
+ * manifest, not this repository's.
+ */
+export function gatedEnvironmentNames(
+  entries: readonly EnvironmentEntry[],
+): ReadonlySet<string> {
+  return new Set(
+    entries.filter((entry) => entry.approval === 'required').map((entry) => entry.name),
+  );
+}
+
+/**
+ * {@link gatedEnvironmentNames}, reading `repo`'s own manifest the same way
+ * {@link loadDeclaredEnvironments} does. Its signature is exactly
+ * `DeployGateOptions.gatedEnvs` (`../policy/deploy-gate.js`) — a function of
+ * `repo`, resolved per call — so a caller wires `gatedEnvs: gatedEnvironments`
+ * directly, rather than reading a name once and fixing it to whichever repo
+ * happened to be at hand when the provider was built.
+ */
+export function gatedEnvironments(
+  repo: string,
+  manifestPath: string = DEFAULT_MANIFEST_PATH,
+): ReadonlySet<string> {
+  return gatedEnvironmentNames(loadDeclaredEnvironments(repo, manifestPath));
 }
 
 function declaredEntry(

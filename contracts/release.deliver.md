@@ -44,9 +44,121 @@ rollout mechanics." `release.deliver` is the "supplies release artifacts" and
   and therefore no credential to hold. It does not outlive the machine that
   built it — the same gap §8's "release distribution" revisit trigger names
   for the substrate as a whole, and it moves at the same time.
-- **Enforce an approval gate.** Production is not a declared `env.provision`
-  environment yet (`deploy/environments/environments.yaml`), and the hard
-  approval gate DEP-2/HIL-2 ask for in front of it is T4.1.4's.
+
+`assemble` and delivery to an environment `<repo>`'s manifest does not mark
+`approval: required` are otherwise exactly as before — the approval gate below
+is additive, not a change to what already worked.
+
+## The deploy gate (DEP-2, HIL-2, T4.1.4a)
+
+`deliver` and `rollback` are both refused for a *gated* environment unless an
+operator has confirmed the exact call — `src/policy/deploy-gate.ts`'s
+`gateProductionRelease`. Which environments are gated is never a name this
+module or this contract hardcodes: `<repo>`'s own
+`deploy/environments/environments.yaml` marks each declared environment
+`approval: required` or `approval: none` (`contracts/env.provision.md`,
+`env/compose-provider.ts`'s `gatedEnvironments`), and `gatedEnvs`
+(`DeployGateOptions.gatedEnvs`) is a function of `repo`, resolved fresh on
+every call rather than a set built once before the provider is constructed
+— wiring `gatedEnvs: gatedEnvironments` directly is what every caller in
+this repository does. That is deliberate, not incidental: `repo` arrives on
+every `deliver`/`rollback` input, the same as it does on every
+`env.provision` call, so a set fixed at construction would judge a call
+naming a *different* repo by the manifest of whichever repo happened to
+build the provider, rather than by that call's own project — this project
+marks `staging` required, to demonstrate the gate without needing
+`production` declared at all (PLAN.md splits "gate the release path" from
+"gate the environment path, and declare production" along the
+`release.deliver`/`env.provision` contract boundary; this is the first of
+the two). HIL-2 asks
+for explicit approval on an irreversible, outward-facing action *regardless
+of gate settings*, which a phase gate cannot promise (HIL-1 lets one be
+auto-approved) and which the `PreToolUse` destructive-tool guard
+(`src/policy/destructive.ts`, SAF-4) never sees in the first place — a deploy
+the kernel makes itself passes through no tool call, the same way a merge
+does. The gate therefore reuses that guard's *shape* rather than its wiring:
+a fingerprint over `{repo, env, digest}`, a dry run that records intent
+without effect, and a confirmation keyed to that exact fingerprint — read
+from the same `destructiveCalls` state SAF-4's guard already writes, so the
+same `mpgm confirm <fingerprint> --by <who>` an operator uses for a
+destructive tool call is what confirms a deploy. Identity is the digest
+alone, not the release artifact that carries it (DESIGN §9 decision 9's
+reasoning applied to what an approval actually covers): a `deliver` and the
+`rollback` that later restores it are the same approval question, whatever
+else (a changelog rewritten after the fact) differs. It is not read the same
+way SAF-4 reads it, though: SAF-4's `stateLedger` is scoped to the one run a
+tool call happened in, which is right for a call that lives inside a
+session, but a deploy confirmation has to outlive the run that asked for it
+— `deploy-gate.ts`'s `crossRunLedger` looks across every run for a match
+instead, which is what makes the next paragraph's "asks nothing new of
+HIL-2" literally true rather than true only until the confirming run ends.
+`repo` in the fingerprint is `releaseDeliverInput`/`releaseRollbackInput`'s
+`repo` — the checkout path a caller resolves the target project's manifest
+from, an absolute filesystem path in every caller this repository ships
+(the demos derive it from `import.meta.url`) — not a stable identity for
+the project independent of where it happens to be checked out. A
+confirmation is therefore scoped to the checkout it was given for: the same
+project checked out twice, or worked from a `.mpgm/worktrees/<taskId>` tree
+distinct from the checkout a dry run and confirmation were recorded
+against, computes a different fingerprint and finds no confirmation there,
+however identical `env` and `digest` are. That fails closed (CONV-4) rather
+than silently, but it does mean a confirmation does not travel between
+checkouts of the same project, which an operator relying on DEP-2's
+automatic rollback firing from whatever checkout the kernel happens to act
+from needs to know.
+
+The gate is applied inside `dockerReleaseProvider`'s own construction, not
+left for a caller to wrap on afterward: its `gate` option is required, so
+there is no code path in this repository — not the CLI, not a demo script,
+not a future orchestrator effect — that obtains an unguarded `deliver`/
+`rollback` from the one concrete provider this contract has here
+(`dockerReleaseProvider`; DESIGN §9 decision 10). That guarantee is about
+this repository's only provider, not the contract itself: `Provider` is a
+bare, untyped record and `CapabilityRegistry.bind` accepts any object
+shaped to match, so nothing stops a *different* provider satisfying this
+contract with no gate at all. A caller wires the gate's
+`onDryRunNeeded` to append the `DryRunRecorded` event its own refusal names
+— the gate has no separate dry-run mode to call first, so a refusal for want
+of one *is* the simulation, and this records it the instant that happens.
+The first call for a given `{repo, env, digest}` is therefore always
+refused, but leaves that exact fingerprint confirmable; `mpgm confirm
+<fingerprint> --by <who> --run <the run this call happened under>` and the
+same call again then proceeds. `--run` is not optional in practice even
+though the CLI accepts its absence: omitting it confirms against `run-1` by
+default, which is silently wrong whenever the dry run that made this
+fingerprint confirmable happened under a different run.
+`scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) is this task's own
+verification, wiring `onDryRunNeeded` and confirming exactly the way
+described above.
+
+`rollback` is refused the same way *unless* the release it names was already
+confirmed for this environment — restoring a release the environment already
+ran asks nothing new of HIL-2 (DESIGN §9 decision 11: approval was given to
+that exact digest earlier), but `rollback` naming a release that was never
+confirmed would otherwise be a second, ungated door into it that `deliver`'s
+own refusal never sees. That earlier approval is found by `crossRunLedger`
+regardless of which run gave it, which is what lets DEP-2's automatic
+rollback — invoked from whatever later run notices the regression, never
+guaranteed to be the run that delivered and got the release confirmed in the
+first place — proceed on that same earlier approval instead of stalling for
+a fresh one.
+
+**This is not the only route to a gated environment, and this task does not
+close the other one.** `deliver`/`rollback` hand the same digest to
+`env.provision#up` underneath (`contracts/env.provision.md`), and a caller
+reaching that operation directly — with an `image` override, bypassing this
+contract entirely — is not gated by anything this task built. Closing that
+for whichever environment a project marks `approval: required` — `down`
+included, since tearing a gated environment down and bringing it back up on
+the compose default is also a way to change what it serves — is
+`env.provision`'s own gate, and declaring `production` once that gate exists
+to stand in front of it: T4.1.4b, deliberately not this task (PLAN.md's
+split). Nothing in this project's own manifest is exposed by that gap today
+— `production` is undeclared, and `staging`/`test` reach no ungated
+`env.provision#up` call this repository's own demo scripts do not already
+make on their own behalf — but a project that declared a gated environment
+and called `env.provision#up` directly, outside `release.deliver`, would
+find it ungated until T4.1.4b lands.
 
 ## The release artifact (DEP-3)
 
@@ -164,10 +276,18 @@ represent (CONV-4, CONV-5).
   provider's `assemble` MUST share), and the schemas above.
 - [`src/release/docker-provider.ts`](../src/release/docker-provider.ts) —
   `dockerReleaseProvider`, satisfying the contract against `docker build` and
-  a bound `env.provision` contract.
-- `scripts/demo/release-deliver.mjs` — this task's own verification: two
+  a bound `env.provision` contract, and applying the deploy gate below at
+  construction.
+- [`src/policy/deploy-gate.ts`](../src/policy/deploy-gate.ts) —
+  `gateProductionRelease`, `deployFingerprint`, `crossRunLedger`: the HIL-2
+  approval gate this contract's `deliver`/`rollback` are wrapped in.
+- `scripts/demo/release-deliver.mjs` — T4.1.2's own verification: two
   releases of the sample service delivered in turn, and a rollback to the
   first, all confirmed against what the environment actually serves.
+- `scripts/demo/deploy-gate.mjs` — this task's own verification: a release to
+  `staging` (`approval: required`) is refused unsimulated, refused simulated
+  but unconfirmed, delivered once confirmed, and a rollback to it needs no
+  fresh confirmation; a release to `test` (`approval: none`) is never gated.
 - [`src/release/verify.ts`](../src/release/verify.ts) (T4.1.3) — health
   verification and promote/rollback decisions, calling this contract's
   `rollback` once its own smoke checks decide a delivered release is not

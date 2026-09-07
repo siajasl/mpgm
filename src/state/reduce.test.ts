@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { kernelEvents, kernelRegistry } from '../event/catalog.js';
+import { KERNEL_TASK, kernelEvents, kernelRegistry } from '../event/catalog.js';
 import type { EventInput, StoredEvent } from '../event/envelope.js';
 import { MEMORY } from '../database.js';
 import { EventLog } from '../event/store.js';
@@ -530,6 +530,105 @@ describe('reduce', () => {
           },
         ]),
       ),
+    ).toThrow();
+  });
+
+  it('records a release-path deploy gate dry run and confirmation with no task at all (T4.1.4a)', () => {
+    // The deploy gate guards a call the kernel makes itself, not a task's
+    // tool call (`policy/deploy-gate.ts`) — its `DryRunRecorded` and
+    // `DestructiveOpConfirmed` events carry the reserved `KERNEL_TASK`
+    // rather than naming a task the run never dispatched, which
+    // `requireTask` would otherwise refuse (CONV-4 still applies to every
+    // *other* taskId, checked below).
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'DryRunRecorded',
+          payload: {
+            taskId: KERNEL_TASK,
+            tool: 'deploy',
+            fingerprint: 'deploy-1',
+            summary: 'would deliver 1.0.0 to production',
+          },
+        },
+        {
+          runId: RUN,
+          type: 'DestructiveOpConfirmed',
+          payload: {
+            taskId: KERNEL_TASK,
+            tool: 'deploy',
+            fingerprint: 'deploy-1',
+            by: 'macg',
+            reason: 'approved',
+          },
+        },
+      ]),
+    );
+
+    const call = state.runs[RUN]?.destructiveCalls['deploy-1'];
+    expect(call).toEqual({
+      fingerprint: 'deploy-1',
+      tool: 'deploy',
+      taskId: KERNEL_TASK,
+      dryRun: true,
+      confirmedBy: 'macg',
+    });
+  });
+
+  it('still refuses a DryRunRecorded naming a real, unknown task', () => {
+    // Every other taskId is still held to CONV-4 — only the reserved
+    // deploy-gate id skips the check.
+    expect(() =>
+      fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'DryRunRecorded',
+            payload: {
+              taskId: 'never-ran',
+              tool: 'mcp__deploy__release',
+              fingerprint: 'f1',
+              summary: '',
+            },
+          },
+        ]),
+      ),
+    ).toThrow();
+  });
+
+  it('refuses a DryRunRecorded/DestructiveOpConfirmed with no taskId at all (CONV-5)', () => {
+    // The deploy-gate id is reserved and written explicitly — never an
+    // omitted or empty field arriving at it by accident. A caller that
+    // forgets `taskId`, or computes one and gets nothing, must fail loudly,
+    // the same as forgetting `tool` or `fingerprint` would.
+    // `EventInput['payload']` is untyped per event (validated by the
+    // registry's schema, not the compiler), so the omission below is caught
+    // only at runtime — which is exactly the behaviour this test proves.
+    const dryRunPayload: Record<string, unknown> = {
+      tool: 'mcp__deploy__release',
+      fingerprint: 'f1',
+      summary: '',
+    };
+    expect(() =>
+      logWith([
+        runStartedInput,
+        { runId: RUN, type: 'DryRunRecorded', payload: dryRunPayload },
+      ]),
+    ).toThrow();
+
+    const confirmedPayload: Record<string, unknown> = {
+      tool: 'mcp__deploy__release',
+      fingerprint: 'f1',
+      by: 'macg',
+    };
+    expect(() =>
+      logWith([
+        runStartedInput,
+        { runId: RUN, type: 'DestructiveOpConfirmed', payload: confirmedPayload },
+      ]),
     ).toThrow();
   });
 });

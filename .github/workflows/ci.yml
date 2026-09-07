@@ -124,6 +124,13 @@ jobs:
       - name: release verification — induced regression auto-rolls back
         run: npm run demo:verify
 
+      # T4.1.4a: a release delivered to an environment this project marks
+      # `approval: required` (`staging`) is impossible without a recorded
+      # approval event, and an environment marked `approval: none` (`test`)
+      # is never gated at all (HIL-2). Same Docker daemon as demo:env above.
+      - name: release-path deploy gate — approval required, from project configuration
+        run: npm run demo:gate
+
   scan:
     name: scan
     runs-on: ubuntu-latest

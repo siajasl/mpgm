@@ -21,6 +21,7 @@ export type { ArtifactRef } from './event/catalog.js';
 export {
   artifactRefSchema,
   blobRefSchema,
+  KERNEL_TASK,
   kernelEvents,
   kernelRegistry,
 } from './event/catalog.js';
@@ -726,10 +727,25 @@ export {
   ComposeProviderError,
   DEFAULT_MANIFEST_PATH,
   dockerComposeCli,
+  gatedEnvironmentNames,
+  gatedEnvironments,
   loadDeclaredEnvironments,
   parseComposePs,
   UndeclaredEnvironmentError,
 } from './env/compose-provider.js';
+export type {
+  ConfirmationNeeded,
+  DeployGateOptions,
+  DeployLedger,
+  DeployTarget,
+  DryRunNeeded,
+} from './policy/deploy-gate.js';
+export {
+  crossRunLedger,
+  DeployGateError,
+  deployFingerprint,
+  gateProductionRelease,
+} from './policy/deploy-gate.js';
 export type {
   ReleaseArtifact,
   ReleaseAssembleInput,

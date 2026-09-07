@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { BoundContract, Provider } from '../contract/capability.js';
+import { gateProductionRelease, type DeployGateOptions } from '../policy/deploy-gate.js';
 import {
   nextRelease,
   type ReleaseArtifact,
@@ -25,6 +26,23 @@ import {
  * structural rather than a comment — swap the bound `env.provision` contract
  * for one fronting a hosted or Kubernetes-native CD tool (§8's deploy-substrate
  * revisit trigger) and nothing in this file changes.
+ *
+ * The HIL-2 release-path deploy gate (`../policy/deploy-gate.ts`) is applied
+ * here, inside construction, rather than left for a caller to wrap on
+ * afterward (DESIGN §9 decision 10). This is the only concrete provider
+ * `releaseDeliverContract` has in this repository, so requiring the gate's
+ * ledger as a constructor argument — not an optional wrapper a caller can
+ * forget — means there is no code path that produces an *ungated*
+ * `deliver`/`rollback` bound to the contract: not the CLI, not a demo
+ * script, not a future orchestrator effect. A caller cannot construct a
+ * provider whose gated-environment path skips the gate at all — that
+ * guarantee is structural, at construction time, and is independent of
+ * *how* each call is then checked. Each call is still checked at the point
+ * it is made, against confirmation state an operator supplies later and
+ * out-of-band (`mpgm confirm`, read from the event log) — decision 10, as
+ * corrected, explains why that check cannot instead be a token the call is
+ * built with: nothing available when a call is constructed can attest in
+ * advance to an approval that has not happened yet.
  */
 
 export class ReleaseProviderError extends Error {}
@@ -75,6 +93,25 @@ export interface DockerReleaseProviderOptions {
    */
   readonly envProvision: BoundContract;
   readonly cli?: DockerCli;
+  /**
+   * The HIL-2 deploy gate's options (`../policy/deploy-gate.ts`) — required,
+   * not optional: see the module doc above for why this provider gates its
+   * own gated-environment path rather than trusting a caller to wrap it.
+   * `gatedEnvs` names which environments those are for a given `repo`,
+   * resolved per call — the same `repo` `deliver`/`rollback` themselves take
+   * (`../policy/deploy-gate.ts`'s `DeployGateOptions.gatedEnvs`), read from
+   * that repo's own manifest (`gatedEnvironments`,
+   * `deploy/environments/environments.yaml`) — never a name this provider
+   * assumes, and never a set fixed to whichever repo happened to build this
+   * provider: this provider itself takes no `repo` at construction (see
+   * below), so a `gatedEnvs` bound to one at construction would gate a
+   * *different* repo's call by the wrong project's manifest. A caller whose
+   * `gatedEnvs` always answers empty, or that never touches an environment
+   * it names (every test in this file, both release demo scripts), still
+   * supplies a ledger; it is simply never consulted, the same way
+   * `gateProductionRelease` leaves any other environment untouched.
+   */
+  readonly gate: DeployGateOptions;
 }
 
 async function buildImage(
@@ -130,6 +167,10 @@ async function buildImage(
  * the same reasoning as `composeProvider` (`../env/compose-provider.ts`): a
  * constructor-bound checkout would let a caller name one repo and silently
  * build or deliver from another's tree.
+ *
+ * Returns a provider already wrapped by `gateProductionRelease` — there is
+ * no unwrapped provider this function ever hands back for a caller to bind
+ * unguarded (DESIGN §9 decision 10).
  */
 export function dockerReleaseProvider(options: DockerReleaseProviderOptions): Provider {
   const cli = options.cli ?? dockerCli;
@@ -153,7 +194,7 @@ export function dockerReleaseProvider(options: DockerReleaseProviderOptions): Pr
     };
   }
 
-  return {
+  const raw: Provider = {
     assemble: async (input: never): Promise<unknown> => {
       const assembleInput = input as ReleaseAssembleInput;
       return buildImage(cli, assembleInput.repo, assembleInput);
@@ -169,4 +210,6 @@ export function dockerReleaseProvider(options: DockerReleaseProviderOptions): Pr
       return deliverTo(repo, env, to);
     },
   };
+
+  return gateProductionRelease(raw, options.gate);
 }
