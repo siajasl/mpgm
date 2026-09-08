@@ -121,6 +121,12 @@ export function renderReview(request: {
       'counts: saying it in your commit message, in a comment or in `summary`',
       'leaves the deviation undeclared and refuses the merge exactly as saying',
       'nothing would.',
+      '',
+      'A declaration you made in an earlier round of this task still stands, so',
+      'you need not repeat it — the record is what the merge reads, not this',
+      'round alone. If you no longer stand behind one, fix the departure: a',
+      'declaration only matters while the reviewer is still reporting that',
+      'convention.',
     );
   }
 
