@@ -746,7 +746,9 @@ export {
   deployFingerprint,
   gateProductionRelease,
   gateProvisionRelease,
+  recreateOnDefaultDigest,
   RECREATE_ON_DEFAULT_DIGEST,
+  teardownDigest,
   TEARDOWN_ENV_DIGEST,
 } from './policy/deploy-gate.js';
 export type {

@@ -3,11 +3,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Provider } from '../contract/capability.js';
+import type { ServiceStatus } from './provision.js';
 import {
   DeployGateError,
   deployFingerprint,
-  RECREATE_ON_DEFAULT_DIGEST,
-  TEARDOWN_ENV_DIGEST,
+  recreateOnDefaultDigest,
+  teardownDigest,
   type DeployGateOptions,
   type DeployLedger,
 } from '../policy/deploy-gate.js';
@@ -233,6 +234,16 @@ const fail = (stderr: string): ComposeCliResult => ({ stdout: '', stderr, code: 
 
 const oneHealthyRow =
   '{"Service":"service","State":"running","Health":"healthy","ID":"abc123"}';
+
+/** What `parseComposePs` turns {@link oneHealthyRow} into, for building the
+ * per-state gate identity ({@link recreateOnDefaultDigest}/
+ * {@link teardownDigest}) a test needs to confirm. */
+const ONE_HEALTHY_SERVICE: ServiceStatus = {
+  name: 'service',
+  state: 'running',
+  health: 'healthy',
+  containerId: 'abc123',
+};
 
 describe('composeProvider', () => {
   beforeEach(seedManifest);
@@ -566,7 +577,7 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const print = deployFingerprint({
       repo,
       env: 'staging',
-      digest: RECREATE_ON_DEFAULT_DIGEST,
+      digest: recreateOnDefaultDigest([ONE_HEALTHY_SERVICE]),
     });
     const { cli, calls } = scriptedCli([ok(oneHealthyRow), ok(), ok(oneHealthyRow)]);
     const provider = composeProvider({
@@ -581,11 +592,43 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     expect(calls).toHaveLength(3);
   });
 
-  it('lets a no-image up on a gated environment through untouched while status reports no service at all — nothing there yet for a gate to protect', async () => {
-    const { cli, calls } = scriptedCli([ok(''), ok(), ok(oneHealthyRow)]);
+  /**
+   * T4.1.4b review 2: the first version of this gate let a no-image `up`
+   * through untouched whenever `status` reported no service at all,
+   * reasoning that standing up infrastructure nothing is serving asks
+   * nothing of an operator. A review found that reachable, not theoretical:
+   * `production` — declared in the same task — has never been stood up, so
+   * its only reachable state *was* exactly this one, meaning any caller
+   * could stand it up on the compose default with no approval anywhere
+   * (HIL-2). A no-image `up` against a gated environment must now be
+   * refused whatever `status` reports, nothing included.
+   */
+  it('refuses a no-image up on a gated environment when status reports no service at all — a first bring-up needs approval too', async () => {
+    const { cli, calls } = scriptedCli([ok('')]);
     const provider = composeProvider({
       cli,
       gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(provider, 'up')({ repo, env: 'staging' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('lets a no-image up through once its first bring-up — nothing reported yet — is confirmed', async () => {
+    const print = deployFingerprint({
+      repo,
+      env: 'staging',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const { cli, calls } = scriptedCli([ok(''), ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(new Set([print]), new Set([print])),
+      },
     });
 
     await operation(provider, 'up')({ repo, env: 'staging' } as never);
@@ -630,7 +673,7 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const print = deployFingerprint({
       repo,
       env: 'staging',
-      digest: TEARDOWN_ENV_DIGEST,
+      digest: teardownDigest([ONE_HEALTHY_SERVICE]),
     });
     const { cli, calls } = scriptedCli([ok(oneHealthyRow), ok(), ok('')]);
     const provider = composeProvider({

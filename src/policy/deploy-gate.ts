@@ -58,16 +58,27 @@ import { fingerprint } from './destructive.js';
  * `deliver` would compute for the same `{repo, env, digest}` (decision 9/11
  * — a digest is a digest, whichever contract asks to run it, so a
  * confirmation given to one satisfies the other and neither asks twice); an
- * `up` with no `image`, or a `down`, against an environment already serving
- * something is checked under a fingerprint fixed for that act alone (see
- * {@link RECREATE_ON_DEFAULT_DIGEST}, {@link TEARDOWN_ENV_DIGEST}) — neither
- * is a real digest, because neither call names one, but both are exactly as
- * capable of changing what a gated environment serves as a `deliver` is. An
- * `up`/`down` against an environment `status` reports no service at all for
- * is left untouched: there is nothing yet for either call to change (see
- * {@link gateProvisionRelease}'s own doc for the fail-closed reasoning behind
- * asking `status` first, and for why that question is "any service at all",
- * not "is everything healthy").
+ * `up` with no `image` is gated unconditionally — an environment the project
+ * marks `approval: required` never has a no-image `up` reach the provider
+ * without a confirmation, whatever `status` currently reports, first bring-up
+ * included (T4.1.4b review 2: a review found the previous "nothing reported,
+ * proceed untouched" narrowing left `production` — declared in this same
+ * change and never yet stood up — reachable through exactly that untouched
+ * path, which is the one case HIL-2 least tolerates leaving open). `down` is
+ * still asked `status` first, because tearing down infrastructure nothing is
+ * serving genuinely changes nothing; anything reported, it is refused the
+ * same way. Both `up`'s and `down`'s gated fingerprints (see
+ * {@link recreateOnDefaultDigest}, {@link teardownDigest}) fold in what
+ * `status` actually reports rather than a fingerprint fixed for the act
+ * alone: neither is a real digest, because neither call names one, but a
+ * fixed sentinel shared by every call would let one confirmation of "tear
+ * this down" stand as a standing authorisation to tear down whatever this
+ * environment serves in every later run, which is a different question every
+ * time (T4.1.4b review 2) — folding in the reported services means a
+ * confirmation answers "may *this* state be replaced or torn down", not "may
+ * this kind of act ever proceed" (see {@link gateProvisionRelease}'s own doc
+ * for the fail-closed reasoning behind asking `status` first, and for why
+ * that question is "any service at all", not "is everything healthy").
  */
 
 export class DeployGateError extends Error {}
@@ -396,25 +407,94 @@ export function gateProductionRelease(
 }
 
 /**
- * A fingerprint identity for an `env.provision#up` call that carries no
- * `image`, against an environment {@link gateProvisionRelease} finds `status`
- * reporting any service at all, whatever state or health it is in. Not a real
- * digest — no such call ever names one — but a stable identity for the one
- * question this act actually asks an operator: "may this environment be
- * recreated on whatever its compose file defaults to, replacing what it
- * currently serves?" Distinct from {@link TEARDOWN_ENV_DIGEST} so confirming
- * one never silently confirms the other, even though neither names a real
- * digest either.
+ * The fixed half of {@link recreateOnDefaultDigest}'s identity — a prefix,
+ * not the whole digest as of T4.1.4b review 2 (see that function's own doc
+ * for why a fixed sentinel alone is not enough). Exported so a caller
+ * confirming a specific state can still name "recreate on default" without
+ * spelling out this string itself; {@link recreateOnDefaultDigest} is what
+ * every real fingerprint actually uses.
  */
 export const RECREATE_ON_DEFAULT_DIGEST = 'env-provision:recreate-on-default';
 
 /**
- * A fingerprint identity for an `env.provision#down` call against an
- * environment {@link gateProvisionRelease} finds `status` reporting any
- * service at all. See {@link RECREATE_ON_DEFAULT_DIGEST} for why this is a
- * fixed sentinel rather than a digest, and why the two are kept apart.
+ * The fixed half of {@link teardownDigest}'s identity. See
+ * {@link RECREATE_ON_DEFAULT_DIGEST} for why this is a prefix rather than the
+ * whole digest, and why the two sentinels are kept apart from each other.
  */
 export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
+
+/**
+ * A stable identity for what `status` currently reports — folded into
+ * {@link recreateOnDefaultDigest} and {@link teardownDigest} alongside
+ * `{repo, env}` so a confirmation answers "may *this* reported state be
+ * replaced or torn down", never "may this kind of call ever proceed against
+ * this environment" (T4.1.4b review 2). A fixed sentinel shared by every
+ * call — what this module used before the review — let one operator
+ * confirmation of "tear production down" stand as a permanent authorisation
+ * to tear it down again in every later run, however different what it was
+ * actually serving at the time; `label` carries that description but is
+ * deliberately excluded from the fingerprint itself (see {@link DeployTarget}),
+ * so nothing about the reported state distinguished one teardown from the
+ * next. Folding it in here closes that: a later call finding a different
+ * `containerId` computes a different identity and is refused until an
+ * operator confirms *that* state, not merely the fact that a teardown was
+ * confirmed once before.
+ *
+ * `containerId` is what actually tells one running instance from the next —
+ * `name`/`state`/`health` alone repeat identically every time a replacement
+ * container settles into the same shape a previous one had, which is exactly
+ * the "different question, same-looking answer" case this exists to catch.
+ * An empty list reads as the stable string `'none'`, not `''`, so "nothing
+ * reported" is a real, reproducible identity rather than a value
+ * indistinguishable from a malformed one.
+ */
+function servingIdentity(services: readonly ServiceStatus[]): string {
+  if (services.length === 0) {
+    return 'none';
+  }
+  return services
+    .map(
+      (service) =>
+        `${service.name}:${service.state}/${service.health}@${service.containerId}`,
+    )
+    .slice()
+    .sort()
+    .join(',');
+}
+
+/**
+ * A fingerprint identity for an `env.provision#up` call that carries no
+ * `image`, against an environment the project marks `approval: required` —
+ * gated unconditionally as of T4.1.4b review 2, whatever `status` reports,
+ * including nothing at all: a no-image `up` is the environment's first
+ * bring-up exactly as often as it is a recreate, and the first bring-up of a
+ * newly-declared gated environment is the outward-facing deploy HIL-2 asks
+ * an operator to approve, not a state a gate may wave through because
+ * nothing happens to be running yet (a review found `production` — declared
+ * in this same change — reachable through exactly that untouched path). Not
+ * a real digest — no such call ever names one — but a stable, per-state
+ * identity (via {@link servingIdentity}) for the one question this act
+ * actually asks an operator: "may this environment be (re)created on
+ * whatever its compose file defaults to, replacing what it currently serves,
+ * or standing it up for the first time?" Distinct from {@link teardownDigest}
+ * so confirming one never silently confirms the other, even for the same
+ * reported state.
+ */
+export function recreateOnDefaultDigest(services: readonly ServiceStatus[]): string {
+  return `${RECREATE_ON_DEFAULT_DIGEST}:${servingIdentity(services)}`;
+}
+
+/**
+ * A fingerprint identity for an `env.provision#down` call against an
+ * environment {@link gateProvisionRelease} finds `status` reporting any
+ * service at all — per-state via {@link servingIdentity}, for the reuse
+ * reasoning that function's own doc gives. See {@link recreateOnDefaultDigest}
+ * for why this is a function of the reported state rather than a fixed
+ * sentinel, and why the two identities are kept apart from each other.
+ */
+export function teardownDigest(services: readonly ServiceStatus[]): string {
+  return `${TEARDOWN_ENV_DIGEST}:${servingIdentity(services)}`;
+}
 
 /**
  * Wraps an `env.provision` provider so `up` and `down` cannot change what a
@@ -443,27 +523,36 @@ export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
  *   digest names one build, whichever contract asks to run it, so a
  *   confirmation given through either path satisfies both and neither asks
  *   twice for the same digest).
- * - **`up` with no `image`.** Absent any image, this call can only ever
- *   replace what is running with the environment's own compose default — a
- *   question with a knowable answer *before* running it: is anything a gate
- *   would need to protect running there already? `status` is asked first.
- *   Nothing reported at all: there is nothing to replace, and standing up the
- *   declared IaC before any release exists to point it at is `env.provision`'s
- *   own reason to exist (`contracts/env.provision.md`), so the call proceeds
- *   untouched. Anything reported — refused under
- *   {@link RECREATE_ON_DEFAULT_DIGEST} until an operator confirms recreating
- *   this exact `{repo, env}` on its default.
- * - **`down`.** The same `status` question, for the same reason: tearing
- *   down infrastructure nothing is serving asks nothing of an operator, so a
- *   `down` against an environment `status` reports nothing running in at all
- *   proceeds untouched. Anything reported, it is refused under
- *   {@link TEARDOWN_ENV_DIGEST} until an operator confirms tearing this exact
- *   `{repo, env}` down — otherwise `down` followed by a no-image `up` would
- *   be a two-call way to reach the identical "recreated on the default,
- *   unconfirmed" state the case above already refuses, just split across two
- *   calls that individually look harmless: an ungated `down` leaves the
- *   environment reporting nothing, so the no-image `up` that follows would
- *   find nothing to protect and proceed too.
+ * - **`up` with no `image`.** Gated unconditionally, whatever `status`
+ *   reports — even nothing at all. T4.1.4b's first version asked `status`
+ *   first and let the call through untouched when nothing was reported,
+ *   reasoning that standing up infrastructure nothing is serving asks
+ *   nothing of an operator; a review (rework 2) found that reachable, not
+ *   theoretical: `production` is declared in this same change and has never
+ *   been stood up, so its only reachable state *was* exactly the untouched
+ *   one, meaning any caller could stand it up on the compose default with no
+ *   approval anywhere — precisely the outward-facing production deploy
+ *   HIL-2 says must always require one. `status` is still asked, not to
+ *   decide whether to gate, but to fold what it reports into the fingerprint
+ *   (see {@link recreateOnDefaultDigest}) so a confirmation answers "may
+ *   *this* reported state be replaced", first bring-up included, rather than
+ *   "may a no-image `up` against this environment ever proceed" — the
+ *   latter would let one first-bring-up confirmation authorise recreating
+ *   over whatever this environment serves in every later run, exactly the
+ *   standing-authorisation failure mode the same review found in `down`.
+ * - **`down`.** `status` decides whether there is anything here to protect
+ *   in the first place — tearing down infrastructure nothing is serving
+ *   genuinely changes nothing, so a `down` against an environment `status`
+ *   reports nothing running in at all proceeds untouched (unlike `up`, a
+ *   `down` with nothing to tear down has no state left for an unconfirmed
+ *   later call to exploit, because `up`'s own gate no longer trusts "nothing
+ *   reported" to mean "safe to proceed"). Anything reported, it is refused
+ *   under {@link teardownDigest} until an operator confirms tearing down
+ *   *this exact reported state* — not a fingerprint fixed for "tear this
+ *   `{repo, env}` down" in general, which a review (rework 2) found let one
+ *   confirmed teardown stand as a permanent authorisation to tear the same
+ *   environment down again in every later run, whatever it happened to be
+ *   serving by then.
  *
  * **The question asked of `status` is "is anything there at all", never "is
  * it healthy".** `envStatusOutput.up` — {@link environmentUp}'s verdict —
@@ -475,22 +564,24 @@ export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
  * healthcheck, or whose container exited — as indistinguishable from an
  * environment with nothing running in it at all, which is precisely the
  * ambiguity CONV-4 asks a control to refuse rather than resolve in its own
- * favour. What decides "nothing here to protect" is the presence of any
- * reported service (`services.length > 0`), never `up`; only a provider
- * reporting no services whatsoever reads as nothing to protect.
+ * favour. What decides "nothing here to protect" — for `down`'s bypass, and
+ * for what {@link recreateOnDefaultDigest}/{@link teardownDigest} fold into
+ * their fingerprint either way — is the presence of any reported service
+ * (`services.length > 0`), never `up`; only a provider reporting no services
+ * whatsoever reads as nothing to protect.
  *
  * `status` is never gated — asking costs nothing and changes nothing
  * (`contracts/env.provision.md`).
  *
  * A provider with no `status` is refused outright, fail closed (CONV-4):
- * neither the no-image `up` case nor `down` can tell "nothing to protect yet"
- * from "this would replace a confirmed release" without asking, and assuming
- * "nothing there" for a provider that cannot answer is exactly the ambiguity
- * a security control must refuse rather than paper over. A provider with no
- * `up` has nothing here to gate at all and is refused at construction, the
- * same as `gateProductionRelease` refuses a provider missing `deliver`. A
- * provider with no `down` is left as it is — there is no operation there to
- * wrap.
+ * neither the no-image `up` case nor `down` can compute a fingerprint, or
+ * tell "nothing to protect yet" from "this would replace a confirmed
+ * release", without asking, and assuming "nothing there" for a provider that
+ * cannot answer is exactly the ambiguity a security control must refuse
+ * rather than paper over. A provider with no `up` has nothing here to gate
+ * at all and is refused at construction, the same as `gateProductionRelease`
+ * refuses a provider missing `deliver`. A provider with no `down` is left as
+ * it is — there is no operation there to wrap.
  */
 export function gateProvisionRelease(
   provider: Provider,
@@ -507,13 +598,15 @@ export function gateProvisionRelease(
   const down = provider.down;
 
   /**
-   * Whether `env` has anything at all for a gate to protect, per the wrapped
-   * provider's own `status` — the only way either the no-image `up` case or
-   * `down` can tell "nothing to replace or tear down yet" from "this would
-   * change what a gated environment serves" without inventing a notion of
-   * "confirmed release" `env.provision` does not have.
+   * What `env` currently reports, per the wrapped provider's own `status` —
+   * the only way either the no-image `up` case or `down` can build a
+   * fingerprint over "what is actually there right now" without inventing a
+   * notion of "confirmed release" `env.provision` does not have, and (for
+   * `down`) the only way to tell "nothing to tear down yet" from "this would
+   * change what a gated environment serves" without assuming one or the
+   * other.
    *
-   * Answered from the presence of any reported service
+   * `anything` is answered from the presence of any reported service
    * (`current.services.length > 0`), never from `current.up`. `up` is
    * {@link environmentUp}'s verdict, and it fails closed for a service still
    * `starting`, `unhealthy`, `exited` or otherwise short of cleanly
@@ -529,15 +622,21 @@ export function gateProvisionRelease(
    *
    * Fails closed on the provider itself too: a provider with no `status` is
    * never assumed fresh, and `caller` names which operation is asking, with
-   * the services actually found summarised in the returned `summary`, so a
-   * refusal built from either can tell an operator what the gate saw without
-   * their reading this module (CONV-3).
+   * the services actually found summarised in the returned `summary` and
+   * handed back raw as `services` so a caller can fold them into a
+   * per-state fingerprint (see {@link recreateOnDefaultDigest},
+   * {@link teardownDigest}) — a refusal built from either can tell an
+   * operator what the gate saw without their reading this module (CONV-3).
    */
-  async function servingAnything(
+  async function currentServices(
     repo: string,
     env: string,
     caller: string,
-  ): Promise<{ readonly anything: boolean; readonly summary: string }> {
+  ): Promise<{
+    readonly anything: boolean;
+    readonly services: readonly ServiceStatus[];
+    readonly summary: string;
+  }> {
     if (status === undefined) {
       throw new DeployGateError(
         `'${caller}' on '${env}' cannot be confirmed safe: the provider given ` +
@@ -549,6 +648,7 @@ export function gateProvisionRelease(
     const current = envStatusOutput.parse(await status({ repo, env } as never));
     return {
       anything: current.services.length > 0,
+      services: current.services,
       summary: describeServices(current.services),
     };
   }
@@ -568,22 +668,22 @@ export function gateProvisionRelease(
         );
         return up(input);
       }
-      // No image: this call can only ever recreate the environment on its
-      // own compose default, so whether it needs an operator's approval
-      // turns on whether the provider reports anything at all there to
-      // replace — asked, not assumed, and never from health (see
-      // `servingAnything`'s own doc for why `up: false` is not "nothing
-      // there").
-      const serving = await servingAnything(parsed.repo, parsed.env, 'up with no image');
-      if (!serving.anything) {
-        return up(input);
-      }
+      // No image: this call can only ever (re)create the environment on its
+      // own compose default, and is gated unconditionally for a project that
+      // marks this environment `approval: required` — whatever `status`
+      // currently reports, nothing included, because a first bring-up is
+      // exactly as outward-facing as a recreate (T4.1.4b review 2; see this
+      // function's own doc). `status` is still asked, not to decide whether
+      // to gate, but so the confirmation this call is checked against
+      // answers "may this exact reported state be replaced", not "may a
+      // no-image `up` here ever proceed".
+      const current = await currentServices(parsed.repo, parsed.env, 'up with no image');
       assertReady(
         {
           repo: parsed.repo,
           env: parsed.env,
-          digest: RECREATE_ON_DEFAULT_DIGEST,
-          label: `recreate on the compose default (currently: ${serving.summary})`,
+          digest: recreateOnDefaultDigest(current.services),
+          label: `recreate on the compose default (currently: ${current.summary})`,
         },
         options,
       );
@@ -598,16 +698,16 @@ export function gateProvisionRelease(
             if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
               return down(input);
             }
-            const serving = await servingAnything(parsed.repo, parsed.env, 'down');
-            if (!serving.anything) {
+            const current = await currentServices(parsed.repo, parsed.env, 'down');
+            if (!current.anything) {
               return down(input);
             }
             assertReady(
               {
                 repo: parsed.repo,
                 env: parsed.env,
-                digest: TEARDOWN_ENV_DIGEST,
-                label: `torn down (currently: ${serving.summary})`,
+                digest: teardownDigest(current.services),
+                label: `torn down (currently: ${current.summary})`,
               },
               options,
             );

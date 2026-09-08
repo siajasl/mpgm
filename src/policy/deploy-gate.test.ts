@@ -13,8 +13,8 @@ import {
   deployFingerprint,
   gateProductionRelease,
   gateProvisionRelease,
-  RECREATE_ON_DEFAULT_DIGEST,
-  TEARDOWN_ENV_DIGEST,
+  recreateOnDefaultDigest,
+  teardownDigest,
   type DeployGateOptions,
   type DeployLedger,
 } from './deploy-gate.js';
@@ -541,11 +541,41 @@ describe('gateProvisionRelease — up', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('lets a no-image up through untouched while the gated environment is not already up — nothing there yet to protect', async () => {
+  /**
+   * T4.1.4b review 2: the first version of this gate asked `status` first
+   * and let a no-image `up` through untouched whenever nothing was reported
+   * — reasoning that standing up infrastructure nothing is serving asks
+   * nothing of an operator. The review found that reachable, not
+   * theoretical: `production` is declared in this same task and has never
+   * been stood up, so its only reachable state *was* exactly this one,
+   * meaning any caller could stand it up on the compose default — an
+   * outward-facing production deploy — with no approval anywhere in the
+   * path (HIL-2). A no-image `up` against a gated environment must now be
+   * refused whatever `status` reports, nothing included.
+   */
+  it('refuses a no-image up on a gated environment with nothing serving yet — a first bring-up needs approval too', async () => {
     const { provider, calls } = fakeEnvProvider(false);
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(),
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      DeployGateError,
+    );
+    expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
+  });
+
+  it('lets a no-image up through once its first bring-up — nothing serving yet — is confirmed', async () => {
+    const { provider, calls } = fakeEnvProvider(false);
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print]), new Set([print])),
     });
 
     await gated.up({ repo: 'r', env: 'production' } as never);
@@ -555,7 +585,11 @@ describe('gateProvisionRelease — up', () => {
     ]);
   });
 
-  it('refuses a no-image up on a gated environment that is already up, under RECREATE_ON_DEFAULT_DIGEST, without ever calling the real up', async () => {
+  const ONE_SERVICE_UP: ServiceStatus[] = [
+    { name: 'service', state: 'running', health: 'healthy', containerId: 'c1' },
+  ];
+
+  it('refuses a no-image up on a gated environment that is already up, under recreateOnDefaultDigest, without ever calling the real up', async () => {
     const { provider, calls } = fakeEnvProvider(true);
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
@@ -573,7 +607,7 @@ describe('gateProvisionRelease — up', () => {
     const print = deployFingerprint({
       repo: 'r',
       env: 'production',
-      digest: RECREATE_ON_DEFAULT_DIGEST,
+      digest: recreateOnDefaultDigest(ONE_SERVICE_UP),
     });
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
@@ -584,11 +618,35 @@ describe('gateProvisionRelease — up', () => {
     expect(calls).toHaveLength(2);
   });
 
+  /**
+   * T4.1.4b review 2: confirming a recreate over one reported state must not
+   * stand as a standing authorisation to recreate over a *different* one —
+   * a confirmation of the empty, first-bring-up state must not satisfy a
+   * later call that finds something already serving, and vice versa.
+   */
+  it('does not confirm a recreate over one reported state against a recreate over a different one', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const firstBringUpPrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([firstBringUpPrint]), new Set([firstBringUpPrint])),
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      DeployGateError,
+    );
+    expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
+  });
+
   it('does not confirm "recreate on default" and a specific digest against each other — distinct identities', () => {
     const recreate = deployFingerprint({
       repo: 'r',
       env: 'production',
-      digest: RECREATE_ON_DEFAULT_DIGEST,
+      digest: recreateOnDefaultDigest([]),
     });
     const specific = deployFingerprint({
       repo: 'r',
@@ -645,7 +703,7 @@ describe('gateProvisionRelease — down', () => {
     ]);
   });
 
-  it('refuses down on a gated environment that is up, under TEARDOWN_ENV_DIGEST, without ever calling the real down', async () => {
+  it('refuses down on a gated environment that is up, under teardownDigest, without ever calling the real down', async () => {
     const { provider, calls } = fakeEnvProvider(true);
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
@@ -658,12 +716,16 @@ describe('gateProvisionRelease — down', () => {
     expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
   });
 
+  const ONE_SERVICE_UP: ServiceStatus[] = [
+    { name: 'service', state: 'running', health: 'healthy', containerId: 'c1' },
+  ];
+
   it('lets down on an already-up gated environment through once "torn down" is confirmed', async () => {
     const { provider, calls } = fakeEnvProvider(true);
     const print = deployFingerprint({
       repo: 'r',
       env: 'production',
-      digest: TEARDOWN_ENV_DIGEST,
+      digest: teardownDigest(ONE_SERVICE_UP),
     });
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
@@ -672,6 +734,39 @@ describe('gateProvisionRelease — down', () => {
 
     await requireDown(gated)({ repo: 'r', env: 'production' } as never);
     expect(calls).toHaveLength(2);
+  });
+
+  /**
+   * T4.1.4b review 2: a fixed `TEARDOWN_ENV_DIGEST` sentinel made one
+   * confirmed teardown a standing authorisation to tear the same
+   * environment down again in every later run, whatever it happened to be
+   * serving by then — each teardown destroys whatever is currently there,
+   * which is a different question every time. Confirming a teardown of one
+   * reported state must not satisfy a later teardown of a different one.
+   */
+  it('does not confirm a teardown of one reported state against a teardown of a different one', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const differentStatePrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: teardownDigest([
+        {
+          name: 'service',
+          state: 'running',
+          health: 'healthy',
+          containerId: 'some-other-id',
+        },
+      ]),
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([differentStatePrint]), new Set([differentStatePrint])),
+    });
+
+    await expect(
+      requireDown(gated)({ repo: 'r', env: 'production' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
   });
 
   it('leaves a provider with no down untouched — there is no operation here to gate', () => {
@@ -696,16 +791,53 @@ describe('gateProvisionRelease — down', () => {
    * follows is correctly ungated because there truly is nothing left to
    * replace, not because `down` snuck past unchecked.
    */
-  it('does not leave a two-call route to an unapproved recreate: a confirmed down actually leaves the environment down for the up that follows', async () => {
+  /**
+   * The fourth-review finding the abandoned pre-split T4.1.4 attempt
+   * recorded (`f6c7157`), and T4.1.4b review 2's blocker finding both bear
+   * on this: a confirmed `down` leaves the environment reporting nothing, so
+   * a *following* no-image `up` must not read that as "nothing to protect,
+   * proceed" — that would make one teardown confirmation buy an unconfirmed
+   * recreate for free. Since review 2, the no-image `up` case no longer
+   * trusts "nothing reported" at all: it is gated unconditionally, so this
+   * route is closed structurally, not because `down` happens to leave the
+   * right state behind.
+   */
+  it('does not leave a two-call route to an unapproved recreate: a confirmed down does not also authorise the up that follows', async () => {
     const { provider, calls } = fakeEnvProvider(true);
     const downPrint = deployFingerprint({
       repo: 'r',
       env: 'production',
-      digest: TEARDOWN_ENV_DIGEST,
+      digest: teardownDigest(ONE_SERVICE_UP),
     });
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([downPrint]), new Set([downPrint])),
+    });
+
+    await requireDown(gated)({ repo: 'r', env: 'production' } as never);
+    calls.length = 0;
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      DeployGateError,
+    );
+    expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
+  });
+
+  it('lets the up that follows a confirmed down through once its own first-bring-up state is separately confirmed', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const downPrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: teardownDigest(ONE_SERVICE_UP),
+    });
+    const upPrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([downPrint, upPrint]), new Set([downPrint, upPrint])),
     });
 
     await requireDown(gated)({ repo: 'r', env: 'production' } as never);
@@ -786,7 +918,7 @@ describe.each<[string, ServiceStatus]>([
       const print = deployFingerprint({
         repo: 'r',
         env: 'production',
-        digest: RECREATE_ON_DEFAULT_DIGEST,
+        digest: recreateOnDefaultDigest([service]),
       });
       const gated = provisionGate(provider, {
         gatedEnvs: PRODUCTION_GATED,
@@ -802,7 +934,7 @@ describe.each<[string, ServiceStatus]>([
       const print = deployFingerprint({
         repo: 'r',
         env: 'production',
-        digest: TEARDOWN_ENV_DIGEST,
+        digest: teardownDigest([service]),
       });
       const gated = provisionGate(provider, {
         gatedEnvs: PRODUCTION_GATED,
@@ -981,5 +1113,51 @@ describe('deployFingerprint', () => {
     expect(deployFingerprint(target)).toBe(
       deployFingerprint({ ...target, label: '1.0.0' }),
     );
+  });
+});
+
+/**
+ * T4.1.4b review 2: `RECREATE_ON_DEFAULT_DIGEST`/`TEARDOWN_ENV_DIGEST` used
+ * to be the whole digest, so one confirmation of "recreate on default" or
+ * "tear this down" stood as a standing authorisation to do the same thing
+ * again in every later run, whatever the environment happened to be serving
+ * by then. `recreateOnDefaultDigest`/`teardownDigest` fold the reported
+ * services in instead, so the identity itself — not just what the gate asks
+ * about — depends on the current state.
+ */
+describe('recreateOnDefaultDigest / teardownDigest', () => {
+  const service = (containerId: string): ServiceStatus => ({
+    name: 'service',
+    state: 'running',
+    health: 'healthy',
+    containerId,
+  });
+
+  it('is stable for the same reported services', () => {
+    expect(recreateOnDefaultDigest([service('c1')])).toBe(
+      recreateOnDefaultDigest([service('c1')]),
+    );
+    expect(teardownDigest([service('c1')])).toBe(teardownDigest([service('c1')]));
+  });
+
+  it('changes when the reported containerId changes — a replacement container is a different state', () => {
+    expect(recreateOnDefaultDigest([service('c1')])).not.toBe(
+      recreateOnDefaultDigest([service('c2')]),
+    );
+    expect(teardownDigest([service('c1')])).not.toBe(teardownDigest([service('c2')]));
+  });
+
+  it('distinguishes "nothing reported" from any reported service', () => {
+    expect(recreateOnDefaultDigest([])).not.toBe(
+      recreateOnDefaultDigest([service('c1')]),
+    );
+    expect(teardownDigest([])).not.toBe(teardownDigest([service('c1')]));
+  });
+
+  it('keeps "recreate on default" and "torn down" apart for the identical reported state', () => {
+    expect(recreateOnDefaultDigest([service('c1')])).not.toBe(
+      teardownDigest([service('c1')]),
+    );
+    expect(recreateOnDefaultDigest([])).not.toBe(teardownDigest([]));
   });
 });

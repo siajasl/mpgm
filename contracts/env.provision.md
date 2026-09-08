@@ -171,24 +171,44 @@ existed:
   digest would compute — a digest names one build, whichever contract asks to
   run it, so a confirmation given through either path satisfies both
   (DESIGN §9 decision 9/11).
-- **`up` with no `image`.** With no image to check, this call can only ever
-  recreate the environment on its own compose default — a question this gate
-  answers by asking the wrapped provider's own `status` first: no service
-  reported at all, there is nothing yet to replace, and the call proceeds
-  untouched, exactly as it did before this gate existed (standing up the
-  declared IaC before any release exists to point it at is this contract's
-  own reason to exist); any service reported, whatever its state or health,
-  it is refused under a fingerprint fixed for "recreate this `{repo, env}` on
-  its default" until an operator confirms it.
-- **`down`.** The same `status` question, for the same reason: tearing down
-  infrastructure nothing is serving asks nothing of an operator, so `down`
-  against an environment `status` reports no service in at all proceeds
-  untouched. Any service reported, it is refused under a fingerprint fixed
-  for "tear this `{repo, env}` down" until an operator confirms it —
-  otherwise an ungated `down` followed by the no-image `up` case above would
-  be a two-call route to the identical unconfirmed-recreate state that case
-  already refuses on its own, since `down` leaves the environment reporting
-  nothing for the `up` that follows to find.
+- **`up` with no `image`.** Gated unconditionally, whatever the wrapped
+  provider's own `status` reports — even nothing at all. An earlier version
+  of this gate asked `status` first and let the call through untouched when
+  nothing was reported, reasoning that standing up infrastructure nothing is
+  serving asks nothing of an operator; a review found that reachable, not
+  theoretical — `production` was declared the same commit this gate landed
+  in, and had never been stood up, so its only reachable state *was* exactly
+  the untouched one, meaning a no-image `up` could stand it up on the compose
+  default with no approval anywhere in the path, which is precisely the
+  outward-facing production deploy HIL-2 says must always require one.
+  `status` is still asked, not to decide whether to gate, but to fold what it
+  reports into the fingerprint (see below) so a confirmation answers "may
+  *this* reported state be replaced", first bring-up included, rather than
+  "may a no-image `up` here ever proceed".
+- **`down`.** `status` still decides whether there is anything here to
+  protect in the first place: tearing down infrastructure nothing is serving
+  genuinely changes nothing, so a `down` against an environment `status`
+  reports no service in at all proceeds untouched. Any service reported, it
+  is refused until an operator confirms tearing down *that exact reported
+  state* — not a fingerprint fixed for "tear this `{repo, env}` down" in
+  general, which a review found let one confirmed teardown stand as a
+  standing authorisation to tear the same environment down again in every
+  later run, whatever it happened to be serving by then. The two-call route
+  a fixed-fingerprint `down` followed by an unconditionally-gated no-image
+  `up` might otherwise seem to reopen — a confirmed `down` leaving the
+  environment reporting nothing, for a no-image `up` to find — does not
+  apply here either, because the `up` case above no longer trusts "nothing
+  reported" to mean "safe to proceed" at all.
+
+Both `up`'s and `down`'s gated fingerprints fold the wrapped provider's
+currently-reported services into the identity (`recreateOnDefaultDigest`,
+`teardownDigest`, `src/policy/deploy-gate.ts`) rather than using a sentinel
+fixed for the act alone: a confirmation this way answers "may *this* state be
+replaced or torn down", not "may this kind of call against this environment
+ever proceed" — the distinction a review found missing, since a fixed
+sentinel let one operator confirmation of a teardown or a recreate stand as a
+permanent authorisation for every later one, however different what the
+environment was actually serving by then.
 
 This is deliberately not the same question `up` in the output answers.
 `envStatusOutput.up` (`environmentUp`) fails closed for a service still
@@ -203,9 +223,10 @@ conditions a deploy ordinarily passes through. What decides "nothing to
 protect" here is the presence of any reported service, never its health.
 
 A provider with no `status` is refused outright for a gated environment,
-fail closed (CONV-4): neither the no-image `up` case nor `down` can tell
-"nothing to protect yet" from "this would replace a confirmed release"
-without asking first, and every provider satisfying this contract already
+fail closed (CONV-4): neither the no-image `up` case nor `down` can compute a
+fingerprint over what is actually there, and `down` additionally cannot tell
+"nothing to protect yet" from "this would replace a confirmed release",
+without asking first — and every provider satisfying this contract already
 implements `status` (see "Operations" above), so this asks nothing new of one
 that does. `scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) exercises the
 `release.deliver` side of this against a real `docker compose`; the
