@@ -173,20 +173,34 @@ existed:
   (DESIGN §9 decision 9/11).
 - **`up` with no `image`.** With no image to check, this call can only ever
   recreate the environment on its own compose default — a question this gate
-  answers by asking the wrapped provider's own `status` first: not up, there
-  is nothing yet to replace, and the call proceeds untouched, exactly as it
-  did before this gate existed (standing up the declared IaC before any
-  release exists to point it at is this contract's own reason to exist);
-  already up, it is refused under a fingerprint fixed for "recreate this
-  `{repo, env}` on its default" until an operator confirms it.
+  answers by asking the wrapped provider's own `status` first: no service
+  reported at all, there is nothing yet to replace, and the call proceeds
+  untouched, exactly as it did before this gate existed (standing up the
+  declared IaC before any release exists to point it at is this contract's
+  own reason to exist); any service reported, whatever its state or health,
+  it is refused under a fingerprint fixed for "recreate this `{repo, env}` on
+  its default" until an operator confirms it.
 - **`down`.** The same `status` question, for the same reason: tearing down
   infrastructure nothing is serving asks nothing of an operator, so `down`
-  against an environment that is not up proceeds untouched. Already up, it is
-  refused under a fingerprint fixed for "tear this `{repo, env}` down" until
-  an operator confirms it — otherwise an ungated `down` followed by the
-  no-image `up` case above would be a two-call route to the identical
-  unconfirmed-recreate state that case already refuses on its own, since
-  `down` leaves the environment not up for the `up` that follows to find.
+  against an environment `status` reports no service in at all proceeds
+  untouched. Any service reported, it is refused under a fingerprint fixed
+  for "tear this `{repo, env}` down" until an operator confirms it —
+  otherwise an ungated `down` followed by the no-image `up` case above would
+  be a two-call route to the identical unconfirmed-recreate state that case
+  already refuses on its own, since `down` leaves the environment reporting
+  nothing for the `up` that follows to find.
+
+This is deliberately not the same question `up` in the output answers.
+`envStatusOutput.up` (`environmentUp`) fails closed for a service still
+`starting`, `unhealthy`, `exited`, or otherwise short of cleanly
+`running`/healthy — the right default for "may this be trusted to serve
+traffic", and the wrong one for "is there something here a gate must
+protect": read that way, a confirmed release failing its healthcheck,
+mid-`start_period`, or whose container exited, is indistinguishable from an
+environment with nothing running in it at all, and both `down` and the
+no-image `up` would reach the provider with no approval during exactly the
+conditions a deploy ordinarily passes through. What decides "nothing to
+protect" here is the presence of any reported service, never its health.
 
 A provider with no `status` is refused outright for a gated environment,
 fail closed (CONV-4): neither the no-image `up` case nor `down` can tell
@@ -195,9 +209,11 @@ without asking first, and every provider satisfying this contract already
 implements `status` (see "Operations" above), so this asks nothing new of one
 that does. `scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) exercises the
 `release.deliver` side of this against a real `docker compose`; the
-`env.provision`-only cases above are exercised directly against a fake
-provider in `src/policy/deploy-gate.test.ts` (`gateProvisionRelease`) and
-against the real `composeProvider` in `src/env/compose-provider.test.ts`.
+`env.provision`-only cases above, including a service that is `starting`,
+`unhealthy`, `exited` or `restarting` rather than cleanly up, are exercised
+directly against a fake provider in `src/policy/deploy-gate.test.ts`
+(`gateProvisionRelease`) and against the real `composeProvider` in
+`src/env/compose-provider.test.ts`.
 
 ## Failing closed
 

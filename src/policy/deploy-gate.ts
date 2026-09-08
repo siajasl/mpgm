@@ -1,5 +1,10 @@
 import type { Provider } from '../contract/capability.js';
-import { envRequestInput, envStatusOutput, envUpInput } from '../env/provision.js';
+import {
+  envRequestInput,
+  envStatusOutput,
+  envUpInput,
+  type ServiceStatus,
+} from '../env/provision.js';
 import { releaseDeliverInput, releaseRollbackInput } from '../release/deliver.js';
 import type { DestructiveCallState, KernelState } from '../state/kernel-state.js';
 import { fingerprint } from './destructive.js';
@@ -58,10 +63,11 @@ import { fingerprint } from './destructive.js';
  * {@link RECREATE_ON_DEFAULT_DIGEST}, {@link TEARDOWN_ENV_DIGEST}) — neither
  * is a real digest, because neither call names one, but both are exactly as
  * capable of changing what a gated environment serves as a `deliver` is. An
- * `up`/`down` against an environment that is not currently up is left
- * untouched: there is nothing yet for either call to change (see
+ * `up`/`down` against an environment `status` reports no service at all for
+ * is left untouched: there is nothing yet for either call to change (see
  * {@link gateProvisionRelease}'s own doc for the fail-closed reasoning behind
- * asking `status` first).
+ * asking `status` first, and for why that question is "any service at all",
+ * not "is everything healthy").
  */
 
 export class DeployGateError extends Error {}
@@ -243,6 +249,24 @@ function describe(target: DeployTarget): string {
 }
 
 /**
+ * A compact, human-readable rendering of what a provider's `status` actually
+ * reported — folded into a {@link gateProvisionRelease} refusal's `label` so
+ * an operator can see *why* the gate believes there is something to protect
+ * (CONV-3): the answer no longer follows from `envStatusOutput.up`, so a
+ * message that only said "already up" would describe a verdict this module
+ * does not compute, and would leave "why did it think that" only answerable
+ * by reading the code.
+ */
+function describeServices(services: readonly ServiceStatus[]): string {
+  if (services.length === 0) {
+    return 'no services reported';
+  }
+  return services
+    .map((service) => `${service.name}:${service.state}/${service.health}`)
+    .join(', ');
+}
+
+/**
  * Refuses `target` unless it has been recorded and confirmed. Fails closed
  * (CONV-4): an unrecognised or absent ledger answer refuses the call, never
  * allows it.
@@ -373,21 +397,22 @@ export function gateProductionRelease(
 
 /**
  * A fingerprint identity for an `env.provision#up` call that carries no
- * `image`, against an environment {@link gateProvisionRelease} finds already
- * up. Not a real digest — no such call ever names one — but a stable
- * identity for the one question this act actually asks an operator: "may
- * this environment be recreated on whatever its compose file defaults to,
- * replacing what it currently serves?" Distinct from
- * {@link TEARDOWN_ENV_DIGEST} so confirming one never silently confirms the
- * other, even though neither names a real digest either.
+ * `image`, against an environment {@link gateProvisionRelease} finds `status`
+ * reporting any service at all, whatever state or health it is in. Not a real
+ * digest — no such call ever names one — but a stable identity for the one
+ * question this act actually asks an operator: "may this environment be
+ * recreated on whatever its compose file defaults to, replacing what it
+ * currently serves?" Distinct from {@link TEARDOWN_ENV_DIGEST} so confirming
+ * one never silently confirms the other, even though neither names a real
+ * digest either.
  */
 export const RECREATE_ON_DEFAULT_DIGEST = 'env-provision:recreate-on-default';
 
 /**
  * A fingerprint identity for an `env.provision#down` call against an
- * environment {@link gateProvisionRelease} finds already up. See
- * {@link RECREATE_ON_DEFAULT_DIGEST} for why this is a fixed sentinel rather
- * than a digest, and why the two are kept apart.
+ * environment {@link gateProvisionRelease} finds `status` reporting any
+ * service at all. See {@link RECREATE_ON_DEFAULT_DIGEST} for why this is a
+ * fixed sentinel rather than a digest, and why the two are kept apart.
  */
 export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
 
@@ -422,21 +447,37 @@ export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
  *   replace what is running with the environment's own compose default — a
  *   question with a knowable answer *before* running it: is anything a gate
  *   would need to protect running there already? `status` is asked first.
- *   Not up: there is nothing to replace, and standing up the declared IaC
- *   before any release exists to point it at is `env.provision`'s own reason
- *   to exist (`contracts/env.provision.md`), so the call proceeds untouched.
- *   Already up: refused under {@link RECREATE_ON_DEFAULT_DIGEST} until an
- *   operator confirms recreating this exact `{repo, env}` on its default.
+ *   Nothing reported at all: there is nothing to replace, and standing up the
+ *   declared IaC before any release exists to point it at is `env.provision`'s
+ *   own reason to exist (`contracts/env.provision.md`), so the call proceeds
+ *   untouched. Anything reported — refused under
+ *   {@link RECREATE_ON_DEFAULT_DIGEST} until an operator confirms recreating
+ *   this exact `{repo, env}` on its default.
  * - **`down`.** The same `status` question, for the same reason: tearing
  *   down infrastructure nothing is serving asks nothing of an operator, so a
- *   `down` against an environment that is not up proceeds untouched. Already
- *   up, it is refused under {@link TEARDOWN_ENV_DIGEST} until an operator
- *   confirms tearing this exact `{repo, env}` down — otherwise `down`
- *   followed by a no-image `up` would be a two-call way to reach the
- *   identical "recreated on the default, unconfirmed" state the case above
- *   already refuses, just split across two calls that individually look
- *   harmless: `down` leaves the environment not up, so the no-image `up`
- *   that follows would find nothing to protect and proceed too.
+ *   `down` against an environment `status` reports nothing running in at all
+ *   proceeds untouched. Anything reported, it is refused under
+ *   {@link TEARDOWN_ENV_DIGEST} until an operator confirms tearing this exact
+ *   `{repo, env}` down — otherwise `down` followed by a no-image `up` would
+ *   be a two-call way to reach the identical "recreated on the default,
+ *   unconfirmed" state the case above already refuses, just split across two
+ *   calls that individually look harmless: an ungated `down` leaves the
+ *   environment reporting nothing, so the no-image `up` that follows would
+ *   find nothing to protect and proceed too.
+ *
+ * **The question asked of `status` is "is anything there at all", never "is
+ * it healthy".** `envStatusOutput.up` — {@link environmentUp}'s verdict —
+ * fails closed for a service still `starting`, `unhealthy`, `exited` or
+ * otherwise not cleanly `running`/`healthy` (`src/env/provision.ts`): exactly
+ * right for "may this be trusted to serve traffic", and exactly wrong for
+ * "is this environment a gate must protect", because it reads all four of
+ * those states — a confirmed release mid-`start_period`, failing its
+ * healthcheck, or whose container exited — as indistinguishable from an
+ * environment with nothing running in it at all, which is precisely the
+ * ambiguity CONV-4 asks a control to refuse rather than resolve in its own
+ * favour. What decides "nothing here to protect" is the presence of any
+ * reported service (`services.length > 0`), never `up`; only a provider
+ * reporting no services whatsoever reads as nothing to protect.
  *
  * `status` is never gated — asking costs nothing and changes nothing
  * (`contracts/env.provision.md`).
@@ -444,8 +485,8 @@ export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
  * A provider with no `status` is refused outright, fail closed (CONV-4):
  * neither the no-image `up` case nor `down` can tell "nothing to protect yet"
  * from "this would replace a confirmed release" without asking, and assuming
- * "not up" for a provider that cannot answer is exactly the ambiguity a
- * security control must refuse rather than paper over. A provider with no
+ * "nothing there" for a provider that cannot answer is exactly the ambiguity
+ * a security control must refuse rather than paper over. A provider with no
  * `up` has nothing here to gate at all and is refused at construction, the
  * same as `gateProductionRelease` refuses a provider missing `deliver`. A
  * provider with no `down` is left as it is — there is no operation there to
@@ -466,20 +507,37 @@ export function gateProvisionRelease(
   const down = provider.down;
 
   /**
-   * Whether `env` is currently up, per the wrapped provider's own `status` —
-   * the only way either the no-image `up` case or `down` can tell "nothing
-   * to replace or tear down yet" from "this would change what a gated
-   * environment serves" without inventing a notion of "confirmed release"
-   * `env.provision` does not have. Fails closed (CONV-4): a provider with no
-   * `status` is never assumed fresh, and `caller` names which operation is
-   * asking, for a message that does not make an operator guess which call
-   * this refusal came from (CONV-3).
+   * Whether `env` has anything at all for a gate to protect, per the wrapped
+   * provider's own `status` — the only way either the no-image `up` case or
+   * `down` can tell "nothing to replace or tear down yet" from "this would
+   * change what a gated environment serves" without inventing a notion of
+   * "confirmed release" `env.provision` does not have.
+   *
+   * Answered from the presence of any reported service
+   * (`current.services.length > 0`), never from `current.up`. `up` is
+   * {@link environmentUp}'s verdict, and it fails closed for a service still
+   * `starting`, `unhealthy`, `exited` or otherwise short of cleanly
+   * `running`/healthy — exactly right for "may this be trusted to serve
+   * traffic", and exactly wrong for this question: a confirmed release
+   * failing its healthcheck, mid-`start_period`, or whose container exited is
+   * still something a `down` or a no-image `up` would replace, and reading
+   * `up: false` there as "nothing to protect" would let either reach the
+   * provider with no approval — the fail-closed default `environmentUp`
+   * documents becomes, read in this polarity, the gate's fail-*open* default
+   * (CONV-4). Only a provider reporting no services whatsoever reads as
+   * nothing to protect.
+   *
+   * Fails closed on the provider itself too: a provider with no `status` is
+   * never assumed fresh, and `caller` names which operation is asking, with
+   * the services actually found summarised in the returned `summary`, so a
+   * refusal built from either can tell an operator what the gate saw without
+   * their reading this module (CONV-3).
    */
-  async function currentlyUp(
+  async function servingAnything(
     repo: string,
     env: string,
     caller: string,
-  ): Promise<boolean> {
+  ): Promise<{ readonly anything: boolean; readonly summary: string }> {
     if (status === undefined) {
       throw new DeployGateError(
         `'${caller}' on '${env}' cannot be confirmed safe: the provider given ` +
@@ -489,7 +547,10 @@ export function gateProvisionRelease(
       );
     }
     const current = envStatusOutput.parse(await status({ repo, env } as never));
-    return current.up;
+    return {
+      anything: current.services.length > 0,
+      summary: describeServices(current.services),
+    };
   }
 
   return {
@@ -509,9 +570,12 @@ export function gateProvisionRelease(
       }
       // No image: this call can only ever recreate the environment on its
       // own compose default, so whether it needs an operator's approval
-      // turns on whether there is a confirmed release running to replace —
-      // asked, not assumed.
-      if (!(await currentlyUp(parsed.repo, parsed.env, 'up with no image'))) {
+      // turns on whether the provider reports anything at all there to
+      // replace — asked, not assumed, and never from health (see
+      // `servingAnything`'s own doc for why `up: false` is not "nothing
+      // there").
+      const serving = await servingAnything(parsed.repo, parsed.env, 'up with no image');
+      if (!serving.anything) {
         return up(input);
       }
       assertReady(
@@ -519,7 +583,7 @@ export function gateProvisionRelease(
           repo: parsed.repo,
           env: parsed.env,
           digest: RECREATE_ON_DEFAULT_DIGEST,
-          label: 'recreate on the compose default',
+          label: `recreate on the compose default (currently: ${serving.summary})`,
         },
         options,
       );
@@ -534,7 +598,8 @@ export function gateProvisionRelease(
             if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
               return down(input);
             }
-            if (!(await currentlyUp(parsed.repo, parsed.env, 'down'))) {
+            const serving = await servingAnything(parsed.repo, parsed.env, 'down');
+            if (!serving.anything) {
               return down(input);
             }
             assertReady(
@@ -542,7 +607,7 @@ export function gateProvisionRelease(
                 repo: parsed.repo,
                 env: parsed.env,
                 digest: TEARDOWN_ENV_DIGEST,
-                label: 'torn down',
+                label: `torn down (currently: ${serving.summary})`,
               },
               options,
             );

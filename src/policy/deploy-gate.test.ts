@@ -3,6 +3,7 @@ import type { Provider } from '../contract/capability.js';
 import { MEMORY } from '../database.js';
 import { KERNEL_TASK, kernelRegistry } from '../event/catalog.js';
 import type { EventInput } from '../event/envelope.js';
+import { environmentUp, type ServiceStatus } from '../env/provision.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
 import { EventLog } from '../event/store.js';
 import { fold } from '../state/reduce.js';
@@ -452,6 +453,53 @@ function fakeEnvProvider(startUp = false): {
   return { provider, calls };
 }
 
+/**
+ * A fake `env.provision` provider whose `status`/`up`/`down` all report a
+ * fixed, caller-supplied set of services, `up`/`down`'s own claim computed
+ * from the same `environmentUp` the real schema requires (`envStatusOutput`)
+ * — so a service that is `running` but `unhealthy`, `starting`, or `exited`
+ * can be handed to the gate directly, rather than only the fully-healthy or
+ * fully-empty extremes {@link fakeEnvProvider} covers.
+ *
+ * Exists for the T4.1.4b rework finding: `gateProvisionRelease` decided
+ * "anything here to protect" from this same `environmentUp` verdict, which
+ * reads a `starting`/`unhealthy`/`exited` service as indistinguishable from
+ * no service at all — this is what lets a test put the gate in front of
+ * exactly that ambiguity (CONV-4, CONV-6).
+ */
+function fakeEnvProviderServing(services: ServiceStatus[]): {
+  provider: Provider;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const status = (input: never) => {
+    return Promise.resolve({
+      env: (input as { env: string }).env,
+      up: environmentUp(services),
+      services,
+    });
+  };
+  const provider: Provider = {
+    up: (input: never) => {
+      calls.push(`up:${JSON.stringify(input)}`);
+      return status(input);
+    },
+    down: (input: never) => {
+      calls.push(`down:${JSON.stringify(input)}`);
+      return Promise.resolve({
+        env: (input as { env: string }).env,
+        up: false,
+        services: [],
+      });
+    },
+    status: (input: never) => {
+      calls.push(`status:${JSON.stringify(input)}`);
+      return status(input);
+    },
+  };
+  return { provider, calls };
+}
+
 describe('gateProvisionRelease — up', () => {
   it('refuses an image-carrying up on a gated environment without a recorded dry run', async () => {
     const { provider, calls } = fakeEnvProvider();
@@ -670,6 +718,102 @@ describe('gateProvisionRelease — down', () => {
     ]);
   });
 });
+
+/**
+ * T4.1.4b rework 1: `gateProvisionRelease` decided "is there anything here to
+ * protect" from `envStatusOutput.up` (`environmentUp`'s verdict), which fails
+ * closed for a service still `starting`, `unhealthy`, or `exited` — read as
+ * "not up", indistinguishable from an environment with nothing running at
+ * all. Against a gated environment serving a confirmed release whose
+ * healthcheck was failing, or mid-`start_period`, or whose container had
+ * exited, both a no-image `up` and a `down` read "not up" as "nothing to
+ * protect" and reached the provider with no approval — replacing a confirmed
+ * release with the compose default, or tearing it down, during exactly the
+ * ordinary operating conditions a deploy passes through (CONV-4). Each of
+ * these must refuse, under {@link RECREATE_ON_DEFAULT_DIGEST}/
+ * {@link TEARDOWN_ENV_DIGEST} same as a cleanly-`running`/`healthy` service
+ * does, and neither may reach the wrapped provider until confirmed.
+ */
+describe.each<[string, ServiceStatus]>([
+  [
+    'starting',
+    { name: 'service', state: 'running', health: 'starting', containerId: 'c1' },
+  ],
+  [
+    'unhealthy',
+    { name: 'service', state: 'running', health: 'unhealthy', containerId: 'c1' },
+  ],
+  ['exited', { name: 'service', state: 'exited', health: 'none', containerId: 'c1' }],
+  [
+    'restarting',
+    { name: 'service', state: 'restarting', health: 'none', containerId: 'c1' },
+  ],
+])(
+  'gateProvisionRelease fails closed on a gated environment reporting one %s service',
+  (label, service) => {
+    it(`refuses a no-image up (${label}) without ever calling the real up`, async () => {
+      const { provider, calls } = fakeEnvProviderServing([service]);
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+        DeployGateError,
+      );
+      expect(calls).toEqual([
+        `status:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      ]);
+    });
+
+    it(`refuses down (${label}) without ever calling the real down`, async () => {
+      const { provider, calls } = fakeEnvProviderServing([service]);
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(),
+      });
+
+      await expect(
+        requireDown(gated)({ repo: 'r', env: 'production' } as never),
+      ).rejects.toThrow(DeployGateError);
+      expect(calls).toEqual([
+        `status:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      ]);
+    });
+
+    it(`lets a no-image up (${label}) through once "recreate on default" is confirmed`, async () => {
+      const { provider, calls } = fakeEnvProviderServing([service]);
+      const print = deployFingerprint({
+        repo: 'r',
+        env: 'production',
+        digest: RECREATE_ON_DEFAULT_DIGEST,
+      });
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(new Set([print]), new Set([print])),
+      });
+
+      await gated.up({ repo: 'r', env: 'production' } as never);
+      expect(calls).toHaveLength(2);
+    });
+
+    it(`lets down (${label}) through once "torn down" is confirmed`, async () => {
+      const { provider, calls } = fakeEnvProviderServing([service]);
+      const print = deployFingerprint({
+        repo: 'r',
+        env: 'production',
+        digest: TEARDOWN_ENV_DIGEST,
+      });
+      const gated = provisionGate(provider, {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: ledger(new Set([print]), new Set([print])),
+      });
+
+      await requireDown(gated)({ repo: 'r', env: 'production' } as never);
+      expect(calls).toHaveLength(2);
+    });
+  },
+);
 
 /**
  * DESIGN §9 decision 11 claims that restoring a release an environment
