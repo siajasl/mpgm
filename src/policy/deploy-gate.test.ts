@@ -11,6 +11,9 @@ import {
   DeployGateError,
   deployFingerprint,
   gateProductionRelease,
+  gateProvisionRelease,
+  RECREATE_ON_DEFAULT_DIGEST,
+  TEARDOWN_ENV_DIGEST,
   type DeployGateOptions,
   type DeployLedger,
 } from './deploy-gate.js';
@@ -362,6 +365,309 @@ describe('gateProductionRelease — rollback', () => {
 
     await gated.rollback({ repo: 'r', env: 'staging', to: release('1.0.0') } as never);
     expect(calls).toHaveLength(1);
+  });
+});
+
+/**
+ * `gateProvisionRelease`'s own `Provider`, the same narrowing reasoning
+ * `GatedReleaseProvider`/`gate` above give for `gateProductionRelease` — a
+ * bare `Record`, narrowed once here rather than at every call. `down` stays
+ * optional: one of these tests wraps a provider that does not implement it
+ * at all (T4.1.4b's own "left as-is" case).
+ */
+interface GatedProvisionProvider {
+  readonly up: (input: never) => Promise<unknown>;
+  readonly down?: (input: never) => Promise<unknown>;
+  readonly status?: (input: never) => Promise<unknown>;
+}
+
+function provisionGate(
+  provider: Provider,
+  options: DeployGateOptions,
+): GatedProvisionProvider {
+  return gateProvisionRelease(provider, options) as unknown as GatedProvisionProvider;
+}
+
+/**
+ * `down`, on `GatedProvisionProvider`, is optional the way `Provider`'s own
+ * handlers all are — a test asserting on it needs the same non-undefined
+ * check `operation` gives `../env/compose-provider.test.ts`, with a message
+ * naming which operation vanished rather than "possibly undefined".
+ */
+function requireDown(
+  provider: GatedProvisionProvider,
+): (input: never) => Promise<unknown> {
+  const fn = provider.down;
+  if (fn === undefined) {
+    throw new Error("gateProvisionRelease's result does not implement 'down'");
+  }
+  return fn;
+}
+
+/**
+ * A fake `env.provision` provider — records every call it actually
+ * received (CONV-6: so a test can tell "the gate let this through" from "the
+ * gate refused it" without a real Docker daemon) and answers `status` from
+ * mutable in-memory state, so a test can move an environment between up and
+ * down the way `up`/`down` themselves would.
+ */
+function fakeEnvProvider(startUp = false): {
+  provider: Provider;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  let up = startUp;
+  const services = () =>
+    up
+      ? [{ name: 'service', state: 'running', health: 'healthy', containerId: 'c1' }]
+      : [];
+  const provider: Provider = {
+    up: (input: never) => {
+      calls.push(`up:${JSON.stringify(input)}`);
+      up = true;
+      return Promise.resolve({
+        env: (input as { env: string }).env,
+        up: true,
+        services: services(),
+      });
+    },
+    down: (input: never) => {
+      calls.push(`down:${JSON.stringify(input)}`);
+      up = false;
+      return Promise.resolve({
+        env: (input as { env: string }).env,
+        up: false,
+        services: [],
+      });
+    },
+    status: (input: never) => {
+      calls.push(`status:${JSON.stringify(input)}`);
+      return Promise.resolve({
+        env: (input as { env: string }).env,
+        up,
+        services: services(),
+      });
+    },
+  };
+  return { provider, calls };
+}
+
+describe('gateProvisionRelease — up', () => {
+  it('refuses an image-carrying up on a gated environment without a recorded dry run', async () => {
+    const { provider, calls } = fakeEnvProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(
+      gated.up({ repo: 'r', env: 'production', image: 'sha256:aaa' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toEqual([]);
+  });
+
+  it('shares its fingerprint with the {repo, env, digest} gateProductionRelease/deployFingerprint would compute for the same digest', async () => {
+    const { provider, calls } = fakeEnvProvider();
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: 'sha256:aaa',
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print]), new Set([print])),
+    });
+
+    await gated.up({ repo: 'r', env: 'production', image: 'sha256:aaa' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('leaves an image-carrying up on a non-gated environment ungated', async () => {
+    const { provider, calls } = fakeEnvProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await gated.up({ repo: 'r', env: 'staging', image: 'sha256:aaa' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('lets a no-image up through untouched while the gated environment is not already up — nothing there yet to protect', async () => {
+    const { provider, calls } = fakeEnvProvider(false);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await gated.up({ repo: 'r', env: 'production' } as never);
+    expect(calls).toEqual([
+      `status:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+    ]);
+  });
+
+  it('refuses a no-image up on a gated environment that is already up, under RECREATE_ON_DEFAULT_DIGEST, without ever calling the real up', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      DeployGateError,
+    );
+    expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
+  });
+
+  it('lets a no-image up on an already-up gated environment through once "recreate on default" is confirmed', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: RECREATE_ON_DEFAULT_DIGEST,
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print]), new Set([print])),
+    });
+
+    await gated.up({ repo: 'r', env: 'production' } as never);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('does not confirm "recreate on default" and a specific digest against each other — distinct identities', () => {
+    const recreate = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: RECREATE_ON_DEFAULT_DIGEST,
+    });
+    const specific = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: 'sha256:aaa',
+    });
+    expect(recreate).not.toBe(specific);
+  });
+
+  it('fails closed on a no-image up against a gated environment when the provider has no status to ask', async () => {
+    const gated = provisionGate(
+      { up: () => Promise.resolve({}) },
+      { gatedEnvs: PRODUCTION_GATED, ledger: ledger() },
+    );
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      /does not implement 'status'/,
+    );
+  });
+
+  it('refuses to wrap a provider that does not implement up', () => {
+    expect(() =>
+      gateProvisionRelease(
+        { status: () => Promise.resolve({ up: false, services: [] }) },
+        { gatedEnvs: PRODUCTION_GATED, ledger: ledger() },
+      ),
+    ).toThrow(DeployGateError);
+  });
+});
+
+describe('gateProvisionRelease — down', () => {
+  it('leaves down on a non-gated environment ungated', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await requireDown(gated)({ repo: 'r', env: 'staging' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('lets down through untouched while the gated environment is not already up', async () => {
+    const { provider, calls } = fakeEnvProvider(false);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await requireDown(gated)({ repo: 'r', env: 'production' } as never);
+    expect(calls).toEqual([
+      `status:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      `down:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+    ]);
+  });
+
+  it('refuses down on a gated environment that is up, under TEARDOWN_ENV_DIGEST, without ever calling the real down', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(
+      requireDown(gated)({ repo: 'r', env: 'production' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
+  });
+
+  it('lets down on an already-up gated environment through once "torn down" is confirmed', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: TEARDOWN_ENV_DIGEST,
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print]), new Set([print])),
+    });
+
+    await requireDown(gated)({ repo: 'r', env: 'production' } as never);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('leaves a provider with no down untouched — there is no operation here to gate', () => {
+    const gated = provisionGate(
+      {
+        up: () => Promise.resolve({}),
+        status: () => Promise.resolve({ up: false, services: [] }),
+      },
+      { gatedEnvs: PRODUCTION_GATED, ledger: ledger() },
+    );
+    expect(gated.down).toBeUndefined();
+  });
+
+  /**
+   * The fourth-review finding the abandoned pre-split T4.1.4 attempt
+   * recorded (`f6c7157`): an ungated `down` leaves an environment not up, so
+   * a *following* no-image `up` — refused above only while something is
+   * actually running — would find nothing to protect and pass through too,
+   * silently recreating a confirmed release on the compose default with no
+   * approval anywhere in either call. Confirming `down` here closes that:
+   * the environment really is down afterward, and the no-image `up` that
+   * follows is correctly ungated because there truly is nothing left to
+   * replace, not because `down` snuck past unchecked.
+   */
+  it('does not leave a two-call route to an unapproved recreate: a confirmed down actually leaves the environment down for the up that follows', async () => {
+    const { provider, calls } = fakeEnvProvider(true);
+    const downPrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: TEARDOWN_ENV_DIGEST,
+    });
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([downPrint]), new Set([downPrint])),
+    });
+
+    await requireDown(gated)({ repo: 'r', env: 'production' } as never);
+    calls.length = 0;
+
+    await gated.up({ repo: 'r', env: 'production' } as never);
+    expect(calls).toEqual([
+      `status:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+    ]);
   });
 });
 

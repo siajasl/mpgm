@@ -91,9 +91,13 @@ const producedBy = {
 };
 
 const registry = new CapabilityRegistry();
-const env = registry.bind(envProvisionContract, composeProvider());
-// The HIL-2 release-path gate (`src/policy/deploy-gate.ts`) is a required
-// constructor argument as of T4.1.4a. `gatedEnvs` is wired straight to
+// The HIL-2 deploy gate (`src/policy/deploy-gate.ts`) is a required
+// constructor argument on both `composeProvider` (T4.1.4b) and
+// `dockerReleaseProvider` (T4.1.4a) — the same `gate` object is handed to
+// both, deliberately: `dockerReleaseProvider#deliver`/`#rollback` delegate to
+// this exact `env` underneath, and both gates share one fingerprint identity
+// per `{repo, env, digest}` (decision 9/11), so a confirmation seen by one
+// must be seen by the other. `gatedEnvs` is wired straight to
 // `gatedEnvironments` — a function of the `repo` each call names, re-reading
 // that repo's own manifest every time (never a hardcoded set, and never a
 // set fixed to whichever repo happened to be at hand when this provider was
@@ -104,15 +108,14 @@ const env = registry.bind(envProvisionContract, composeProvider());
 // environment would be refused instead of silently delivered.
 // `scripts/demo/deploy-gate.mjs` is what exercises the refusal itself,
 // against the `staging` environment the manifest does mark gated.
+const gate = {
+  gatedEnvs: gatedEnvironments,
+  ledger: { dryRunSeen: () => false, confirmed: () => false },
+};
+const env = registry.bind(envProvisionContract, composeProvider({ gate }));
 const release = registry.bind(
   releaseDeliverContract,
-  dockerReleaseProvider({
-    envProvision: env,
-    gate: {
-      gatedEnvs: gatedEnvironments,
-      ledger: { dryRunSeen: () => false, confirmed: () => false },
-    },
-  }),
+  dockerReleaseProvider({ envProvision: env, gate }),
 );
 
 const policy = { attempts: 8, intervalMs: 1000 };

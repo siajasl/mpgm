@@ -1,10 +1,12 @@
 import type { Provider } from '../contract/capability.js';
+import { envRequestInput, envStatusOutput, envUpInput } from '../env/provision.js';
 import { releaseDeliverInput, releaseRollbackInput } from '../release/deliver.js';
 import type { DestructiveCallState, KernelState } from '../state/kernel-state.js';
 import { fingerprint } from './destructive.js';
 
 /**
- * The release-path deploy gate (DESIGN §9 decision 10/11, HIL-2, SAF-4).
+ * The deploy gate — release path and environment path alike (DESIGN §9
+ * decision 10/11/14, HIL-2, SAF-4).
  *
  * HIL-2 asks that irreversible, outward-facing actions require explicit
  * approval *regardless of gate settings* — a phase gate will not do, because
@@ -15,7 +17,8 @@ import { fingerprint } from './destructive.js';
  * — a stable fingerprint over the call, a dry run that records intent
  * without effect, and a confirmation keyed to that exact fingerprint —
  * applied directly in front of `release.deliver#deliver`/`#rollback`
- * ({@link gateProductionRelease}).
+ * ({@link gateProductionRelease}) and, since T4.1.4b, in front of
+ * `env.provision#up`/`#down` ({@link gateProvisionRelease}).
  *
  * **Which environments are gated is never a name this module knows.** A
  * caller reads `gatedEnvs` from the target project's own
@@ -36,24 +39,29 @@ import { fingerprint } from './destructive.js';
  * first place — otherwise `rollback` would be a second, ungated door into a
  * gated environment that the `deliver` gate never sees.
  *
- * **What this module does not close.** `release.deliver#deliver`/`#rollback`
- * delegate to `env.provision#up` underneath
- * (`../release/docker-provider.ts`), and this module gates only the door it
- * is placed in front of — a caller reaching `env.provision#up` directly,
- * with an `image` override, bypassing `release.deliver` entirely, is not
- * gated by anything here. That is deliberately out of this task's scope, not
- * an oversight: PLAN.md splits "gate the release path"
- * (`release.deliver#deliver`/`#rollback`, this module) from "gate the
- * environment path, and declare production" (every `env.provision`
- * operation, `down` included, plus declaring `production` once nothing can
- * reach it unapproved) into two tasks along exactly this contract boundary,
- * and this module is the first of them. This project now declares one gated
- * environment, `staging` (`deploy/environments/environments.yaml`), but only
- * on the `release.deliver` path this module sits in front of —
- * `env.provision#up` with an `image` override reaches it ungated until
- * T4.1.4b lands (`contracts/release.deliver.md`); closing that for whichever
- * environment a project marks `approval: required` — this project's own
- * eventual `production` included — is the second task's job.
+ * **`env.provision` is the other door to the same environment, and T4.1.4a
+ * left it open.** `release.deliver#deliver`/`#rollback` delegate to
+ * `env.provision#up` underneath (`../release/docker-provider.ts`), but a
+ * caller reaching `env.provision#up` directly — with an `image` override,
+ * bypassing `release.deliver` entirely — was not gated by anything in this
+ * module until now, and neither was `env.provision#down`, which can change
+ * what a gated environment serves just as surely: tearing it down and
+ * letting a later no-image `up` recreate it on the compose default replaces
+ * a confirmed release with an unconfirmed one in two calls, neither of which
+ * named an image at all. {@link gateProvisionRelease} closes both: an
+ * `up` carrying an `image` is checked under the identical fingerprint
+ * `deliver` would compute for the same `{repo, env, digest}` (decision 9/11
+ * — a digest is a digest, whichever contract asks to run it, so a
+ * confirmation given to one satisfies the other and neither asks twice); an
+ * `up` with no `image`, or a `down`, against an environment already serving
+ * something is checked under a fingerprint fixed for that act alone (see
+ * {@link RECREATE_ON_DEFAULT_DIGEST}, {@link TEARDOWN_ENV_DIGEST}) — neither
+ * is a real digest, because neither call names one, but both are exactly as
+ * capable of changing what a gated environment serves as a `deliver` is. An
+ * `up`/`down` against an environment that is not currently up is left
+ * untouched: there is nothing yet for either call to change (see
+ * {@link gateProvisionRelease}'s own doc for the fail-closed reasoning behind
+ * asking `status` first).
  */
 
 export class DeployGateError extends Error {}
@@ -360,5 +368,186 @@ export function gateProductionRelease(
       );
       return rollbackOp(input);
     },
+  };
+}
+
+/**
+ * A fingerprint identity for an `env.provision#up` call that carries no
+ * `image`, against an environment {@link gateProvisionRelease} finds already
+ * up. Not a real digest — no such call ever names one — but a stable
+ * identity for the one question this act actually asks an operator: "may
+ * this environment be recreated on whatever its compose file defaults to,
+ * replacing what it currently serves?" Distinct from
+ * {@link TEARDOWN_ENV_DIGEST} so confirming one never silently confirms the
+ * other, even though neither names a real digest either.
+ */
+export const RECREATE_ON_DEFAULT_DIGEST = 'env-provision:recreate-on-default';
+
+/**
+ * A fingerprint identity for an `env.provision#down` call against an
+ * environment {@link gateProvisionRelease} finds already up. See
+ * {@link RECREATE_ON_DEFAULT_DIGEST} for why this is a fixed sentinel rather
+ * than a digest, and why the two are kept apart.
+ */
+export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
+
+/**
+ * Wraps an `env.provision` provider so `up` and `down` cannot change what a
+ * gated environment serves without the same confirmation
+ * {@link gateProductionRelease} requires of `release.deliver` (HIL-2, DESIGN
+ * §9 decision 14).
+ *
+ * `env.provision` carries no notion of "production" (`contracts/env.provision.md`)
+ * and never should — the same reasoning `gateProductionRelease` already
+ * applies, restated here because this is the second, independent place it
+ * has to hold: binding this contract unwrapped, anywhere a target project
+ * might mark an environment `approval: required`, is exactly the ungated
+ * route this decision closes. `env/compose-provider.ts`'s `composeProvider`
+ * takes `gate` as a required constructor option and always returns the
+ * result of this wrapper, the same structural guarantee
+ * `dockerReleaseProvider` gives `release.deliver` (decision 10) — there is no
+ * code path in this repository that produces an `env.provision` provider
+ * this wrapper has not already seen.
+ *
+ * Three cases, all keyed off `options.gatedEnvs(repo)` exactly as
+ * `gateProductionRelease` is:
+ *
+ * - **`up` carrying an `image`.** Gated outright, under `deployFingerprint`
+ *   — the identical fingerprint a `release.deliver#deliver` of the same
+ *   `{repo, env, digest}` would compute (decision 9/11's own reasoning: a
+ *   digest names one build, whichever contract asks to run it, so a
+ *   confirmation given through either path satisfies both and neither asks
+ *   twice for the same digest).
+ * - **`up` with no `image`.** Absent any image, this call can only ever
+ *   replace what is running with the environment's own compose default — a
+ *   question with a knowable answer *before* running it: is anything a gate
+ *   would need to protect running there already? `status` is asked first.
+ *   Not up: there is nothing to replace, and standing up the declared IaC
+ *   before any release exists to point it at is `env.provision`'s own reason
+ *   to exist (`contracts/env.provision.md`), so the call proceeds untouched.
+ *   Already up: refused under {@link RECREATE_ON_DEFAULT_DIGEST} until an
+ *   operator confirms recreating this exact `{repo, env}` on its default.
+ * - **`down`.** The same `status` question, for the same reason: tearing
+ *   down infrastructure nothing is serving asks nothing of an operator, so a
+ *   `down` against an environment that is not up proceeds untouched. Already
+ *   up, it is refused under {@link TEARDOWN_ENV_DIGEST} until an operator
+ *   confirms tearing this exact `{repo, env}` down — otherwise `down`
+ *   followed by a no-image `up` would be a two-call way to reach the
+ *   identical "recreated on the default, unconfirmed" state the case above
+ *   already refuses, just split across two calls that individually look
+ *   harmless: `down` leaves the environment not up, so the no-image `up`
+ *   that follows would find nothing to protect and proceed too.
+ *
+ * `status` is never gated — asking costs nothing and changes nothing
+ * (`contracts/env.provision.md`).
+ *
+ * A provider with no `status` is refused outright, fail closed (CONV-4):
+ * neither the no-image `up` case nor `down` can tell "nothing to protect yet"
+ * from "this would replace a confirmed release" without asking, and assuming
+ * "not up" for a provider that cannot answer is exactly the ambiguity a
+ * security control must refuse rather than paper over. A provider with no
+ * `up` has nothing here to gate at all and is refused at construction, the
+ * same as `gateProductionRelease` refuses a provider missing `deliver`. A
+ * provider with no `down` is left as it is — there is no operation there to
+ * wrap.
+ */
+export function gateProvisionRelease(
+  provider: Provider,
+  options: DeployGateOptions,
+): Provider {
+  const up = provider.up;
+  if (up === undefined) {
+    throw new DeployGateError(
+      "the provider given to 'gateProvisionRelease' does not implement 'up' " +
+        '— nothing here can gate an operation that is not there to gate',
+    );
+  }
+  const status = provider.status;
+  const down = provider.down;
+
+  /**
+   * Whether `env` is currently up, per the wrapped provider's own `status` —
+   * the only way either the no-image `up` case or `down` can tell "nothing
+   * to replace or tear down yet" from "this would change what a gated
+   * environment serves" without inventing a notion of "confirmed release"
+   * `env.provision` does not have. Fails closed (CONV-4): a provider with no
+   * `status` is never assumed fresh, and `caller` names which operation is
+   * asking, for a message that does not make an operator guess which call
+   * this refusal came from (CONV-3).
+   */
+  async function currentlyUp(
+    repo: string,
+    env: string,
+    caller: string,
+  ): Promise<boolean> {
+    if (status === undefined) {
+      throw new DeployGateError(
+        `'${caller}' on '${env}' cannot be confirmed safe: the provider given ` +
+          "to 'gateProvisionRelease' does not implement 'status', so whether " +
+          'this environment is already serving something a gate would need ' +
+          'to protect cannot be checked first (HIL-2, CONV-4).',
+      );
+    }
+    const current = envStatusOutput.parse(await status({ repo, env } as never));
+    return current.up;
+  }
+
+  return {
+    ...provider,
+
+    up: async (input: never): Promise<unknown> => {
+      const parsed = envUpInput.parse(input);
+      if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
+        return up(input);
+      }
+      if (parsed.image !== undefined) {
+        assertReady(
+          { repo: parsed.repo, env: parsed.env, digest: parsed.image },
+          options,
+        );
+        return up(input);
+      }
+      // No image: this call can only ever recreate the environment on its
+      // own compose default, so whether it needs an operator's approval
+      // turns on whether there is a confirmed release running to replace —
+      // asked, not assumed.
+      if (!(await currentlyUp(parsed.repo, parsed.env, 'up with no image'))) {
+        return up(input);
+      }
+      assertReady(
+        {
+          repo: parsed.repo,
+          env: parsed.env,
+          digest: RECREATE_ON_DEFAULT_DIGEST,
+          label: 'recreate on the compose default',
+        },
+        options,
+      );
+      return up(input);
+    },
+
+    ...(down === undefined
+      ? {}
+      : {
+          down: async (input: never): Promise<unknown> => {
+            const parsed = envRequestInput.parse(input);
+            if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
+              return down(input);
+            }
+            if (!(await currentlyUp(parsed.repo, parsed.env, 'down'))) {
+              return down(input);
+            }
+            assertReady(
+              {
+                repo: parsed.repo,
+                env: parsed.env,
+                digest: TEARDOWN_ENV_DIGEST,
+                label: 'torn down',
+              },
+              options,
+            );
+            return down(input);
+          },
+        }),
   };
 }

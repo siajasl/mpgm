@@ -117,7 +117,14 @@ function operatorConfirms(fingerprint, tool) {
 const gate = { gatedEnvs: gatedEnvironments, ledger, onDryRunNeeded };
 
 const registry = new CapabilityRegistry();
-const envContract = registry.bind(envProvisionContract, composeProvider());
+// The same `gate` object wires both providers (T4.1.4b): `env.provision`'s
+// own `up`/`down` (`composeProvider`) and `release.deliver#deliver`/
+// `#rollback` (`dockerReleaseProvider`, which delegates to this exact
+// `envContract` underneath) share one fingerprint identity per
+// `{repo, env, digest}` (decision 9/11), so a confirmation this script
+// appends for one is visible to the other — the same ledger, reading the
+// same on-disk log.
+const envContract = registry.bind(envProvisionContract, composeProvider({ gate }));
 const release = registry.bind(
   releaseDeliverContract,
   // Required at construction — there is no unwrapped

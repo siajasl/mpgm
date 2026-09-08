@@ -3,25 +3,30 @@
 # What `env.provision` operates on and nothing more: a provider MUST refuse an
 # environment name not listed here rather than infer one from a directory
 # existing under `deploy/environments/` (contracts/env.provision.md,
-# `src/env/compose-provider.ts`). `production` is deliberately absent — DEP-4
-# asks the harness to be *able* to provision it, but declaring it is
-# T4.1.4b's job, once every `env.provision` operation that could reach it is
-# gated too, not just `release.deliver`'s.
+# `src/env/compose-provider.ts`).
 # `releaseOverride` is applied only on an `up` carrying an explicit `image`
 # (DEP-3, `release.deliver`, T4.1.2) — see the compose file it names.
 #
 # `approval` is what decides whether a release needs an operator's
 # confirmation before it may reach this environment (HIL-2, DESIGN §9
-# decision 10/11) — required on every entry, not defaulted
+# decision 10/11/14) — required on every entry, not defaulted
 # (`src/env/compose-provider.ts`'s `gatedEnvironmentNames`,
 # `src/policy/deploy-gate.ts`): `required` refuses
-# `release.deliver#deliver`/`#rollback` for this environment until an
-# operator has confirmed the exact digest named; `none` says explicitly that
-# this environment needs no such confirmation. `staging` is marked `required`
-# here to demonstrate the gate against a real, declared environment — T4.1.4a
-# needs no `production` to prove the release path is gated (PLAN.md's split);
-# T4.1.4b is what marks `production` itself once `env.provision`'s own
-# operations are gated too.
+# `release.deliver#deliver`/`#rollback`, and every `env.provision#up`/`#down`
+# that could change what this environment serves, until an operator has
+# confirmed the exact call named; `none` says explicitly that this
+# environment needs no such confirmation. `staging` was marked `required`
+# first, to demonstrate the release-path gate against a real, declared
+# environment before `production` existed at all (T4.1.4a; PLAN.md's split).
+# `production` is declared here for the first time by T4.1.4b, and only now:
+# DEP-4 asked the harness to be *able* to provision it from T4.1.1 onward, but
+# declaring it before `gateProvisionRelease` existed would have left
+# `env.provision#up`/`#down` — reached directly, bypassing `release.deliver`
+# entirely — as a wholly ungated route to it (`src/policy/deploy-gate.ts`,
+# decision 14). Every `env.provision` operation that can change what
+# `production` serves is gated as of this entry landing in the same commit as
+# that gate, so nothing here ever names a `production` this repository could
+# reach unapproved.
 environments:
   - name: test
     compose: deploy/environments/test/compose.yaml
@@ -32,4 +37,9 @@ environments:
     compose: deploy/environments/staging/compose.yaml
     project: mpgm-staging
     releaseOverride: deploy/environments/staging/compose.release.yaml
+    approval: required
+  - name: production
+    compose: deploy/environments/production/compose.yaml
+    project: mpgm-production
+    releaseOverride: deploy/environments/production/compose.release.yaml
     approval: required
