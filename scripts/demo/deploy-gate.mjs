@@ -43,6 +43,7 @@ import {
   KERNEL_TASK,
   kernelRegistry,
   releaseDeliverContract,
+  teardownDigest,
 } from '../../dist/index.js';
 
 const failures = [];
@@ -132,6 +133,38 @@ const release = registry.bind(
   // repository, could obtain (DESIGN §9 decision 10).
   dockerReleaseProvider({ envProvision: envContract, gate }),
 );
+
+/**
+ * Tears `env` down, confirming the same gate a real operator would (T4.1.4b
+ * review 4, finding 1): `down` is behind {@link gateProvisionRelease}
+ * exactly like every other gated call once `status` reports anything
+ * running, and a cleanup that swallowed that refusal would let a leftover
+ * stack — from an earlier `demo:release`/`demo:verify`, or from containers a
+ * partially-successful `up` in this run already created — sit up with
+ * `restart: unless-stopped` while this script still prints a pass. Confirms
+ * the exact reported state through the same `ledger`/`onDryRunNeeded`/
+ * `operatorConfirms` this script already uses for `deliver`/`rollback`,
+ * rather than calling `down` twice and hoping the second call happens to
+ * pass — a refusal that is not the gate's is let through, not swallowed.
+ */
+async function teardown(env) {
+  const status = await envContract.invoke('status', { repo, env });
+  if (status.services.length === 0) {
+    // Nothing reported: `down`'s own "nothing to protect" bypass
+    // (`deploy-gate.ts`) means this reaches the provider ungated.
+    await envContract.invoke('down', { repo, env });
+    return;
+  }
+  const target = { repo, env, digest: teardownDigest(status.services) };
+  const print = deployFingerprint(target);
+  if (!ledger.dryRunSeen(print)) {
+    onDryRunNeeded({ tool: 'deploy', fingerprint: print, target });
+  }
+  if (!ledger.confirmed(print)) {
+    operatorConfirms(print, 'deploy');
+  }
+  await envContract.invoke('down', { repo, env });
+}
 
 const v1 = {
   version: '1.0.0',
@@ -246,8 +279,17 @@ try {
     testDeliver ?? '(no error — deliver reported normally)',
   );
 } finally {
-  await envContract.invoke('down', { repo, env: 'staging' }).catch(() => undefined);
-  await envContract.invoke('down', { repo, env: 'test' }).catch(() => undefined);
+  for (const env of ['staging', 'test']) {
+    try {
+      await teardown(env);
+    } catch (cause) {
+      // Surfaced, not swallowed (T4.1.4b review 4, finding 1): a refused or
+      // failed teardown must not let this script still print a pass while a
+      // stack is left running.
+      const message = cause instanceof Error ? cause.message : String(cause);
+      check(`cleanup: '${env}' torn down`, false, message);
+    }
+  }
   log.close();
   rmSync(scratch, { recursive: true, force: true });
 }
