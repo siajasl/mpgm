@@ -13,7 +13,7 @@ paths:
 budgets:
   tokens: 250000
   costUsd: 8
-  steps: 120
+  steps: 200
   wallClockSeconds: 2700
 output:
   schema: change
