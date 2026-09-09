@@ -558,7 +558,7 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('refuses a no-image up on a gated environment that is already up, under a fixed "recreate on default" identity, without ever calling docker compose up', async () => {
+  it('refuses a no-image up on a gated environment that is already up, under the reported-state-bound "recreate on default" identity, without ever calling docker compose up', async () => {
     // The gate's own `status` check to decide "already up" — a refusal here
     // must stop before that, not after standing anything up.
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
@@ -640,7 +640,7 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
    * "nothing there" — `environmentUp` reads `exited` as `up: false`, the
    * same as truly nothing running, but the gate's own question is "is there
    * anything here to protect", not "is it healthy" (`deploy-gate.ts`'s
-   * `servingAnything`). A no-image `up` here would replace an exited-but-real
+   * `currentServices`/`anything`). A no-image `up` here would replace an exited-but-real
    * service with the compose default, with no approval anywhere in the path.
    */
   it('refuses a no-image up on a gated environment reporting one exited service — presence, not health, decides "anything to protect"', async () => {
@@ -656,7 +656,7 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('refuses down on a gated environment that is up, under a fixed "torn down" identity, without ever calling docker compose down', async () => {
+  it('refuses down on a gated environment that is up, under the reported-state-bound "torn down" identity, without ever calling docker compose down', async () => {
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
     const provider = composeProvider({
       cli,
@@ -708,7 +708,7 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
 
     await operation(provider, 'down')({ repo, env: 'test' } as never);
     // Exactly the two calls `down` itself makes ('down', then 'ps') — no
-    // extra 'ps' from a `servingAnything` check this environment never
+    // extra 'ps' from a `currentServices` check this environment never
     // needed.
     expect(calls).toHaveLength(2);
   });

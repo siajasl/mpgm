@@ -905,17 +905,6 @@ describe('gateProvisionRelease — down', () => {
 
   /**
    * The fourth-review finding the abandoned pre-split T4.1.4 attempt
-   * recorded (`f6c7157`): an ungated `down` leaves an environment not up, so
-   * a *following* no-image `up` — refused above only while something is
-   * actually running — would find nothing to protect and pass through too,
-   * silently recreating a confirmed release on the compose default with no
-   * approval anywhere in either call. Confirming `down` here closes that:
-   * the environment really is down afterward, and the no-image `up` that
-   * follows is correctly ungated because there truly is nothing left to
-   * replace, not because `down` snuck past unchecked.
-   */
-  /**
-   * The fourth-review finding the abandoned pre-split T4.1.4 attempt
    * recorded (`f6c7157`), and T4.1.4b review 2's blocker finding both bear
    * on this: a confirmed `down` leaves the environment reporting nothing, so
    * a *following* no-image `up` must not read that as "nothing to protect,
