@@ -3,6 +3,7 @@ import type { EventLog } from '../event/store.js';
 import type { Role } from '../role/definition.js';
 import { RolePolicy } from '../policy/role-policy.js';
 import { BudgetLedger, runWithWallClock, type Now } from './budget.js';
+import { StepNotice } from './step-notice.js';
 import type { OutputSchemaRegistry } from './output-registry.js';
 import type {
   AgentSessionProvider,
@@ -172,6 +173,7 @@ export class SessionRunner {
     runId: string,
     taskId: string,
     policy: RolePolicy,
+    steps: number,
     seen: (tool: string, input: Record<string, unknown>) => void,
   ): ToolGate {
     const inner = policy.gate();
@@ -180,8 +182,12 @@ export class SessionRunner {
     // it, and no credential is resolved for a call that is about to be
     // refused anyway.
     const brokered = this.#secrets === undefined ? inner : this.#secrets.gate(inner);
-    const gate =
+    const guarded =
       this.#destructive === undefined ? brokered : this.#destructive.gate(brokered);
+    // Outermost, so it counts every call the session made and not only the
+    // ones that survived the layers below: a session that spends its budget
+    // being refused is exactly the one that needs telling.
+    const gate = new StepNotice(steps).gate(guarded);
 
     return async (tool: string, input: Record<string, unknown>) => {
       const decision = await gate(tool, input);
@@ -280,12 +286,21 @@ export class SessionRunner {
         ...(this.#secrets === undefined
           ? {}
           : { env: this.#secrets.environment(process.env) }),
-        canUseTool: this.#gate(runId, taskId, policy, (tool, input) => {
-          gatedTools.add(tool);
-          if (tool === STRUCTURED_OUTPUT_TOOL) {
-            lastStructured = input;
-          }
-        }),
+        // A fresh counter per attempt, because the SDK's step bound is per
+        // session: a retry that inherited the previous attempt's count would
+        // open on a warning it had no budget problem to warrant.
+        canUseTool: this.#gate(
+          runId,
+          taskId,
+          policy,
+          role.budgets.steps,
+          (tool, input) => {
+            gatedTools.add(tool);
+            if (tool === STRUCTURED_OUTPUT_TOOL) {
+              lastStructured = input;
+            }
+          },
+        ),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       };
       gatedTools = new Set<string>();
