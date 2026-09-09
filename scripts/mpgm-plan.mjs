@@ -282,6 +282,25 @@ export const MPGM_PLAN = {
               tracesTo: ['HIL-2', 'DEP-4'],
             },
             {
+              id: 'T4.1.4c',
+              title: 'Single-use confirmation for a state that can recur',
+              completionCriteria: [
+                'A confirmation of a no-image up, or of a down, given against ' +
+                  'an environment reporting nothing is spent when that call ' +
+                  'proceeds, so an identical later call asks for a fresh one.',
+                'Confirmations of a repository, environment and digest are ' +
+                  'untouched, which is what a rollback firing in a different ' +
+                  'run than its deliver depends on.',
+                'The change says whether a confirmation is spent on the gated ' +
+                  'call being entered or on its returning, and why that choice ' +
+                  'fails closed.',
+                "DESIGN section 9's acceptance of the recurring empty-state " +
+                  'identity is withdrawn in the same change.',
+              ],
+              dependsOn: ['T4.1.4b'],
+              tracesTo: ['HIL-2', 'DEP-2'],
+            },
+            {
               id: 'T4.1.5',
               title: 'The rollback verb',
               completionCriteria: [
@@ -339,6 +358,19 @@ export const MPGM_PLAN = {
               ],
               dependsOn: [],
               tracesTo: ['OBS-3', 'NFR-2'],
+            },
+            {
+              id: 'T4.2.4',
+              title: "An operator's control of a running task reaches it",
+              completionCriteria: [
+                'A redirection names the task it is aimed at, requeues it, and ' +
+                  'a planted instruction in the note is demonstrably obeyed by ' +
+                  "that task's next session.",
+                'Pause and kill likewise stop the implement loop, which reads ' +
+                  'none of the three today.',
+              ],
+              dependsOn: [],
+              tracesTo: ['HIL-3', 'HIL-5'],
             },
           ],
         },
