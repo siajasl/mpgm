@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { errorDetailOf, terminationFor } from './claude-provider.js';
+import { errorDetailOf, gateHooks, terminationFor } from './claude-provider.js';
+import type { PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import type { ToolDecision, ToolGate } from './session.js';
 
 /**
  * The SDK's result subtypes, translated once.
@@ -45,5 +47,58 @@ describe('errorDetailOf', () => {
   it('still says something when the SDK reported no detail', () => {
     expect(errorDetailOf('error_max_turns', [])).toBe('error_max_turns');
     expect(errorDetailOf('error_max_turns', ['', '  '])).toBe('error_max_turns');
+  });
+});
+
+/**
+ * The hook is the whole of the kernel's presence inside a running session: it
+ * is where a call is refused, where a credential is substituted, and the only
+ * place the kernel can say something the session did not ask for.
+ */
+describe('gateHooks', () => {
+  const call = async (gate: ToolGate): Promise<Record<string, unknown>> => {
+    const hooks = gateHooks(gate).hooks;
+    const callback = hooks?.PreToolUse[0]?.hooks[0];
+    if (callback === undefined) {
+      throw new Error('gateHooks installed no PreToolUse callback');
+    }
+    const input = {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_use_id: 'call_1',
+    } as unknown as PreToolUseHookInput;
+    const output = await callback(input, undefined, {
+      signal: new AbortController().signal,
+    });
+    return (output as { hookSpecificOutput: Record<string, unknown> }).hookSpecificOutput;
+  };
+
+  it('carries a notice to the model as additional context', async () => {
+    // `permissionDecisionReason` would not do: the CLI surfaces it on a
+    // refusal, so an advisory sent that way is invisible on the allow it
+    // belongs to.
+    const decision: ToolDecision = { behavior: 'allow', notice: 'nearly out of steps' };
+    const output = await call(() => Promise.resolve(decision));
+    expect(output.permissionDecision).toBe('allow');
+    expect(output.additionalContext).toBe('nearly out of steps');
+  });
+
+  it('sends no additional context when the kernel has nothing to add', async () => {
+    const output = await call(() => Promise.resolve({ behavior: 'allow' }));
+    expect(output).not.toHaveProperty('additionalContext');
+  });
+
+  it('carries a notice on a refusal alongside the reason for it', async () => {
+    const output = await call(() =>
+      Promise.resolve({
+        behavior: 'deny',
+        reason: 'path refused',
+        notice: 'nearly out of steps',
+      }),
+    );
+    expect(output.permissionDecision).toBe('deny');
+    expect(output.permissionDecisionReason).toBe('path refused');
+    expect(output.additionalContext).toBe('nearly out of steps');
   });
 });
