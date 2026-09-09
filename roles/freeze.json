@@ -34,6 +34,13 @@
       "approvedBy": "macg",
       "reason": "T3.2.2 is 'adversarial test role' in the gated Plan, so the role is the task: TST-4 asks for tests beyond the implementer's own, and the implementer cannot be the agent that writes them. Recorded as an exemption rather than folded into `digests`, because that map says what was present when the freeze was taken and this role was not — an addition nobody has evaluated is the thing AGT-6 wants visible, and hiding it among the frozen digests would remove the only record that it was approved and by whom. It stays an exemption until the eval harness (T5.2.1a) can say whether the role is any good.",
       "at": "2026-08-31"
+    },
+    {
+      "role": "implementer",
+      "digest": "8f41f3825734d61cd9a952fdf75fe3e8d72ed64b418ed0eff4ce7eb56d540524",
+      "approvedBy": "macg",
+      "reason": "Steps 120 to 200. A rework session no longer fits: T4.1.4b's fifth session ran 121 turns and $4.92 into the limit mid-edit, leaving 415 lines uncommitted and nothing in the log to say how far it had got, on a review finding that needed a gate rewritten and two documents moved with it. The sessions that finished the earlier rounds made 70, 91 and 109 calls, so the budget was not sized for a round that has to close a substantive finding rather than a small one. At the rate that session spent, the $8 cost budget covers about 195 turns — so cost binds before 200 does, which is the bound the kernel can actually defend, and the step count stops being the thing that ends a session with work on the floor. Same failure the code-reviewer exemption of 2026-08-31 fixed on the reviewing side.",
+      "at": "2026-09-09"
     }
   ]
 }

@@ -72,10 +72,20 @@ export interface SessionRequest {
  * appears only in the call the tool actually receives. Absent means "as
  * supplied" — the gate rewriting input it did not mean to touch is a worse
  * failure than one that cannot rewrite at all.
+ *
+ * `notice` is the other direction: something the kernel knows and the session
+ * does not, delivered on the back of a call it was making anyway. It never
+ * changes the decision — a notice on a denial is still a denial — because the
+ * moment it could, an advisory would be a policy no reader would find in the
+ * policy.
  */
 export type ToolDecision =
-  | { readonly behavior: 'allow'; readonly updatedInput?: Record<string, unknown> }
-  | { readonly behavior: 'deny'; readonly reason: string };
+  | {
+      readonly behavior: 'allow';
+      readonly updatedInput?: Record<string, unknown>;
+      readonly notice?: string;
+    }
+  | { readonly behavior: 'deny'; readonly reason: string; readonly notice?: string };
 
 export type ToolGate = (
   toolName: string,

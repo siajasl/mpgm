@@ -126,7 +126,7 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
  * execution, including tools the CLI would otherwise auto-approve without
  * consulting `canUseTool`.
  */
-function gateHooks(gate: ToolGate | undefined): {
+export function gateHooks(gate: ToolGate | undefined): {
   hooks?: { PreToolUse: { hooks: HookCallback[] }[] };
 } {
   if (gate === undefined) {
@@ -156,6 +156,12 @@ function gateHooks(gate: ToolGate | undefined): {
         ...(decision.behavior === 'allow' && decision.updatedInput !== undefined
           ? { updatedInput: decision.updatedInput }
           : {}),
+        // The only channel the kernel has into a session that is already
+        // running. `permissionDecisionReason` is not it: the CLI shows it when
+        // a call is refused, so an advisory sent that way would either be
+        // invisible on the allow it belongs to, or arrive as a refusal that
+        // did not happen.
+        ...(decision.notice === undefined ? {} : { additionalContext: decision.notice }),
       },
     };
   };
@@ -166,6 +172,10 @@ function gateHooks(gate: ToolGate | undefined): {
 /**
  * Translate the kernel's tool gate into the SDK's `canUseTool` shape. Kept
  * separate so the narrowing happens once, outside the options literal.
+ *
+ * A notice is dropped here because this shape has nowhere to put one, and
+ * that costs nothing: `canUseTool` only runs when the CLI would have prompted,
+ * and PreToolUse has already delivered the notice for that same call.
  */
 function gateOption(gate: ToolGate | undefined): {
   canUseTool?: (

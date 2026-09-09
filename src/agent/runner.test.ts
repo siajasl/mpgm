@@ -11,7 +11,7 @@ import { SnapshotStore } from '../state/snapshot-store.js';
 import { OutputSchemaRegistry } from './output-registry.js';
 import { ScriptedProvider, scriptedSuccess } from './scripted-provider.js';
 import { abandonedOutputIssues, SessionRunner } from './runner.js';
-import type { SessionResult } from './session.js';
+import type { SessionRequest, SessionResult } from './session.js';
 
 const fixtures = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -500,5 +500,60 @@ describe('OutputSchemaRegistry', () => {
 
   it('lists what is registered when asked for something else', () => {
     expect(() => schemas.get('nope')).toThrow(/Registered: schemas\/definition\.json/);
+  });
+});
+
+/**
+ * The notice is only worth anything if the runner installs it around the gate
+ * the session actually calls, sized to the role in front of it.
+ */
+describe('the step notice a session runs under', () => {
+  const drive = async (gate: SessionRequest['canUseTool'], times: number) => {
+    if (gate === undefined) {
+      throw new Error('the runner dispatched a session with no gate');
+    }
+    const notices: string[] = [];
+    for (let index = 0; index < times; index += 1) {
+      const decision = await gate('Read', { file_path: 'README.md' });
+      if (decision.notice !== undefined) {
+        notices.push(decision.notice);
+      }
+    }
+    return notices;
+  };
+
+  it('warns at a fifth short of the role own step budget', async () => {
+    // The fixture role is capped at 40 steps, so the notice is due on call 32
+    // and not before. A runner that passed some other number — the ledger
+    // remainder, a constant — would warn at the wrong place or not at all.
+    const { db, provider, runner } = harness([scriptedSuccess(validOutput)]);
+    try {
+      await runner.runTask(task);
+      const gate = provider.requests[0]?.canUseTool;
+      expect(await drive(gate, 31)).toEqual([]);
+      const notices = await drive(gate, 1);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain('32 tool calls');
+      expect(notices[0]).toContain('40 steps');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('gives each attempt its own count, because the step bound is per session', async () => {
+    // The SDK enforces `maxTurns` per session, so a retry starts with its
+    // whole allowance. A counter shared across attempts would open the second
+    // session on a warning it had no budget problem to warrant.
+    const { db, provider, runner } = harness([
+      scriptedSuccess({ summary: 'missing requirements' }),
+      scriptedSuccess(validOutput),
+    ]);
+    try {
+      await runner.runTask(task);
+      expect(await drive(provider.requests[0]?.canUseTool, 32)).toHaveLength(1);
+      expect(await drive(provider.requests[1]?.canUseTool, 31)).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 });
