@@ -542,6 +542,56 @@ describe('gateProvisionRelease — up', () => {
   });
 
   /**
+   * T4.1.4b review 5: `image` is documented as overriding the compose
+   * default (`envUpInput`, `../env/provision.ts`) and carries no shape of its
+   * own — a tag, in every demo and in this repository's own build naming
+   * (`docker-provider.ts`'s `buildImage` tags `${image}:${version}` before it
+   * ever records a digest) — but this gate used to fingerprint whatever
+   * string arrived, tag included, so one confirmation of `up {image:
+   * 'app:1.0.0'}` stood as a standing authorisation for every later `up`
+   * naming that same tag, however many times it had since been rebuilt to
+   * point at a different tree. A tag is now refused outright, and — the point
+   * of this test — refused *before* the provider's `up` is ever reached and
+   * before the ledger is consulted at all: unlike an unconfirmed digest,
+   * there is no confirmation that would ever let this call through, so it
+   * must never be offered one to reach for.
+   */
+  it('refuses an up carrying a tag rather than a digest, on a gated environment, before the ledger is consulted at all', async () => {
+    const { provider, calls } = fakeEnvProvider();
+    let ledgerAsked = false;
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: {
+        dryRunSeen: () => {
+          ledgerAsked = true;
+          return true;
+        },
+        confirmed: () => {
+          ledgerAsked = true;
+          return true;
+        },
+      },
+    });
+
+    await expect(
+      gated.up({ repo: 'r', env: 'production', image: 'registry/app:7' } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toEqual([]);
+    expect(ledgerAsked).toBe(false);
+  });
+
+  it('leaves an up carrying a tag on a non-gated environment untouched — the shape check applies only where this gate applies at all', async () => {
+    const { provider, calls } = fakeEnvProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await gated.up({ repo: 'r', env: 'staging', image: 'registry/app:7' } as never);
+    expect(calls).toHaveLength(1);
+  });
+
+  /**
    * T4.1.4b review 2: the first version of this gate asked `status` first
    * and let a no-image `up` through untouched whenever nothing was reported
    * — reasoning that standing up infrastructure nothing is serving asks

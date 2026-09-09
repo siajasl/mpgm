@@ -57,7 +57,14 @@ import { fingerprint } from './destructive.js';
  * `up` carrying an `image` is checked under the identical fingerprint
  * `deliver` would compute for the same `{repo, env, digest}` (decision 9/11
  * — a digest is a digest, whichever contract asks to run it, so a
- * confirmation given to one satisfies the other and neither asks twice); an
+ * confirmation given to one satisfies the other and neither asks twice) —
+ * and, since T4.1.4b review 5, only once `image` is actually shaped like one
+ * ({@link isDigestShaped}): `envUpInput.image` is a bare, unshaped string
+ * documented as an override, a tag in every demo and in this repository's
+ * own build naming, and decision 9's "cannot be made to name another build"
+ * reasoning does not hold for a mutable name, so a gated `up` naming
+ * anything else is refused outright rather than fingerprinted on a value
+ * that could point somewhere new by the time it is confirmed (CONV-4); an
  * `up` with no `image` is gated unconditionally — an environment the project
  * marks `approval: required` never has a no-image `up` reach the provider
  * without a confirmation, whatever `status` currently reports, first bring-up
@@ -100,6 +107,40 @@ const DEPLOY_TOOL = 'deploy';
  * this name is never a key of either input, nothing is ever excluded by it.
  */
 const DRY_RUN_PARAM = '__no_dry_run_field__';
+
+/**
+ * Whether `image` is shaped like the one immutable name decision 9 actually
+ * reasons about — `'sha256:'` followed by the hex id `docker build
+ * --iidfile` writes, exactly what `release.digest` always is
+ * (`../release/docker-provider.ts`'s `buildImage`) — rather than a tag or any
+ * other mutable reference.
+ *
+ * `envUpInput.image` (`../env/provision.ts`) is documented as "overrides the
+ * image the environment's compose file defaults to" and is `z.string().min(1)`
+ * with no shape of its own: a tag in every demo and in this repository's own
+ * build naming (`docker-provider.ts`'s `buildImage` tags `${image}:${version}`
+ * before ever recording a digest). Decision 9's reasoning for keying a
+ * confirmation on `digest` alone — "a digest names one build and cannot be
+ * made to name another, which a tag can" — only holds if what reaches
+ * {@link deployFingerprint} actually is one. Before this check, a gated `up`
+ * fingerprinted whatever `image` named, tag included: one operator
+ * confirmation of `up {env, image: 'app:1.0.0'}` then authorised every later
+ * `up` naming that same tag, however many times `app:1.0.0` had been rebuilt
+ * to point at a different tree in between — a confirmation over a name, not
+ * over the build the operator actually saw (T4.1.4b review 5, CONV-4).
+ *
+ * Refusing a non-digest-shaped `image` outright — rather than resolving a tag
+ * to whatever it currently points at and fingerprinting that instead — costs
+ * this repository nothing: `release.deliver` (the one caller in this
+ * repository that ever reaches a gated `up` with an `image` at all) always
+ * supplies `release.digest`, straight from `--iidfile`, never a tag. A caller
+ * that wants a gated `up` to carry a tag has `release.deliver`'s own gate
+ * (`gateProductionRelease`) to go through first, on a real digest, same as
+ * every other path to a gated environment.
+ */
+function isDigestShaped(image: string): boolean {
+  return /^sha256:[0-9a-f]+$/i.test(image);
+}
 
 /**
  * What one gated call targets: enough to compute its fingerprint and to
@@ -588,12 +629,18 @@ export function teardownDigest(services: readonly ServiceStatus[]): string {
  * Three cases, all keyed off `options.gatedEnvs(repo)` exactly as
  * `gateProductionRelease` is:
  *
- * - **`up` carrying an `image`.** Gated outright, under `deployFingerprint`
- *   — the identical fingerprint a `release.deliver#deliver` of the same
- *   `{repo, env, digest}` would compute (decision 9/11's own reasoning: a
- *   digest names one build, whichever contract asks to run it, so a
- *   confirmation given through either path satisfies both and neither asks
- *   twice for the same digest).
+ * - **`up` carrying an `image`.** Refused outright, before any fingerprint is
+ *   computed, unless `image` is actually shaped like a digest
+ *   ({@link isDigestShaped} — T4.1.4b review 5, CONV-4): `envUpInput.image`
+ *   is a bare string documented as an override, a tag in every demo and in
+ *   this repository's own build naming, and decision 9's "a digest cannot be
+ *   made to name another build, which a tag can" reasoning is exactly what
+ *   stops holding for anything that is not one. Once it is, gated outright
+ *   under `deployFingerprint` — the identical fingerprint a
+ *   `release.deliver#deliver` of the same `{repo, env, digest}` would compute
+ *   (decision 9/11's own reasoning: a digest names one build, whichever
+ *   contract asks to run it, so a confirmation given through either path
+ *   satisfies both and neither asks twice for the same digest).
  * - **`up` with no `image`.** Gated unconditionally, whatever `status`
  *   reports — even nothing at all. T4.1.4b's first version asked `status`
  *   first and let the call through untouched when nothing was reported,
@@ -733,6 +780,27 @@ export function gateProvisionRelease(
         return up(input);
       }
       if (parsed.image !== undefined) {
+        // Fail closed on a tag or any other mutable name before this call
+        // ever reaches `assertReady` (T4.1.4b review 5, CONV-4) — see
+        // `isDigestShaped`'s own doc for why a confirmation keyed on
+        // anything else is a confirmation over a name, not over the build
+        // an operator actually saw.
+        if (!isDigestShaped(parsed.image)) {
+          throw new DeployGateError(
+            `'up' on '${parsed.env}' carries 'image: ${parsed.image}', which ` +
+              "is not shaped like a digest ('sha256:' followed by its hex id " +
+              "— exactly what 'docker build --iidfile' writes, and what " +
+              "'release.deliver' always supplies as 'release.digest'). This " +
+              'gate keys its confirmation on that value, and a mutable name ' +
+              '— a tag, or anything else that is not the digest itself — can ' +
+              'be repointed at a different build after an operator approves ' +
+              'it once, which would let one confirmation stand for whatever ' +
+              'the name currently resolves to rather than the build it was ' +
+              'actually given (DESIGN §9 decision 9/14, CONV-4). Deliver ' +
+              "this through 'release.deliver#deliver' instead, or pass the " +
+              "digest 'docker build --iidfile' recorded, not a tag.",
+          );
+        }
         assertReady(
           { repo: parsed.repo, env: parsed.env, digest: parsed.image },
           options,

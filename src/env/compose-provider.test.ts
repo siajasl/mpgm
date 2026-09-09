@@ -531,17 +531,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     });
 
     await expect(
-      operation(
-        provider,
-        'up',
-      )({ repo, env: 'staging', image: 'registry/app:7' } as never),
+      operation(provider, 'up')({ repo, env: 'staging', image: 'sha256:aaa' } as never),
     ).rejects.toThrow(DeployGateError);
     expect(calls).toHaveLength(0);
   });
 
   it('lets up carrying an image through once the identical {repo, env, digest} fingerprint release.deliver would compute is confirmed', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const print = deployFingerprint({ repo, env: 'staging', digest: 'registry/app:7' });
+    const print = deployFingerprint({ repo, env: 'staging', digest: 'sha256:aaa' });
     const provider = composeProvider({
       cli,
       gate: {
@@ -553,9 +550,36 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     await operation(
       provider,
       'up',
-    )({ repo, env: 'staging', image: 'registry/app:7' } as never);
+    )({ repo, env: 'staging', image: 'sha256:aaa' } as never);
 
     expect(calls).toHaveLength(2);
+  });
+
+  /**
+   * T4.1.4b review 5: `image` is documented as an override of the compose
+   * default and carries no shape of its own — a tag in every other test in
+   * this file (`registry/app:7`) — but the gate used to fingerprint whatever
+   * string arrived, tag included, resting decision 9's "cannot be made to
+   * name another build" reasoning on a value that had never been checked to
+   * actually be a digest. A tag reaching a gated `up` is now refused outright,
+   * before any fingerprint is computed or the ledger is consulted at all —
+   * confirming it would otherwise be impossible even in principle, since a
+   * caller has no digest to confirm and no way to make this call carry one.
+   */
+  it('refuses up carrying a tag rather than a digest, on a gated environment, before any fingerprint is computed (CONV-4)', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(
+        provider,
+        'up',
+      )({ repo, env: 'staging', image: 'registry/app:7' } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toHaveLength(0);
   });
 
   it('refuses a no-image up on a gated environment that is already up, under the reported-state-bound "recreate on default" identity, without ever calling docker compose up', async () => {

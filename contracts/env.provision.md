@@ -166,11 +166,27 @@ Three cases, all scoped to environments a project marks `approval: required`
 — every other environment passes through exactly as it did before this gate
 existed:
 
-- **`up` carrying an `image`.** Checked under the identical
-  `{repo, env, digest}` fingerprint `release.deliver#deliver` of the same
-  digest would compute — a digest names one build, whichever contract asks to
-  run it, so a confirmation given through either path satisfies both
-  (DESIGN §9 decision 9/11).
+- **`up` carrying an `image`.** Refused outright, before any fingerprint is
+  computed, unless `image` is actually shaped like a digest — `'sha256:'`
+  followed by its hex id, exactly what `docker build --iidfile` writes and
+  what `release.digest` always is. `image` is documented above as an
+  override of the compose default and carries no shape of its own; a review
+  found the gate fingerprinting whatever it named regardless, tag included,
+  which let one operator confirmation of `up {image: 'app:1.0.0'}` stand as a
+  standing authorisation for every later `up` naming that same tag, however
+  many times it had since been rebuilt to point at a different tree — a
+  confirmation over a mutable name, not over the build an operator actually
+  saw, and exactly the failure mode decision 9's "a digest cannot be made to
+  name another build, which a tag can" reasoning exists to rule out. Once
+  `image` is digest-shaped, checked under the identical `{repo, env, digest}`
+  fingerprint `release.deliver#deliver` of the same digest would compute — a
+  digest names one build, whichever contract asks to run it, so a
+  confirmation given through either path satisfies both (DESIGN §9 decision
+  9/11/14, CONV-4). The one caller in this repository that ever reaches a
+  gated `up` with an `image` — `release.deliver`'s own `deliverTo` — always
+  supplies `release.digest`, so nothing here regresses; a caller that wants a
+  gated environment to run a tag goes through `release.deliver`'s gate on a
+  real digest first, the same as every other path to one.
 - **`up` with no `image`.** Gated unconditionally, whatever the wrapped
   provider's own `status` reports — even nothing at all. An earlier version
   of this gate asked `status` first and let the call through untouched when
