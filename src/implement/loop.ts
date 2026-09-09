@@ -6,7 +6,7 @@ import type { EventLog } from '../event/store.js';
 import type { RoleRegistry } from '../role/loader.js';
 import { changeSchema, codeReviewSchema } from '../schemas.js';
 import type { MergeVerdict } from './checks.js';
-import { undeclaredDeviations } from '../context/conventions.js';
+import { conventionIdOf, undeclaredDeviations } from '../context/conventions.js';
 import {
   changeReviewed,
   decideMerge,
@@ -436,10 +436,11 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   }
 
   // What the *latest* session said about its change. A repair replaces the
-  // change, so the deviations it declares are the ones the review is compared
-  // against — reading them off the first attempt would refuse a merge for a
-  // convention the author declared on the second try, which is exactly the
-  // bug the switchover demo caught.
+  // change, so its account of what it did is the one that counts — reading the
+  // summary or the ref off the first attempt would describe work that has since
+  // been rewritten.
+  //
+  // Deviations are the exception, and `declaredDeviations` below is why.
   let latest = change.data;
 
   await options.publish?.(worktree.branch, change.data.ref);
@@ -481,6 +482,9 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // grace round for a late one has been spent. Both live outside the loop
   // because both are facts about the task, not about a round.
   const shownDeviations = new Set<string>();
+  // Keyed by convention id so that 'CONV-1' and 'CONV-1 (one logical change per
+  // commit)' are one declaration rather than two.
+  const declaredSoFar = new Map<string, string>();
   let graceGranted = false;
   let attempts = maxReviewAttempts;
 
@@ -577,7 +581,33 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       });
     }
 
-    const declared = latest.deviations.map((entry) => entry.convention);
+    // Every convention this task has declared a departure from, in any round,
+    // not only the one that just ran.
+    //
+    // A rework session writes a fresh result, so a declaration it made last
+    // round is gone unless it types it again — and T4.1.4b is what that costs.
+    // Its author declared CONV-1 in round two, the undeclared list went empty,
+    // and in round three it did not repeat itself: the reviewer approved the
+    // change, reported CONV-1 and CONV-3, and the gate refused an approved
+    // change for a declaration that had already been made and recorded.
+    //
+    // Requiring it to be retyped every round is a formality with no information
+    // in it. A declaration is a decision on the record (IMP-4), so the record
+    // is what the gate reads. Withdrawing one needs no verb: a declaration only
+    // matters while the reviewer is still reporting that convention, and an
+    // author that would rather fix the departure than stand behind it fixes it,
+    // after which nothing reports it and nothing is carried.
+    //
+    // Within the run, deliberately. A declaration made in an abandoned earlier
+    // run is about work this one may have rewritten, which is the same reason
+    // `lastReviewOf` refuses to carry a review whose commit has moved.
+    for (const entry of latest.deviations) {
+      declaredSoFar.set(
+        conventionIdOf(entry.convention) ?? entry.convention.trim(),
+        entry.convention,
+      );
+    }
+    const declared = [...declaredSoFar.values()];
     review = {
       reviewTaskId,
       reviewerRole: reviewerRole.name,

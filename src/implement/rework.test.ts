@@ -1252,4 +1252,142 @@ describe('a review that never approves (NFR-1)', () => {
       log.close();
     }
   });
+  it('keeps a declaration made in an earlier round, so it need not be retyped', async () => {
+    // T4.1.4b: the author declared CONV-1 in round two and the undeclared list
+    // went empty; in round three it did not repeat itself, and the gate refused
+    // an approved change for a declaration already made and already recorded.
+    // A rework session writes a fresh result, so anything it declared before is
+    // gone unless it types it again — which is a formality with no information
+    // in it.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [] as { convention: string; why: string }[],
+    };
+    const reports = (verdict: 'approve' | 'request-changes') =>
+      scriptedSuccess({
+        ref: head,
+        verdict,
+        summary: verdict === 'approve' ? 'good' : 'not yet',
+        findings:
+          verdict === 'approve'
+            ? []
+            : [
+                {
+                  file: 'README.md',
+                  concern: 'no',
+                  remedy: 'yes',
+                  severity: 'blocker' as const,
+                },
+              ],
+        deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+      });
+
+    const provider = new ScriptedProvider([
+      // Round one declares it.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'CONV-1', why: 'the loop made the commits' }],
+      }),
+      reports('request-changes'),
+      // Round two answers the findings and says nothing about the deviation.
+      scriptedSuccess(change),
+      reports('approve'),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 2,
+      });
+
+      expect(result.status).toBe('merged');
+      // And the log says the declaration was in force for the round that
+      // merged, not only for the round that made it.
+      const reviewed = log
+        .read()
+        .filter((event) => event.type === 'ChangeReviewed')
+        .at(-1);
+      expect(
+        (reviewed?.payload as { declaredDeviations: string[] }).declaredDeviations,
+      ).toStrictEqual(['CONV-1']);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('carries a declaration by its convention, however either round worded it', async () => {
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [] as { convention: string; why: string }[],
+    };
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ...change,
+        deviations: [
+          {
+            convention: 'CONV-1 (one logical change per commit)',
+            why: 'the loop made the commits',
+          },
+        ],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'request-changes',
+        summary: 'not yet',
+        findings: [
+          { file: 'README.md', concern: 'no', remedy: 'yes', severity: 'blocker' },
+        ],
+        deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+      }),
+      scriptedSuccess(change),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [
+          { convention: 'CONV-1 — one logical change per commit', where: 'x' },
+        ],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 2,
+      });
+
+      expect(result.status).toBe('merged');
+    } finally {
+      log.close();
+    }
+  });
 });
