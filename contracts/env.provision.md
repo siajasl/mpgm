@@ -208,7 +208,23 @@ replaced or torn down", not "may this kind of call against this environment
 ever proceed" — the distinction a review found missing, since a fixed
 sentinel let one operator confirmation of a teardown or a recreate stand as a
 permanent authorisation for every later one, however different what the
-environment was actually serving by then.
+environment was actually serving by then. The refusal an operator confirms
+against says this directly — "this confirmation covers only this exact
+reported state" — rather than leaving it to be inferred from reading this
+module (CONV-3).
+
+One state is a declared exception to that per-state guarantee, not an
+oversight: an environment reporting no services at all folds to the single
+identity `'none'`, so a confirmation of a first bring-up found there is good
+for any later no-image `up` this environment is found in the same empty
+state for — after a later confirmed teardown, or after the containers are
+removed by something outside this gate entirely — with no fresh approval.
+This mirrors DESIGN §9 decision 11's own reasoning on the release path: a
+digest naming one already-approved state may be re-approved for free, and
+"nothing running" is one such state, not a different one each time it
+recurs. The no-image `up` refusal says so directly whenever `status` reports
+nothing, rather than leaving an operator to infer it from `servingIdentity`'s
+source.
 
 This is deliberately not the same question `up` in the output answers.
 `envStatusOutput.up` (`environmentUp`) fails closed for a service still

@@ -585,6 +585,65 @@ describe('gateProvisionRelease — up', () => {
     ]);
   });
 
+  /**
+   * T4.1.4b review 4, finding 2: `servingIdentity([])` is the fixed string
+   * `'none'`, so every empty state folds to the same identity — a
+   * confirmation given to *one* occurrence of "nothing serving" is,
+   * necessarily, a confirmation good for *any* later no-image `up` this
+   * environment is found in the same empty state for, whether that is the
+   * environment's true first bring-up or a later one found empty again
+   * after an intervening teardown. This is the residual the review found and
+   * this task declares rather than closes (DESIGN §9 decision 14,
+   * `contracts/env.provision.md`): reusing a confirmation of an
+   * already-approved *state* for free is decision 11's own reasoning, and
+   * "nothing running" is one such state. A test that expected a *second*
+   * empty-state sighting to need its own confirmation would be asserting the
+   * behaviour this task chose not to build.
+   */
+  it('reuses one empty-state confirmation for any later no-image up also found in that same empty state', async () => {
+    const emptyStatePrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const sharedLedger = ledger(new Set([emptyStatePrint]), new Set([emptyStatePrint]));
+
+    const first = fakeEnvProvider(false);
+    await provisionGate(first.provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: sharedLedger,
+    }).up({ repo: 'r', env: 'production' } as never);
+
+    // A distinct sighting of the same empty state — a different provider
+    // instance, standing in for a later run that finds this environment
+    // empty again — reaches `up` on the identical confirmation, with
+    // nothing here that re-confirms it.
+    const second = fakeEnvProvider(false);
+    await provisionGate(second.provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: sharedLedger,
+    }).up({ repo: 'r', env: 'production' } as never);
+
+    expect(first.calls).toContain(
+      `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+    );
+    expect(second.calls).toContain(
+      `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+    );
+  });
+
+  it('tells the operator the empty state is a single recurring identity, not a fresh one, when refusing a first bring-up', async () => {
+    const { provider } = fakeEnvProvider(false);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      /single recurring identity/,
+    );
+  });
+
   const ONE_SERVICE_UP: ServiceStatus[] = [
     { name: 'service', state: 'running', health: 'healthy', containerId: 'c1' },
   ];
@@ -748,6 +807,40 @@ describe('gateProvisionRelease — down', () => {
     await expect(
       requireDown(gated)({ repo: 'r', env: 'production' } as never),
     ).rejects.toThrow(/covers only this exact reported state/);
+  });
+
+  /**
+   * T4.1.4b review 4, finding 3: the review-3 caveat was once appended
+   * directly onto `label`, which `describe()` splices into
+   * `${label} (${digest.slice(0, 12)}) to '${env}'` — landing the caveat
+   * sentence mid-clause, ahead of a truncated fragment of
+   * `teardownDigest`'s value (not a real digest, so its first twelve
+   * characters name nothing), and reading as approving a deploy rather than
+   * a teardown. `describe()`'s clause — "torn down — currently: ... to
+   * '<env>'" — must therefore read as one contiguous, ungarbled phrase, with
+   * the caveat trailing it as its own sentence and no fragment of a
+   * non-digest identity anywhere in the message a confirming operator reads.
+   */
+  it('renders a down refusal as one ungarbled clause, with the caveat trailing it rather than spliced inside it', async () => {
+    const { provider } = fakeEnvProvider(true);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    const message = await requireDown(gated)({
+      repo: 'r',
+      env: 'production',
+    } as never).catch((cause: unknown) =>
+      cause instanceof Error ? cause.message : String(cause),
+    );
+
+    expect(message).toMatch(
+      /deploying torn down — currently: service:running\/healthy to 'production' has not been simulated\. This confirmation covers only this exact reported state/,
+    );
+    // `teardownDigest`'s value is not a digest — no fragment of it belongs
+    // in a message an operator reads.
+    expect(message).not.toContain('env-provisio');
   });
 
   it('lets down on an already-up gated environment through once "torn down" is confirmed', async () => {

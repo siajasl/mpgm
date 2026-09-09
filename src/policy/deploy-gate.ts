@@ -121,6 +121,23 @@ export interface DeployTarget {
    * shown in messages only (CONV-3).
    */
   readonly label?: string;
+  /**
+   * True when `digest` is a synthetic identity ({@link recreateOnDefaultDigest},
+   * {@link teardownDigest}) rather than a real image digest — never printed
+   * by {@link describe}'s parenthetical fragment, because a 12-character
+   * prefix of a value with no image behind it means nothing to a reader
+   * (T4.1.4b review 4, CONV-3): the full fingerprint is already printed
+   * elsewhere in every refusal this module raises.
+   */
+  readonly synthetic?: boolean;
+  /**
+   * An operator-facing sentence appended *after* {@link describe}'s clause,
+   * as its own sentence, never folded into `label` (T4.1.4b review 4,
+   * CONV-3): `describe` builds `${label} (${digest}) to '${env}'`, and a
+   * caveat spliced into `label` lands mid-sentence, ahead of that
+   * parenthetical, reading as broken English rather than a second claim.
+   */
+  readonly caveat?: string;
 }
 
 /**
@@ -251,11 +268,23 @@ export interface DeployGateOptions {
   readonly onConfirmationNeeded?: (record: ConfirmationNeeded) => void;
 }
 
+/**
+ * Renders `target`'s clause: `<what> to '<env>'`. `target.caveat` is never
+ * folded in here — see {@link assertReady}, which appends it as its own
+ * trailing sentence after the fixed template this clause is spliced into,
+ * rather than mid-sentence inside it (T4.1.4b review 4, CONV-3). `<what>` is
+ * `label` alone for a {@link DeployTarget.synthetic} identity —
+ * `recreateOnDefaultDigest`/`teardownDigest` produce a value that is not a
+ * digest, so the `(<12 chars>)` fragment this function otherwise appends
+ * would show a reader a fingerprint fragment that names nothing; the full
+ * fingerprint is always printed elsewhere in the refusal this feeds.
+ */
 function describe(target: DeployTarget): string {
+  const digestFragment = target.synthetic ? '' : ` (${target.digest.slice(0, 12)})`;
   const id =
     target.label === undefined
       ? target.digest.slice(0, 12)
-      : `${target.label} (${target.digest.slice(0, 12)})`;
+      : `${target.label}${digestFragment}`;
   return `${id} to '${target.env}'`;
 }
 
@@ -278,12 +307,54 @@ function describeServices(services: readonly ServiceStatus[]): string {
 }
 
 /**
+ * The trailing sentence {@link gateProvisionRelease}'s no-image `up`/`down`
+ * refusals carry as `DeployTarget.caveat` (T4.1.4b review 3, CONV-3): a
+ * confirmation of `recreateOnDefaultDigest`/`teardownDigest` answers for the
+ * exact reported state folded into that fingerprint, not for the act in
+ * general, and an operator confirming it is told so directly rather than
+ * left to infer it by reading this module.
+ *
+ * For `services.length === 0` specifically, this states the residual
+ * T4.1.4b review 4 found rather than closing it (that review's second
+ * finding): {@link servingIdentity}`([])` is the fixed string `'none'`, so
+ * every empty state is the same identity — a confirmation of a first
+ * bring-up found against no services at all is therefore good for any later
+ * no-image `up` this environment is found in the same empty state for,
+ * including one after a later confirmed teardown, or after the containers
+ * are removed by something outside this gate entirely. That is deliberately
+ * not closed by minting a fresh identity per empty moment (a timestamp,
+ * say): decision 11's own reasoning already accepts reusing a confirmation
+ * of an already-approved *state* for free, and "nothing running" is one
+ * such state, not a different one each time it recurs — see DESIGN §9
+ * decision 14 and `contracts/env.provision.md` for the residual stated in
+ * full.
+ */
+function stateBoundCaveat(env: string, services: readonly ServiceStatus[]): string {
+  const base =
+    `This confirmation covers only this exact reported state; if what ` +
+    `'${env}' is serving changes before this runs, a new confirmation will ` +
+    `be asked for.`;
+  if (services.length > 0) {
+    return base;
+  }
+  return (
+    `${base} An environment reporting nothing is a single recurring ` +
+    `identity, not a fresh one each time it recurs, so this same ` +
+    `confirmation also covers any later call found against the same empty ` +
+    `state, until '${env}' reports something.`
+  );
+}
+
+/**
  * Refuses `target` unless it has been recorded and confirmed. Fails closed
  * (CONV-4): an unrecognised or absent ledger answer refuses the call, never
  * allows it.
  */
 function assertReady(target: DeployTarget, options: DeployGateOptions): void {
   const print = deployFingerprint(target);
+  // Appended as its own trailing sentence, never spliced into `describe`'s
+  // clause (T4.1.4b review 4, CONV-3) — see `DeployTarget.caveat`.
+  const caveat = target.caveat === undefined ? '' : ` ${target.caveat}`;
 
   if (!options.ledger.dryRunSeen(print)) {
     options.onDryRunNeeded?.({ tool: DEPLOY_TOOL, fingerprint: print, target });
@@ -295,8 +366,8 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
     // that would fail.
     const recorded = options.onDryRunNeeded !== undefined;
     throw new DeployGateError(
-      `deploying ${describe(target)} has not been simulated. This call's ` +
-        `fingerprint is ${print}. ` +
+      `deploying ${describe(target)} has not been simulated.${caveat} This ` +
+        `call's fingerprint is ${print}. ` +
         (recorded
           ? `This refusal has recorded it as a dry run, in whichever run this ` +
             `call happened under, so an operator can confirm it now with ` +
@@ -314,7 +385,7 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
 
   if (!options.ledger.confirmed(print)) {
     const reason =
-      `deploying ${describe(target)} has been simulated but not confirmed. ` +
+      `deploying ${describe(target)} has been simulated but not confirmed.${caveat} ` +
       `An operator decides whether this exact call may proceed (HIL-2, SAF-4).`;
     options.onConfirmationNeeded?.({
       tool: DEPLOY_TOOL,
@@ -683,11 +754,9 @@ export function gateProvisionRelease(
           repo: parsed.repo,
           env: parsed.env,
           digest: recreateOnDefaultDigest(current.services),
-          label:
-            `recreate on the compose default — currently: ${current.summary}. ` +
-            `This confirmation covers only this exact reported state; if what ` +
-            `'${parsed.env}' is serving changes before this runs, a new ` +
-            `confirmation will be asked for`,
+          synthetic: true,
+          label: `recreate on the compose default — currently: ${current.summary}`,
+          caveat: stateBoundCaveat(parsed.env, current.services),
         },
         options,
       );
@@ -711,11 +780,9 @@ export function gateProvisionRelease(
                 repo: parsed.repo,
                 env: parsed.env,
                 digest: teardownDigest(current.services),
-                label:
-                  `torn down — currently: ${current.summary}. This ` +
-                  `confirmation covers only this exact reported state; if what ` +
-                  `'${parsed.env}' is serving changes before this runs, a new ` +
-                  `confirmation will be asked for`,
+                synthetic: true,
+                label: `torn down — currently: ${current.summary}`,
+                caveat: stateBoundCaveat(parsed.env, current.services),
               },
               options,
             );
