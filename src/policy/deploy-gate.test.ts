@@ -602,6 +602,24 @@ describe('gateProvisionRelease — up', () => {
     expect(calls).toEqual([`status:${JSON.stringify({ repo: 'r', env: 'production' })}`]);
   });
 
+  /**
+   * CONV-3: an operator reading this refusal must be able to tell, without
+   * reading this module, that confirming it only authorises *this* reported
+   * state — not a standing "recreate on default whenever" for the
+   * environment. The message text is the only place that fact reaches them.
+   */
+  it('tells the operator a no-image up refusal is bound to the reported state, not a standing authorisation', async () => {
+    const { provider } = fakeEnvProvider(true);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      /covers only this exact reported state/,
+    );
+  });
+
   it('lets a no-image up on an already-up gated environment through once "recreate on default" is confirmed', async () => {
     const { provider, calls } = fakeEnvProvider(true);
     const print = deployFingerprint({
@@ -719,6 +737,18 @@ describe('gateProvisionRelease — down', () => {
   const ONE_SERVICE_UP: ServiceStatus[] = [
     { name: 'service', state: 'running', health: 'healthy', containerId: 'c1' },
   ];
+
+  it('tells the operator a down refusal is bound to the reported state, not a standing authorisation', async () => {
+    const { provider } = fakeEnvProvider(true);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(
+      requireDown(gated)({ repo: 'r', env: 'production' } as never),
+    ).rejects.toThrow(/covers only this exact reported state/);
+  });
 
   it('lets down on an already-up gated environment through once "torn down" is confirmed', async () => {
     const { provider, calls } = fakeEnvProvider(true);

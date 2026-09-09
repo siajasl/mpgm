@@ -683,7 +683,11 @@ export function gateProvisionRelease(
           repo: parsed.repo,
           env: parsed.env,
           digest: recreateOnDefaultDigest(current.services),
-          label: `recreate on the compose default (currently: ${current.summary})`,
+          label:
+            `recreate on the compose default — currently: ${current.summary}. ` +
+            `This confirmation covers only this exact reported state; if what ` +
+            `'${parsed.env}' is serving changes before this runs, a new ` +
+            `confirmation will be asked for`,
         },
         options,
       );
@@ -707,7 +711,11 @@ export function gateProvisionRelease(
                 repo: parsed.repo,
                 env: parsed.env,
                 digest: teardownDigest(current.services),
-                label: `torn down (currently: ${current.summary})`,
+                label:
+                  `torn down — currently: ${current.summary}. This ` +
+                  `confirmation covers only this exact reported state; if what ` +
+                  `'${parsed.env}' is serving changes before this runs, a new ` +
+                  `confirmation will be asked for`,
               },
               options,
             );
