@@ -418,7 +418,7 @@ describe('dockerReleaseProvider — the release-path gate is not optional', () =
         release: {
           version: '1.0.0',
           image: 'mpgm-sample-service:1.0.0',
-          digest: 'sha256:aaa',
+          digest: `sha256:${'a'.repeat(64)}`,
           changelog: 'Initial release.',
           rollbackTo: null,
         },
@@ -473,7 +473,7 @@ describe('dockerReleaseProvider — gatedEnvs is resolved per call, not fixed at
     const releaseOne = {
       version: '1.0.0',
       image: 'mpgm-sample-service:1.0.0',
-      digest: 'sha256:aaa',
+      digest: `sha256:${'a'.repeat(64)}`,
       changelog: 'Initial release.',
       rollbackTo: null,
     };

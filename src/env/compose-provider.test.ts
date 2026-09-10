@@ -3,6 +3,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Provider } from '../contract/capability.js';
+import type { ServiceStatus } from './provision.js';
+import {
+  DeployGateError,
+  deployFingerprint,
+  recreateOnDefaultDigest,
+  teardownDigest,
+  type DeployGateOptions,
+  type DeployLedger,
+} from '../policy/deploy-gate.js';
 import {
   ComposeProviderError,
   UndeclaredEnvironmentError,
@@ -14,6 +23,39 @@ import {
   type ComposeCli,
   type ComposeCliResult,
 } from './compose-provider.js';
+
+/**
+ * `gate` is a required constructor option as of T4.1.4b (DESIGN §9 decision
+ * 14) — every test in this file below that is not itself exercising the
+ * gate uses this: `gatedEnvs` answers empty for every `repo`, the same
+ * reasoning `docker-provider.test.ts`'s `noProductionGate` gives, so the
+ * ledger only has to exist, not answer anything in particular.
+ */
+function ungatedGate(gatedEnvs: ReadonlySet<string> = new Set()): DeployGateOptions {
+  return {
+    gatedEnvs: () => gatedEnvs,
+    ledger: { dryRunSeen: () => false, confirmed: () => false },
+  };
+}
+
+/** A ledger over in-memory sets, mirroring `deploy-gate.test.ts`'s own. */
+function ledger(seen = new Set<string>(), confirmed = new Set<string>()): DeployLedger {
+  return {
+    dryRunSeen: (print) => seen.has(print),
+    confirmed: (print) => confirmed.has(print),
+  };
+}
+
+/**
+ * A stand-in digest actually shaped like one — exactly 64 lowercase hex
+ * characters, what `docker build --iidfile` writes (`isDigestShaped`,
+ * `../policy/deploy-gate.ts`) — mirroring `deploy-gate.test.ts`'s own
+ * `DIGEST_A` (T4.1.4b review 7): `'sha256:aaa'` no longer passes that check
+ * now that it is exact-length, so a test below that means to exercise a
+ * gated call's own behaviour, not the shape check itself, needs a value the
+ * check actually accepts.
+ */
+const DIGEST_A = `sha256:${'a'.repeat(64)}`;
 
 /**
  * `Provider`'s handlers are looked up by name (`noUncheckedIndexedAccess`), so
@@ -204,12 +246,22 @@ const fail = (stderr: string): ComposeCliResult => ({ stdout: '', stderr, code: 
 const oneHealthyRow =
   '{"Service":"service","State":"running","Health":"healthy","ID":"abc123"}';
 
+/** What `parseComposePs` turns {@link oneHealthyRow} into, for building the
+ * per-state gate identity ({@link recreateOnDefaultDigest}/
+ * {@link teardownDigest}) a test needs to confirm. */
+const ONE_HEALTHY_SERVICE: ServiceStatus = {
+  name: 'service',
+  state: 'running',
+  health: 'healthy',
+  containerId: 'abc123',
+};
+
 describe('composeProvider', () => {
   beforeEach(seedManifest);
 
   it('up brings the environment up, waits, and reports it up', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     const result = (await operation(provider, 'up')({ repo, env: 'test' } as never)) as {
       env: string;
@@ -238,7 +290,7 @@ describe('composeProvider', () => {
 
   it('up passes an image override through MPGM_SERVICE_IMAGE', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await operation(
       provider,
@@ -248,18 +300,23 @@ describe('composeProvider', () => {
     expect(calls[0]?.env).toEqual({ MPGM_SERVICE_IMAGE: 'registry/app:7' });
   });
 
-  it('up without an image override passes no compose env at all', async () => {
+  it('up without an image override explicitly clears MPGM_SERVICE_IMAGE, rather than leaving it to whatever this process happens to have ambiently (CONV-4)', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await operation(provider, 'up')({ repo, env: 'test' } as never);
 
-    expect(calls[0]?.env).toBeUndefined();
+    // Not merely absent: `dockerComposeCli` otherwise inherits this
+    // process's own environment unchanged, so an ambient
+    // `MPGM_SERVICE_IMAGE` would reach `docker compose` with no `image` ever
+    // named in the call at all — a caller reasoning about "no image" as "the
+    // compose default" needs that to actually be true.
+    expect(calls[0]?.env).toEqual({ MPGM_SERVICE_IMAGE: '' });
   });
 
   it('up with an image override applies the declared releaseOverride compose file too', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await operation(
       provider,
@@ -282,7 +339,7 @@ describe('composeProvider', () => {
 
   it('up without an image override never applies the releaseOverride file', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await operation(provider, 'up')({ repo, env: 'test' } as never);
 
@@ -291,7 +348,7 @@ describe('composeProvider', () => {
 
   it('up with an image override but no declared releaseOverride still runs, on the base file alone', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await operation(
       provider,
@@ -312,7 +369,7 @@ describe('composeProvider', () => {
 
   it('down never applies the releaseOverride file — a project is torn down by name, not by config', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await operation(provider, 'down')({ repo, env: 'test' } as never);
 
@@ -321,7 +378,7 @@ describe('composeProvider', () => {
 
   it('up throws when docker compose never becomes healthy — a partial success is never reported', async () => {
     const { cli } = scriptedCli([fail('container mpgm-test-service-1 is unhealthy')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await expect(
       operation(provider, 'up')({ repo, env: 'test' } as never),
@@ -330,7 +387,7 @@ describe('composeProvider', () => {
 
   it('down tears the environment down and reports it not up, with no services', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     const result = await operation(provider, 'down')({ repo, env: 'test' } as never);
 
@@ -349,7 +406,7 @@ describe('composeProvider', () => {
     // docker compose exits 0 on `down` even with nothing running (verified
     // against a real daemon; contracts/env.provision.md).
     const { cli } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await expect(
       operation(provider, 'down')({ repo, env: 'test' } as never),
@@ -362,7 +419,7 @@ describe('composeProvider', () => {
 
   it('status reports the current services without invoking up or down', async () => {
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     const result = await operation(provider, 'status')({ repo, env: 'test' } as never);
 
@@ -388,7 +445,7 @@ describe('composeProvider', () => {
       '{"Service":"worker","State":"exited","Health":"","ID":"def456"}',
     ].join('\n');
     const { cli } = scriptedCli([ok(twoServicesOneExited)]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     const result = (await operation(
       provider,
@@ -404,7 +461,7 @@ describe('composeProvider', () => {
 
   it('refuses an environment the manifest does not declare (fail closed)', async () => {
     const { cli } = scriptedCli([ok()]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await expect(
       operation(provider, 'up')({ repo, env: 'production' } as never),
@@ -413,7 +470,7 @@ describe('composeProvider', () => {
 
   it('uses the environment-specific compose file and project for staging, not test', async () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
-    const provider = composeProvider({ cli });
+    const provider = composeProvider({ cli, gate: ungatedGate() });
 
     await operation(provider, 'up')({ repo, env: 'staging' } as never);
 
@@ -449,7 +506,7 @@ describe('composeProvider', () => {
       );
 
       const { cli, calls } = scriptedCli([ok(), ok(''), ok(), ok('')]);
-      const provider = composeProvider({ cli });
+      const provider = composeProvider({ cli, gate: ungatedGate() });
 
       await operation(provider, 'up')({ repo, env: 'test' } as never);
       await operation(provider, 'up')({ repo: otherRepo, env: 'test' } as never);
@@ -459,6 +516,268 @@ describe('composeProvider', () => {
     } finally {
       rmSync(otherRepo, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * `composeProvider` always returns the result of `gateProvisionRelease`
+ * (T4.1.4b, DESIGN §9 decision 14) — these tests exercise that wiring
+ * through the real provider, against `staging`, the one environment
+ * `seedManifest` marks `approval: required`. `deploy-gate.test.ts` covers
+ * `gateProvisionRelease`'s own decision logic against a fake provider in
+ * more detail (fail-closed on a missing `status`, a provider with no `down`
+ * left untouched, and so on); what matters here is that the concrete
+ * provider this repository ships is never constructible ungated.
+ */
+describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
+  beforeEach(seedManifest);
+
+  const notUpRow = '{"Service":"service","State":"exited","Health":"","ID":"abc123"}';
+
+  it('refuses up carrying an image, on a gated environment, without a recorded dry run — the underlying docker compose is never invoked', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(provider, 'up')({ repo, env: 'staging', image: DIGEST_A } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('lets up carrying an image through once the identical {repo, env, digest} fingerprint release.deliver would compute is confirmed', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const print = deployFingerprint({ repo, env: 'staging', digest: DIGEST_A });
+    const provider = composeProvider({
+      cli,
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(new Set([print]), new Set([print])),
+      },
+    });
+
+    await operation(provider, 'up')({ repo, env: 'staging', image: DIGEST_A } as never);
+
+    expect(calls).toHaveLength(2);
+  });
+
+  /**
+   * T4.1.4b review 7: `isDigestShaped` requires exactly 64 lowercase hex
+   * characters, not merely a `sha256:` prefix followed by *some* hex — a
+   * truncated value is a valid (if short) Docker image id, and which image
+   * it resolves to depends on what exists on the host when the call finally
+   * runs, so a confirmation keyed on it is a confirmation over a mutable
+   * name, the exact failure mode `isDigestShaped` exists to refuse (CONV-4).
+   */
+  it('refuses a truncated (but validly-hex) digest on a gated environment', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(
+        provider,
+        'up',
+      )({ repo, env: 'staging', image: 'sha256:e8983ff7edad' } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toHaveLength(0);
+  });
+
+  /**
+   * T4.1.4b review 5: `image` is documented as an override of the compose
+   * default and carries no shape of its own — a tag in every other test in
+   * this file (`registry/app:7`) — but the gate used to fingerprint whatever
+   * string arrived, tag included, resting decision 9's "cannot be made to
+   * name another build" reasoning on a value that had never been checked to
+   * actually be a digest. A tag reaching a gated `up` is now refused outright,
+   * before any fingerprint is computed or the ledger is consulted at all —
+   * confirming it would otherwise be impossible even in principle, since a
+   * caller has no digest to confirm and no way to make this call carry one.
+   */
+  it('refuses up carrying a tag rather than a digest, on a gated environment, before any fingerprint is computed (CONV-4)', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(
+        provider,
+        'up',
+      )({ repo, env: 'staging', image: 'registry/app:7' } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a no-image up on a gated environment that is already up, under the reported-state-bound "recreate on default" identity, without ever calling docker compose up', async () => {
+    // The gate's own `status` check to decide "already up" — a refusal here
+    // must stop before that, not after standing anything up.
+    const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(provider, 'up')({ repo, env: 'staging' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('lets a no-image up on an already-up gated environment through once "recreate on default" is confirmed', async () => {
+    const print = deployFingerprint({
+      repo,
+      env: 'staging',
+      digest: recreateOnDefaultDigest([ONE_HEALTHY_SERVICE]),
+    });
+    const { cli, calls } = scriptedCli([ok(oneHealthyRow), ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(new Set([print]), new Set([print])),
+      },
+    });
+
+    await operation(provider, 'up')({ repo, env: 'staging' } as never);
+    expect(calls).toHaveLength(3);
+  });
+
+  /**
+   * T4.1.4b review 2: the first version of this gate let a no-image `up`
+   * through untouched whenever `status` reported no service at all,
+   * reasoning that standing up infrastructure nothing is serving asks
+   * nothing of an operator. A review found that reachable, not theoretical:
+   * `production` — declared in the same task — has never been stood up, so
+   * its only reachable state *was* exactly this one, meaning any caller
+   * could stand it up on the compose default with no approval anywhere
+   * (HIL-2). A no-image `up` against a gated environment must now be
+   * refused whatever `status` reports, nothing included.
+   */
+  it('refuses a no-image up on a gated environment when status reports no service at all — a first bring-up needs approval too', async () => {
+    const { cli, calls } = scriptedCli([ok('')]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(provider, 'up')({ repo, env: 'staging' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('lets a no-image up through once its first bring-up — nothing reported yet — is confirmed', async () => {
+    const print = deployFingerprint({
+      repo,
+      env: 'staging',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const { cli, calls } = scriptedCli([ok(''), ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(new Set([print]), new Set([print])),
+      },
+    });
+
+    await operation(provider, 'up')({ repo, env: 'staging' } as never);
+    expect(calls).toHaveLength(3);
+  });
+
+  /**
+   * T4.1.4b rework 1: an environment reporting one `exited` service is not
+   * "nothing there" — `environmentUp` reads `exited` as `up: false`, the
+   * same as truly nothing running, but the gate's own question is "is there
+   * anything here to protect", not "is it healthy" (`deploy-gate.ts`'s
+   * `currentServices`/`anything`). A no-image `up` here would replace an exited-but-real
+   * service with the compose default, with no approval anywhere in the path.
+   */
+  it('refuses a no-image up on a gated environment reporting one exited service — presence, not health, decides "anything to protect"', async () => {
+    const { cli, calls } = scriptedCli([ok(notUpRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(provider, 'up')({ repo, env: 'staging' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses down on a gated environment that is up, under the reported-state-bound "torn down" identity, without ever calling docker compose down', async () => {
+    const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(provider, 'down')({ repo, env: 'staging' } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('lets down on an already-up gated environment through once "torn down" is confirmed', async () => {
+    const print = deployFingerprint({
+      repo,
+      env: 'staging',
+      digest: teardownDigest([ONE_HEALTHY_SERVICE]),
+    });
+    const { cli, calls } = scriptedCli([ok(oneHealthyRow), ok(), ok('')]);
+    const provider = composeProvider({
+      cli,
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(new Set([print]), new Set([print])),
+      },
+    });
+
+    await operation(provider, 'down')({ repo, env: 'staging' } as never);
+    expect(calls).toHaveLength(3);
+  });
+
+  it('lets down on a gated environment through untouched while it is not already up', async () => {
+    const { cli, calls } = scriptedCli([ok(''), ok(), ok('')]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await operation(provider, 'down')({ repo, env: 'staging' } as never);
+    expect(calls).toHaveLength(3);
+  });
+
+  it('leaves a non-gated environment fully ungated on down too — no status check, no confirmation, whatever the ledger says', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok('')]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await operation(provider, 'down')({ repo, env: 'test' } as never);
+    // Exactly the two calls `down` itself makes ('down', then 'ps') — no
+    // extra 'ps' from a `currentServices` check this environment never
+    // needed.
+    expect(calls).toHaveLength(2);
+  });
+
+  it('never gates status — asking costs nothing and changes nothing', async () => {
+    const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await operation(provider, 'status')({ repo, env: 'staging' } as never);
+    expect(calls).toHaveLength(1);
   });
 });
 

@@ -1,0 +1,27 @@
+# The `production` environment (DEP-1, DEP-4, `env.provision`, T4.1.4b).
+#
+# Same shape as `staging`'s (`deploy/environments/staging/compose.yaml`) — a
+# separate compose project and a separate port, so all three declared
+# environments can be up at once without colliding. See `test`'s own file for
+# `MPGM_SERVICE_IMAGE`. Declared only once `env.provision#up`/`#down` are both
+# gated for whichever environment a project marks `approval: required`
+# (`src/policy/deploy-gate.ts`'s `gateProvisionRelease`, DESIGN §9 decision
+# 14) — this project marks `production` `required`
+# (`deploy/environments/environments.yaml`), the same as `staging`.
+name: mpgm-production
+services:
+  service:
+    image: ${MPGM_SERVICE_IMAGE:-nginx:1.27-alpine}
+    ports:
+      - '8083:80'
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+    environment:
+      MPGM_ENV: production
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--spider', 'http://localhost/']
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped

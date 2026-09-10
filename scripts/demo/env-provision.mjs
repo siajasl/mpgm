@@ -18,6 +18,7 @@ import {
   CapabilityRegistry,
   composeProvider,
   envProvisionContract,
+  gatedEnvironments,
 } from '../../dist/index.js';
 
 const failures = [];
@@ -33,7 +34,22 @@ function check(label, condition, detail = '') {
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const registry = new CapabilityRegistry();
-const bound = registry.bind(envProvisionContract, composeProvider());
+// `gate` is a required constructor option as of T4.1.4b (DESIGN §9 decision
+// 14) — `gatedEnvs` is wired to `gatedEnvironments` itself, the real
+// resolver, for the same reason `release-deliver.mjs`'s own comment gives:
+// this script only ever touches `test`, which the manifest marks
+// `approval: none`, so the gate's ledger is never actually consulted here,
+// but retargeting this script at a gated environment would be refused
+// instead of silently provisioned.
+const bound = registry.bind(
+  envProvisionContract,
+  composeProvider({
+    gate: {
+      gatedEnvs: gatedEnvironments,
+      ledger: { dryRunSeen: () => false, confirmed: () => false },
+    },
+  }),
+);
 
 try {
   process.stdout.write('\n1. Up from the committed IaC alone\n');
@@ -99,12 +115,19 @@ try {
   );
 
   process.stdout.write('\n7. An undeclared environment is refused, not guessed at\n');
+  // Not 'production': T4.1.4b declares it in this project's own manifest, so
+  // it is no longer an undeclared name to exercise this check against — a
+  // name no manifest entry will ever use is what this step actually needs.
   try {
-    await bound.invoke('up', { repo, env: 'production' });
-    check('production is refused', false, 'the call resolved instead of throwing');
+    await bound.invoke('up', { repo, env: 'not-a-declared-environment' });
+    check(
+      'an undeclared environment is refused',
+      false,
+      'the call resolved instead of throwing',
+    );
   } catch (cause) {
     check(
-      'production is refused',
+      'an undeclared environment is refused',
       cause instanceof Error && /not declared/.test(cause.message),
       cause instanceof Error ? cause.message : String(cause),
     );

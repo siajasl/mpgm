@@ -1,10 +1,17 @@
 import type { Provider } from '../contract/capability.js';
+import {
+  envRequestInput,
+  envStatusOutput,
+  envUpInput,
+  type ServiceStatus,
+} from '../env/provision.js';
 import { releaseDeliverInput, releaseRollbackInput } from '../release/deliver.js';
 import type { DestructiveCallState, KernelState } from '../state/kernel-state.js';
 import { fingerprint } from './destructive.js';
 
 /**
- * The release-path deploy gate (DESIGN §9 decision 10/11, HIL-2, SAF-4).
+ * The deploy gate — release path and environment path alike (DESIGN §9
+ * decision 10/11/14, HIL-2, SAF-4).
  *
  * HIL-2 asks that irreversible, outward-facing actions require explicit
  * approval *regardless of gate settings* — a phase gate will not do, because
@@ -15,7 +22,8 @@ import { fingerprint } from './destructive.js';
  * — a stable fingerprint over the call, a dry run that records intent
  * without effect, and a confirmation keyed to that exact fingerprint —
  * applied directly in front of `release.deliver#deliver`/`#rollback`
- * ({@link gateProductionRelease}).
+ * ({@link gateProductionRelease}) and, since T4.1.4b, in front of
+ * `env.provision#up`/`#down` ({@link gateProvisionRelease}).
  *
  * **Which environments are gated is never a name this module knows.** A
  * caller reads `gatedEnvs` from the target project's own
@@ -36,24 +44,54 @@ import { fingerprint } from './destructive.js';
  * first place — otherwise `rollback` would be a second, ungated door into a
  * gated environment that the `deliver` gate never sees.
  *
- * **What this module does not close.** `release.deliver#deliver`/`#rollback`
- * delegate to `env.provision#up` underneath
- * (`../release/docker-provider.ts`), and this module gates only the door it
- * is placed in front of — a caller reaching `env.provision#up` directly,
- * with an `image` override, bypassing `release.deliver` entirely, is not
- * gated by anything here. That is deliberately out of this task's scope, not
- * an oversight: PLAN.md splits "gate the release path"
- * (`release.deliver#deliver`/`#rollback`, this module) from "gate the
- * environment path, and declare production" (every `env.provision`
- * operation, `down` included, plus declaring `production` once nothing can
- * reach it unapproved) into two tasks along exactly this contract boundary,
- * and this module is the first of them. This project now declares one gated
- * environment, `staging` (`deploy/environments/environments.yaml`), but only
- * on the `release.deliver` path this module sits in front of —
- * `env.provision#up` with an `image` override reaches it ungated until
- * T4.1.4b lands (`contracts/release.deliver.md`); closing that for whichever
- * environment a project marks `approval: required` — this project's own
- * eventual `production` included — is the second task's job.
+ * **`env.provision` is the other door to the same environment, and T4.1.4a
+ * left it open.** `release.deliver#deliver`/`#rollback` delegate to
+ * `env.provision#up` underneath (`../release/docker-provider.ts`), but a
+ * caller reaching `env.provision#up` directly — with an `image` override,
+ * bypassing `release.deliver` entirely — was not gated by anything in this
+ * module until now, and neither was `env.provision#down`, which can change
+ * what a gated environment serves just as surely: tearing it down and
+ * letting a later no-image `up` recreate it on the compose default replaces
+ * a confirmed release with an unconfirmed one in two calls, neither of which
+ * named an image at all. {@link gateProvisionRelease} closes both: an
+ * `up` carrying an `image` is checked under the identical fingerprint
+ * `deliver` would compute for the same `{repo, env, digest}` (decision 9/11
+ * — a digest is a digest, whichever contract asks to run it, so a
+ * confirmation given to one satisfies the other and neither asks twice) —
+ * and, since T4.1.4b review 5, only once `image` is actually shaped like one
+ * ({@link isDigestShaped}): `envUpInput.image` is a bare, unshaped string
+ * documented as an override, a tag in every demo and in this repository's
+ * own build naming, and decision 9's "cannot be made to name another build"
+ * reasoning does not hold for a mutable name, so a gated `up` naming
+ * anything else is refused outright rather than fingerprinted on a value
+ * that could point somewhere new by the time it is confirmed (CONV-4).
+ * {@link gateProductionRelease} applies the identical check to
+ * `release.digest`/`to.digest` (T4.1.4b review 6): both take an unshaped
+ * `z.string().min(1)`, so a gated `up`'s check alone left a
+ * `release.deliver` call carrying a mutable `digest` confirmed at the outer
+ * door and only refused at this inner one, with a message pointing the
+ * caller back through the door it had already used. An
+ * `up` with no `image` is gated unconditionally — an environment the project
+ * marks `approval: required` never has a no-image `up` reach the provider
+ * without a confirmation, whatever `status` currently reports, first bring-up
+ * included (T4.1.4b review 2: a review found the previous "nothing reported,
+ * proceed untouched" narrowing left `production` — declared in this same
+ * change and never yet stood up — reachable through exactly that untouched
+ * path, which is the one case HIL-2 least tolerates leaving open). `down` is
+ * still asked `status` first, because tearing down infrastructure nothing is
+ * serving genuinely changes nothing; anything reported, it is refused the
+ * same way. Both `up`'s and `down`'s gated fingerprints (see
+ * {@link recreateOnDefaultDigest}, {@link teardownDigest}) fold in what
+ * `status` actually reports rather than a fingerprint fixed for the act
+ * alone: neither is a real digest, because neither call names one, but a
+ * fixed sentinel shared by every call would let one confirmation of "tear
+ * this down" stand as a standing authorisation to tear down whatever this
+ * environment serves in every later run, which is a different question every
+ * time (T4.1.4b review 2) — folding in the reported services means a
+ * confirmation answers "may *this* state be replaced or torn down", not "may
+ * this kind of act ever proceed" (see {@link gateProvisionRelease}'s own doc
+ * for the fail-closed reasoning behind asking `status` first, and for why
+ * that question is "any service at all", not "is everything healthy").
  */
 
 export class DeployGateError extends Error {}
@@ -77,6 +115,72 @@ const DEPLOY_TOOL = 'deploy';
 const DRY_RUN_PARAM = '__no_dry_run_field__';
 
 /**
+ * Whether `image` is shaped like the one immutable name decision 9 actually
+ * reasons about — `'sha256:'` followed by the hex id `docker build
+ * --iidfile` writes, exactly what `release.digest` always is
+ * (`../release/docker-provider.ts`'s `buildImage`) — rather than a tag or any
+ * other mutable reference.
+ *
+ * `envUpInput.image` (`../env/provision.ts`) is documented as "overrides the
+ * image the environment's compose file defaults to" and is `z.string().min(1)`
+ * with no shape of its own: a tag in every demo and in this repository's own
+ * build naming (`docker-provider.ts`'s `buildImage` tags `${image}:${version}`
+ * before ever recording a digest). Decision 9's reasoning for keying a
+ * confirmation on `digest` alone — "a digest names one build and cannot be
+ * made to name another, which a tag can" — only holds if what reaches
+ * {@link deployFingerprint} actually is one. Before this check, a gated `up`
+ * fingerprinted whatever `image` named, tag included: one operator
+ * confirmation of `up {env, image: 'app:1.0.0'}` then authorised every later
+ * `up` naming that same tag, however many times `app:1.0.0` had been rebuilt
+ * to point at a different tree in between — a confirmation over a name, not
+ * over the build the operator actually saw (T4.1.4b review 5, CONV-4).
+ *
+ * Refusing a non-digest-shaped `image` outright — rather than resolving a tag
+ * to whatever it currently points at and fingerprinting that instead — costs
+ * this repository nothing: `release.deliver` (the one caller in this
+ * repository that ever reaches a gated `up` with an `image` at all) always
+ * supplies `release.digest`, straight from `--iidfile`, never a tag. A caller
+ * that wants a gated `up` to carry a tag has `release.deliver`'s own gate
+ * (`gateProductionRelease`) to go through first, on a real digest, same as
+ * every other path to a gated environment — {@link gateProductionRelease}
+ * applies this identical check to `release.digest`/`to.digest` for exactly
+ * that reason (T4.1.4b review 6): `releaseArtifactSchema.digest`
+ * (`../release/deliver.ts`) is `z.string().min(1)`, with no shape of its own
+ * either, so nothing before this check stopped a `release.deliver#deliver`
+ * carrying a tag-shaped `digest` from being confirmed by an operator at the
+ * outer door and only then refused by this inner one — fail-closed either
+ * way, but with a refusal that told the caller to do exactly what it had
+ * already done ("deliver this through `release.deliver` instead").
+ */
+function isDigestShaped(image: string): boolean {
+  return /^sha256:[0-9a-f]{64}$/.test(image);
+}
+
+/**
+ * The message {@link isDigestShaped}'s refusal carries, shared between
+ * {@link gateProvisionRelease}'s `up` and {@link gateProductionRelease}'s
+ * `deliver`/`rollback` (T4.1.4b review 6) — the same defect either call would
+ * otherwise let through: a mutable name repointed at a different build after
+ * an operator confirms it once would let that one confirmation stand for
+ * whatever the name currently resolves to, not the build it was actually
+ * given (DESIGN §9 decision 9/14, CONV-4). `field` names which input field
+ * carried the offending value, so an operator reading this refusal is told
+ * where to look without reading this module (CONV-3).
+ */
+function notDigestShapedMessage(env: string, field: string, value: string): string {
+  return (
+    `'${field}' for '${env}' is '${value}', which is not shaped like a digest ` +
+    "('sha256:' followed by its hex id — exactly what 'docker build --iidfile' " +
+    'writes). This gate keys its confirmation on that value, and a mutable ' +
+    'name — a tag, or anything else that is not the digest itself — can be ' +
+    'repointed at a different build after an operator approves it once, which ' +
+    'would let one confirmation stand for whatever the name currently ' +
+    'resolves to rather than the build it was actually given (DESIGN §9 ' +
+    'decision 9/14, CONV-4).'
+  );
+}
+
+/**
  * What one gated call targets: enough to compute its fingerprint and to
  * describe it to an operator without them reading this module (CONV-3).
  *
@@ -96,6 +200,23 @@ export interface DeployTarget {
    * shown in messages only (CONV-3).
    */
   readonly label?: string;
+  /**
+   * True when `digest` is a synthetic identity ({@link recreateOnDefaultDigest},
+   * {@link teardownDigest}) rather than a real image digest — never printed
+   * by {@link describe}'s parenthetical fragment, because a 12-character
+   * prefix of a value with no image behind it means nothing to a reader
+   * (T4.1.4b review 4, CONV-3): the full fingerprint is already printed
+   * elsewhere in every refusal this module raises.
+   */
+  readonly synthetic?: boolean;
+  /**
+   * An operator-facing sentence appended *after* {@link describe}'s clause,
+   * as its own sentence, never folded into `label` (T4.1.4b review 4,
+   * CONV-3): `describe` builds `${label} (${digest}) to '${env}'`, and a
+   * caveat spliced into `label` lands mid-sentence, ahead of that
+   * parenthetical, reading as broken English rather than a second claim.
+   */
+  readonly caveat?: string;
 }
 
 /**
@@ -226,12 +347,81 @@ export interface DeployGateOptions {
   readonly onConfirmationNeeded?: (record: ConfirmationNeeded) => void;
 }
 
+/**
+ * Renders `target`'s clause: `<what> to '<env>'`. `target.caveat` is never
+ * folded in here — see {@link assertReady}, which appends it as its own
+ * trailing sentence after the fixed template this clause is spliced into,
+ * rather than mid-sentence inside it (T4.1.4b review 4, CONV-3). `<what>` is
+ * `label` alone for a {@link DeployTarget.synthetic} identity —
+ * `recreateOnDefaultDigest`/`teardownDigest` produce a value that is not a
+ * digest, so the `(<12 chars>)` fragment this function otherwise appends
+ * would show a reader a fingerprint fragment that names nothing; the full
+ * fingerprint is always printed elsewhere in the refusal this feeds.
+ */
 function describe(target: DeployTarget): string {
+  const digestFragment = target.synthetic ? '' : ` (${target.digest.slice(0, 12)})`;
   const id =
     target.label === undefined
       ? target.digest.slice(0, 12)
-      : `${target.label} (${target.digest.slice(0, 12)})`;
+      : `${target.label}${digestFragment}`;
   return `${id} to '${target.env}'`;
+}
+
+/**
+ * A compact, human-readable rendering of what a provider's `status` actually
+ * reported — folded into a {@link gateProvisionRelease} refusal's `label` so
+ * an operator can see *why* the gate believes there is something to protect
+ * (CONV-3): the answer no longer follows from `envStatusOutput.up`, so a
+ * message that only said "already up" would describe a verdict this module
+ * does not compute, and would leave "why did it think that" only answerable
+ * by reading the code.
+ */
+function describeServices(services: readonly ServiceStatus[]): string {
+  if (services.length === 0) {
+    return 'no services reported';
+  }
+  return services
+    .map((service) => `${service.name}:${service.state}/${service.health}`)
+    .join(', ');
+}
+
+/**
+ * The trailing sentence {@link gateProvisionRelease}'s no-image `up`/`down`
+ * refusals carry as `DeployTarget.caveat` (T4.1.4b review 3, CONV-3): a
+ * confirmation of `recreateOnDefaultDigest`/`teardownDigest` answers for the
+ * exact reported state folded into that fingerprint, not for the act in
+ * general, and an operator confirming it is told so directly rather than
+ * left to infer it by reading this module.
+ *
+ * For `services.length === 0` specifically, this states the residual
+ * T4.1.4b review 4 found rather than closing it (that review's second
+ * finding): {@link servingIdentity}`([])` is the fixed string `'none'`, so
+ * every empty state is the same identity — a confirmation of a first
+ * bring-up found against no services at all is therefore good for any later
+ * no-image `up` this environment is found in the same empty state for,
+ * including one after a later confirmed teardown, or after the containers
+ * are removed by something outside this gate entirely. That is deliberately
+ * not closed by minting a fresh identity per empty moment (a timestamp,
+ * say): decision 11's own reasoning already accepts reusing a confirmation
+ * of an already-approved *state* for free, and "nothing running" is one
+ * such state, not a different one each time it recurs — see DESIGN §9
+ * decision 14 and `contracts/env.provision.md` for the residual stated in
+ * full.
+ */
+function stateBoundCaveat(env: string, services: readonly ServiceStatus[]): string {
+  const base =
+    `This confirmation covers only this exact reported state; if what ` +
+    `'${env}' is serving changes before this runs, a new confirmation will ` +
+    `be asked for.`;
+  if (services.length > 0) {
+    return base;
+  }
+  return (
+    `${base} An environment reporting nothing is a single recurring ` +
+    `identity, not a fresh one each time it recurs, so this same ` +
+    `confirmation also covers any later call found against the same empty ` +
+    `state, until '${env}' reports something.`
+  );
 }
 
 /**
@@ -241,6 +431,9 @@ function describe(target: DeployTarget): string {
  */
 function assertReady(target: DeployTarget, options: DeployGateOptions): void {
   const print = deployFingerprint(target);
+  // Appended as its own trailing sentence, never spliced into `describe`'s
+  // clause (T4.1.4b review 4, CONV-3) — see `DeployTarget.caveat`.
+  const caveat = target.caveat === undefined ? '' : ` ${target.caveat}`;
 
   if (!options.ledger.dryRunSeen(print)) {
     options.onDryRunNeeded?.({ tool: DEPLOY_TOOL, fingerprint: print, target });
@@ -252,8 +445,8 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
     // that would fail.
     const recorded = options.onDryRunNeeded !== undefined;
     throw new DeployGateError(
-      `deploying ${describe(target)} has not been simulated. This call's ` +
-        `fingerprint is ${print}. ` +
+      `deploying ${describe(target)} has not been simulated.${caveat} This ` +
+        `call's fingerprint is ${print}. ` +
         (recorded
           ? `This refusal has recorded it as a dry run, in whichever run this ` +
             `call happened under, so an operator can confirm it now with ` +
@@ -271,7 +464,7 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
 
   if (!options.ledger.confirmed(print)) {
     const reason =
-      `deploying ${describe(target)} has been simulated but not confirmed. ` +
+      `deploying ${describe(target)} has been simulated but not confirmed.${caveat} ` +
       `An operator decides whether this exact call may proceed (HIL-2, SAF-4).`;
     options.onConfirmationNeeded?.({
       tool: DEPLOY_TOOL,
@@ -325,6 +518,20 @@ export function gateProductionRelease(
       if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
         return deliver(input);
       }
+      // Fail closed on a tag or any other mutable `release.digest` at this
+      // outer door, before `assertReady` ever computes a fingerprint over it
+      // (T4.1.4b review 6, CONV-4): `releaseArtifactSchema.digest`
+      // (`../release/deliver.ts`) is `z.string().min(1)`, with no shape of
+      // its own, so nothing before this check stopped a mutable name from
+      // being confirmed by an operator here and only then refused by
+      // `gateProvisionRelease`'s own `up` gate underneath, with a message
+      // pointing the caller back to `release.deliver` — the door it had
+      // already come through. See `isDigestShaped`'s own doc.
+      if (!isDigestShaped(parsed.release.digest)) {
+        throw new DeployGateError(
+          notDigestShapedMessage(parsed.env, 'release.digest', parsed.release.digest),
+        );
+      }
       assertReady(
         {
           repo: parsed.repo,
@@ -341,6 +548,14 @@ export function gateProductionRelease(
       const parsed = releaseRollbackInput.parse(input);
       if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
         return rollbackOp(input);
+      }
+      // See `deliver`'s own comment above: the identical fail-closed shape
+      // check, at the same outer door, for the same reason (T4.1.4b review 6,
+      // CONV-4).
+      if (!isDigestShaped(parsed.to.digest)) {
+        throw new DeployGateError(
+          notDigestShapedMessage(parsed.env, 'to.digest', parsed.to.digest),
+        );
       }
       // Deliberately the *same* fingerprint a `deliver` of `to` would have
       // produced (see `deployFingerprint`): restoring a release this
@@ -360,5 +575,342 @@ export function gateProductionRelease(
       );
       return rollbackOp(input);
     },
+  };
+}
+
+/**
+ * The fixed half of {@link recreateOnDefaultDigest}'s identity — a prefix,
+ * not the whole digest as of T4.1.4b review 2 (see that function's own doc
+ * for why a fixed sentinel alone is not enough). Exported so a caller
+ * confirming a specific state can still name "recreate on default" without
+ * spelling out this string itself; {@link recreateOnDefaultDigest} is what
+ * every real fingerprint actually uses.
+ */
+export const RECREATE_ON_DEFAULT_DIGEST = 'env-provision:recreate-on-default';
+
+/**
+ * The fixed half of {@link teardownDigest}'s identity. See
+ * {@link RECREATE_ON_DEFAULT_DIGEST} for why this is a prefix rather than the
+ * whole digest, and why the two sentinels are kept apart from each other.
+ */
+export const TEARDOWN_ENV_DIGEST = 'env-provision:teardown';
+
+/**
+ * A stable identity for what `status` currently reports — folded into
+ * {@link recreateOnDefaultDigest} and {@link teardownDigest} alongside
+ * `{repo, env}` so a confirmation answers "may *this* reported state be
+ * replaced or torn down", never "may this kind of call ever proceed against
+ * this environment" (T4.1.4b review 2). A fixed sentinel shared by every
+ * call — what this module used before the review — let one operator
+ * confirmation of "tear production down" stand as a permanent authorisation
+ * to tear it down again in every later run, however different what it was
+ * actually serving at the time; `label` carries that description but is
+ * deliberately excluded from the fingerprint itself (see {@link DeployTarget}),
+ * so nothing about the reported state distinguished one teardown from the
+ * next. Folding it in here closes that: a later call finding a different
+ * `containerId` computes a different identity and is refused until an
+ * operator confirms *that* state, not merely the fact that a teardown was
+ * confirmed once before.
+ *
+ * `containerId` is what actually tells one running instance from the next —
+ * `name`/`state`/`health` alone repeat identically every time a replacement
+ * container settles into the same shape a previous one had, which is exactly
+ * the "different question, same-looking answer" case this exists to catch.
+ * An empty list reads as the stable string `'none'`, not `''`, so "nothing
+ * reported" is a real, reproducible identity rather than a value
+ * indistinguishable from a malformed one.
+ */
+function servingIdentity(services: readonly ServiceStatus[]): string {
+  if (services.length === 0) {
+    return 'none';
+  }
+  return services
+    .map(
+      (service) =>
+        `${service.name}:${service.state}/${service.health}@${service.containerId}`,
+    )
+    .slice()
+    .sort()
+    .join(',');
+}
+
+/**
+ * A fingerprint identity for an `env.provision#up` call that carries no
+ * `image`, against an environment the project marks `approval: required` —
+ * gated unconditionally as of T4.1.4b review 2, whatever `status` reports,
+ * including nothing at all: a no-image `up` is the environment's first
+ * bring-up exactly as often as it is a recreate, and the first bring-up of a
+ * newly-declared gated environment is the outward-facing deploy HIL-2 asks
+ * an operator to approve, not a state a gate may wave through because
+ * nothing happens to be running yet (a review found `production` — declared
+ * in this same change — reachable through exactly that untouched path). Not
+ * a real digest — no such call ever names one — but a stable, per-state
+ * identity (via {@link servingIdentity}) for the one question this act
+ * actually asks an operator: "may this environment be (re)created on
+ * whatever its compose file defaults to, replacing what it currently serves,
+ * or standing it up for the first time?" Distinct from {@link teardownDigest}
+ * so confirming one never silently confirms the other, even for the same
+ * reported state.
+ */
+export function recreateOnDefaultDigest(services: readonly ServiceStatus[]): string {
+  return `${RECREATE_ON_DEFAULT_DIGEST}:${servingIdentity(services)}`;
+}
+
+/**
+ * A fingerprint identity for an `env.provision#down` call against an
+ * environment {@link gateProvisionRelease} finds `status` reporting any
+ * service at all — per-state via {@link servingIdentity}, for the reuse
+ * reasoning that function's own doc gives. See {@link recreateOnDefaultDigest}
+ * for why this is a function of the reported state rather than a fixed
+ * sentinel, and why the two identities are kept apart from each other.
+ */
+export function teardownDigest(services: readonly ServiceStatus[]): string {
+  return `${TEARDOWN_ENV_DIGEST}:${servingIdentity(services)}`;
+}
+
+/**
+ * Wraps an `env.provision` provider so `up` and `down` cannot change what a
+ * gated environment serves without the same confirmation
+ * {@link gateProductionRelease} requires of `release.deliver` (HIL-2, DESIGN
+ * §9 decision 14).
+ *
+ * `env.provision` carries no notion of "production" (`contracts/env.provision.md`)
+ * and never should — the same reasoning `gateProductionRelease` already
+ * applies, restated here because this is the second, independent place it
+ * has to hold: binding this contract unwrapped, anywhere a target project
+ * might mark an environment `approval: required`, is exactly the ungated
+ * route this decision closes. `env/compose-provider.ts`'s `composeProvider`
+ * takes `gate` as a required constructor option and always returns the
+ * result of this wrapper, the same structural guarantee
+ * `dockerReleaseProvider` gives `release.deliver` (decision 10) — there is no
+ * code path in this repository that produces an `env.provision` provider
+ * this wrapper has not already seen.
+ *
+ * Three cases, all keyed off `options.gatedEnvs(repo)` exactly as
+ * `gateProductionRelease` is:
+ *
+ * - **`up` carrying an `image`.** Refused outright, before any fingerprint is
+ *   computed, unless `image` is actually shaped like a digest
+ *   ({@link isDigestShaped} — T4.1.4b review 5, CONV-4): `envUpInput.image`
+ *   is a bare string documented as an override, a tag in every demo and in
+ *   this repository's own build naming, and decision 9's "a digest cannot be
+ *   made to name another build, which a tag can" reasoning is exactly what
+ *   stops holding for anything that is not one. Once it is, gated outright
+ *   under `deployFingerprint` — the identical fingerprint a
+ *   `release.deliver#deliver` of the same `{repo, env, digest}` would compute
+ *   (decision 9/11's own reasoning: a digest names one build, whichever
+ *   contract asks to run it, so a confirmation given through either path
+ *   satisfies both and neither asks twice for the same digest).
+ * - **`up` with no `image`.** Gated unconditionally, whatever `status`
+ *   reports — even nothing at all. T4.1.4b's first version asked `status`
+ *   first and let the call through untouched when nothing was reported,
+ *   reasoning that standing up infrastructure nothing is serving asks
+ *   nothing of an operator; a review (rework 2) found that reachable, not
+ *   theoretical: `production` is declared in this same change and has never
+ *   been stood up, so its only reachable state *was* exactly the untouched
+ *   one, meaning any caller could stand it up on the compose default with no
+ *   approval anywhere — precisely the outward-facing production deploy
+ *   HIL-2 says must always require one. `status` is still asked, not to
+ *   decide whether to gate, but to fold what it reports into the fingerprint
+ *   (see {@link recreateOnDefaultDigest}) so a confirmation answers "may
+ *   *this* reported state be replaced", first bring-up included, rather than
+ *   "may a no-image `up` against this environment ever proceed" — the
+ *   latter would let one first-bring-up confirmation authorise recreating
+ *   over whatever this environment serves in every later run, exactly the
+ *   standing-authorisation failure mode the same review found in `down`.
+ * - **`down`.** `status` decides whether there is anything here to protect
+ *   in the first place — tearing down infrastructure nothing is serving
+ *   genuinely changes nothing, so a `down` against an environment `status`
+ *   reports nothing running in at all proceeds untouched (unlike `up`, a
+ *   `down` with nothing to tear down has no state left for an unconfirmed
+ *   later call to exploit, because `up`'s own gate no longer trusts "nothing
+ *   reported" to mean "safe to proceed"). Anything reported, it is refused
+ *   under {@link teardownDigest} until an operator confirms tearing down
+ *   *this exact reported state* — not a fingerprint fixed for "tear this
+ *   `{repo, env}` down" in general, which a review (rework 2) found let one
+ *   confirmed teardown stand as a permanent authorisation to tear the same
+ *   environment down again in every later run, whatever it happened to be
+ *   serving by then.
+ *
+ * **The question asked of `status` is "is anything there at all", never "is
+ * it healthy".** `envStatusOutput.up` — {@link environmentUp}'s verdict —
+ * fails closed for a service still `starting`, `unhealthy`, `exited` or
+ * otherwise not cleanly `running`/`healthy` (`src/env/provision.ts`): exactly
+ * right for "may this be trusted to serve traffic", and exactly wrong for
+ * "is this environment a gate must protect", because it reads all four of
+ * those states — a confirmed release mid-`start_period`, failing its
+ * healthcheck, or whose container exited — as indistinguishable from an
+ * environment with nothing running in it at all, which is precisely the
+ * ambiguity CONV-4 asks a control to refuse rather than resolve in its own
+ * favour. What decides "nothing here to protect" — for `down`'s bypass, and
+ * for what {@link recreateOnDefaultDigest}/{@link teardownDigest} fold into
+ * their fingerprint either way — is the presence of any reported service
+ * (`services.length > 0`), never `up`; only a provider reporting no services
+ * whatsoever reads as nothing to protect.
+ *
+ * `status` is never gated — asking costs nothing and changes nothing
+ * (`contracts/env.provision.md`).
+ *
+ * A provider with no `status` is refused outright, fail closed (CONV-4):
+ * neither the no-image `up` case nor `down` can compute a fingerprint, or
+ * tell "nothing to protect yet" from "this would replace a confirmed
+ * release", without asking, and assuming "nothing there" for a provider that
+ * cannot answer is exactly the ambiguity a security control must refuse
+ * rather than paper over. A provider with no `up` has nothing here to gate
+ * at all and is refused at construction, the same as `gateProductionRelease`
+ * refuses a provider missing `deliver`. A provider with no `down` is left as
+ * it is — there is no operation there to wrap.
+ */
+export function gateProvisionRelease(
+  provider: Provider,
+  options: DeployGateOptions,
+): Provider {
+  const up = provider.up;
+  if (up === undefined) {
+    throw new DeployGateError(
+      "the provider given to 'gateProvisionRelease' does not implement 'up' " +
+        '— nothing here can gate an operation that is not there to gate',
+    );
+  }
+  const status = provider.status;
+  const down = provider.down;
+
+  /**
+   * What `env` currently reports, per the wrapped provider's own `status` —
+   * the only way either the no-image `up` case or `down` can build a
+   * fingerprint over "what is actually there right now" without inventing a
+   * notion of "confirmed release" `env.provision` does not have, and (for
+   * `down`) the only way to tell "nothing to tear down yet" from "this would
+   * change what a gated environment serves" without assuming one or the
+   * other.
+   *
+   * `anything` is answered from the presence of any reported service
+   * (`current.services.length > 0`), never from `current.up`. `up` is
+   * {@link environmentUp}'s verdict, and it fails closed for a service still
+   * `starting`, `unhealthy`, `exited` or otherwise short of cleanly
+   * `running`/healthy — exactly right for "may this be trusted to serve
+   * traffic", and exactly wrong for this question: a confirmed release
+   * failing its healthcheck, mid-`start_period`, or whose container exited is
+   * still something a `down` or a no-image `up` would replace, and reading
+   * `up: false` there as "nothing to protect" would let either reach the
+   * provider with no approval — the fail-closed default `environmentUp`
+   * documents becomes, read in this polarity, the gate's fail-*open* default
+   * (CONV-4). Only a provider reporting no services whatsoever reads as
+   * nothing to protect.
+   *
+   * Fails closed on the provider itself too: a provider with no `status` is
+   * never assumed fresh, and `caller` names which operation is asking, with
+   * the services actually found summarised in the returned `summary` and
+   * handed back raw as `services` so a caller can fold them into a
+   * per-state fingerprint (see {@link recreateOnDefaultDigest},
+   * {@link teardownDigest}) — a refusal built from either can tell an
+   * operator what the gate saw without their reading this module (CONV-3).
+   */
+  async function currentServices(
+    repo: string,
+    env: string,
+    caller: string,
+  ): Promise<{
+    readonly anything: boolean;
+    readonly services: readonly ServiceStatus[];
+    readonly summary: string;
+  }> {
+    if (status === undefined) {
+      throw new DeployGateError(
+        `'${caller}' on '${env}' cannot be confirmed safe: the provider given ` +
+          "to 'gateProvisionRelease' does not implement 'status', so whether " +
+          'this environment is already serving something a gate would need ' +
+          'to protect cannot be checked first (HIL-2, CONV-4).',
+      );
+    }
+    const current = envStatusOutput.parse(await status({ repo, env } as never));
+    return {
+      anything: current.services.length > 0,
+      services: current.services,
+      summary: describeServices(current.services),
+    };
+  }
+
+  return {
+    ...provider,
+
+    up: async (input: never): Promise<unknown> => {
+      const parsed = envUpInput.parse(input);
+      if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
+        return up(input);
+      }
+      if (parsed.image !== undefined) {
+        // Fail closed on a tag or any other mutable name before this call
+        // ever reaches `assertReady` (T4.1.4b review 5, CONV-4) — see
+        // `isDigestShaped`'s own doc for why a confirmation keyed on
+        // anything else is a confirmation over a name, not over the build
+        // an operator actually saw.
+        if (!isDigestShaped(parsed.image)) {
+          throw new DeployGateError(
+            `${notDigestShapedMessage(parsed.env, 'image', parsed.image)} If ` +
+              "this reached you through 'release.deliver', its " +
+              "'release.digest' is not a digest — that is refused at " +
+              "'release.deliver's own gate now too (T4.1.4b review 6), so " +
+              'this call did not arrive that way. Deliver this through ' +
+              "'release.deliver#deliver' instead, or pass the digest " +
+              "'docker build --iidfile' recorded, not a tag.",
+          );
+        }
+        assertReady(
+          { repo: parsed.repo, env: parsed.env, digest: parsed.image },
+          options,
+        );
+        return up(input);
+      }
+      // No image: this call can only ever (re)create the environment on its
+      // own compose default, and is gated unconditionally for a project that
+      // marks this environment `approval: required` — whatever `status`
+      // currently reports, nothing included, because a first bring-up is
+      // exactly as outward-facing as a recreate (T4.1.4b review 2; see this
+      // function's own doc). `status` is still asked, not to decide whether
+      // to gate, but so the confirmation this call is checked against
+      // answers "may this exact reported state be replaced", not "may a
+      // no-image `up` here ever proceed".
+      const current = await currentServices(parsed.repo, parsed.env, 'up with no image');
+      assertReady(
+        {
+          repo: parsed.repo,
+          env: parsed.env,
+          digest: recreateOnDefaultDigest(current.services),
+          synthetic: true,
+          label: `recreate on the compose default — currently: ${current.summary}`,
+          caveat: stateBoundCaveat(parsed.env, current.services),
+        },
+        options,
+      );
+      return up(input);
+    },
+
+    ...(down === undefined
+      ? {}
+      : {
+          down: async (input: never): Promise<unknown> => {
+            const parsed = envRequestInput.parse(input);
+            if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
+              return down(input);
+            }
+            const current = await currentServices(parsed.repo, parsed.env, 'down');
+            if (!current.anything) {
+              return down(input);
+            }
+            assertReady(
+              {
+                repo: parsed.repo,
+                env: parsed.env,
+                digest: teardownDigest(current.services),
+                synthetic: true,
+                label: `torn down — currently: ${current.summary}`,
+                caveat: stateBoundCaveat(parsed.env, current.services),
+              },
+              options,
+            );
+            return down(input);
+          },
+        }),
   };
 }

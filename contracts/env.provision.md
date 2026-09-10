@@ -45,28 +45,29 @@ from a directory-naming convention — DEP-4 asks for environments the harness
 provisions from configuration it was given, not ones it infers, and guessing
 would provision infrastructure nothing wrote down.
 
-This project declares `test` and `staging`. `production` is deliberately
-undeclared: DEP-4 asks the harness to be *able* to provision production, but
-the hard approval gate that must stand in front of *this contract's own*
-operations — `up` included, `down` too, since tearing a gated environment
-down and bringing it back up on the compose default is also a way to change
-what it serves — is T4.1.4b's, not yet landed. Declaring it is a one-line
-addition to the manifest once that gate exists to sit in front of it.
+This project declares `test`, `staging`, and — as of T4.1.4b — `production`.
+`production` stayed undeclared through T4.1.1–T4.1.4a: DEP-4 asks the harness
+to be *able* to provision production, but the hard approval gate that must
+stand in front of *this contract's own* operations — `up` included, `down`
+too, since tearing a gated environment down and bringing it back up on the
+compose default is also a way to change what it serves — had not landed yet.
+Declaring `production` before that gate existed would have left
+`env.provision#up`/`#down`, reached directly and bypassing `release.deliver`
+entirely, as a wholly ungated route to it; declaring it in the same commit as
+the gate that closes that route is what makes the declaration honest (see
+"The gate on `up`/`down`" below).
 
 Each declared environment also marks `approval: required` or `approval: none`
 (`src/env/compose-provider.ts`'s `environmentEntrySchema`, required per entry
 — CONV-5, a manifest cannot decline to say which) — the single place HIL-2's
 "which environments need an operator's approval" is answered from, read by
 `gatedEnvironmentNames`/`gatedEnvironments` for `src/policy/deploy-gate.ts`'s
-`gateProductionRelease`, which `contracts/release.deliver.md`'s
-`deliver`/`rollback` are wrapped in (T4.1.4a). This project marks `staging`
-`required`, to prove the gate against a real environment without needing
-`production` declared at all. **This contract's own operations do not
-consult `approval` yet** — `up`/`down`/`status` below apply to every declared
-environment exactly as they did before this field existed; gating them, `down`
-included, is T4.1.4b's task, the reason `up`'s own doc below is silent about
-approval even though the manifest each `image`-carrying call reads from
-already marks it.
+`gateProductionRelease` (`contracts/release.deliver.md`'s `deliver`/`rollback`,
+T4.1.4a) *and* `gateProvisionRelease` (this contract's own `up`/`down`,
+T4.1.4b). `staging` was marked `required` first, to prove the release-path
+gate against a real environment before `production` existed at all;
+`production` is marked `required` too, now that both gates stand in front of
+it.
 
 ## Operations
 
@@ -141,7 +142,134 @@ guessed at.
 | Effects | `read-only` |
 
 The same shape `up` and `down` report, without changing anything. Asking costs
-nothing, so no intent needs recording before it (DESIGN §6).
+nothing, so no intent needs recording before it (DESIGN §6). `status` is never
+gated, for the same reason.
+
+## The gate on `up`/`down` (T4.1.4b)
+
+`up` and `down` change what an environment serves, and this contract carries
+no notion of "production" of its own — a manifest's `approval: required`
+marker is what says an environment needs an operator's confirmation before
+either can reach it (HIL-2). `release.deliver#deliver`/`#rollback`
+(`contracts/release.deliver.md`, T4.1.4a) sit behind one such gate already,
+but they delegate to `env.provision#up` underneath, and a caller reaching
+`up` — or `down` — directly, bypassing `release.deliver` entirely, reached a
+gated environment with no check at all until T4.1.4b. `gateProvisionRelease`
+(`src/policy/deploy-gate.ts`) closes that; `src/env/compose-provider.ts`'s
+`composeProvider` takes it as a required constructor option and always
+returns the wrapped result, the same structural guarantee
+`dockerReleaseProvider` gives `release.deliver` (DESIGN §9 decision 10) — no
+code path in this repository binds this contract's reference provider
+ungated.
+
+Three cases, all scoped to environments a project marks `approval: required`
+— every other environment passes through exactly as it did before this gate
+existed:
+
+- **`up` carrying an `image`.** Refused outright, before any fingerprint is
+  computed, unless `image` is actually shaped like a digest — `'sha256:'`
+  followed by its hex id, exactly what `docker build --iidfile` writes and
+  what `release.digest` always is. `image` is documented above as an
+  override of the compose default and carries no shape of its own; a review
+  found the gate fingerprinting whatever it named regardless, tag included,
+  which let one operator confirmation of `up {image: 'app:1.0.0'}` stand as a
+  standing authorisation for every later `up` naming that same tag, however
+  many times it had since been rebuilt to point at a different tree — a
+  confirmation over a mutable name, not over the build an operator actually
+  saw, and exactly the failure mode decision 9's "a digest cannot be made to
+  name another build, which a tag can" reasoning exists to rule out. Once
+  `image` is digest-shaped, checked under the identical `{repo, env, digest}`
+  fingerprint `release.deliver#deliver` of the same digest would compute — a
+  digest names one build, whichever contract asks to run it, so a
+  confirmation given through either path satisfies both (DESIGN §9 decision
+  9/11/14, CONV-4). The one caller in this repository that ever reaches a
+  gated `up` with an `image` — `release.deliver`'s own `deliverTo` — always
+  supplies `release.digest`, so nothing here regresses; a caller that wants a
+  gated environment to run a tag goes through `release.deliver`'s gate on a
+  real digest first, the same as every other path to one.
+- **`up` with no `image`.** Gated unconditionally, whatever the wrapped
+  provider's own `status` reports — even nothing at all. An earlier version
+  of this gate asked `status` first and let the call through untouched when
+  nothing was reported, reasoning that standing up infrastructure nothing is
+  serving asks nothing of an operator; a review found that reachable, not
+  theoretical — `production` was declared the same commit this gate landed
+  in, and had never been stood up, so its only reachable state *was* exactly
+  the untouched one, meaning a no-image `up` could stand it up on the compose
+  default with no approval anywhere in the path, which is precisely the
+  outward-facing production deploy HIL-2 says must always require one.
+  `status` is still asked, not to decide whether to gate, but to fold what it
+  reports into the fingerprint (see below) so a confirmation answers "may
+  *this* reported state be replaced", first bring-up included, rather than
+  "may a no-image `up` here ever proceed".
+- **`down`.** `status` still decides whether there is anything here to
+  protect in the first place: tearing down infrastructure nothing is serving
+  genuinely changes nothing, so a `down` against an environment `status`
+  reports no service in at all proceeds untouched. Any service reported, it
+  is refused until an operator confirms tearing down *that exact reported
+  state* — not a fingerprint fixed for "tear this `{repo, env}` down" in
+  general, which a review found let one confirmed teardown stand as a
+  standing authorisation to tear the same environment down again in every
+  later run, whatever it happened to be serving by then. The two-call route
+  a fixed-fingerprint `down` followed by an unconditionally-gated no-image
+  `up` might otherwise seem to reopen — a confirmed `down` leaving the
+  environment reporting nothing, for a no-image `up` to find — does not
+  apply here either, because the `up` case above no longer trusts "nothing
+  reported" to mean "safe to proceed" at all.
+
+Both `up`'s and `down`'s gated fingerprints fold the wrapped provider's
+currently-reported services into the identity (`recreateOnDefaultDigest`,
+`teardownDigest`, `src/policy/deploy-gate.ts`) rather than using a sentinel
+fixed for the act alone: a confirmation this way answers "may *this* state be
+replaced or torn down", not "may this kind of call against this environment
+ever proceed" — the distinction a review found missing, since a fixed
+sentinel let one operator confirmation of a teardown or a recreate stand as a
+permanent authorisation for every later one, however different what the
+environment was actually serving by then. The refusal an operator confirms
+against says this directly — "this confirmation covers only this exact
+reported state" — rather than leaving it to be inferred from reading this
+module (CONV-3).
+
+One state is a declared exception to that per-state guarantee, not an
+oversight: an environment reporting no services at all folds to the single
+identity `'none'`, so a confirmation of a first bring-up found there is good
+for any later no-image `up` this environment is found in the same empty
+state for — after a later confirmed teardown, or after the containers are
+removed by something outside this gate entirely — with no fresh approval.
+This mirrors DESIGN §9 decision 11's own reasoning on the release path: a
+digest naming one already-approved state may be re-approved for free, and
+"nothing running" is one such state, not a different one each time it
+recurs. The no-image `up` refusal says so directly whenever `status` reports
+nothing, rather than leaving an operator to infer it from `servingIdentity`'s
+source.
+
+This is deliberately not the same question `up` in the output answers.
+`envStatusOutput.up` (`environmentUp`) fails closed for a service still
+`starting`, `unhealthy`, `exited`, or otherwise short of cleanly
+`running`/healthy — the right default for "may this be trusted to serve
+traffic", and the wrong one for "is there something here a gate must
+protect": read that way, a confirmed release failing its healthcheck,
+mid-`start_period`, or whose container exited, is indistinguishable from an
+environment with nothing running in it at all, and both `down` and the
+no-image `up` would reach the provider with no approval during exactly the
+conditions a deploy ordinarily passes through. What decides "nothing to
+protect" here is the presence of any reported service, never its health.
+
+A provider with no `status` is refused outright for a gated environment,
+fail closed (CONV-4): neither the no-image `up` case nor `down` can compute a
+fingerprint over what is actually there, and `down` additionally cannot tell
+"nothing to protect yet" from "this would replace a confirmed release",
+without asking first — and every provider satisfying this contract already
+implements `status` (see "Operations" above), so this asks nothing new of one
+that does. `scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) exercises
+both sides of this against a real `docker compose`: steps 1-7 are the
+`release.deliver` path, and steps 8-9 (T4.1.4b) are `env.provision#up`/
+`#down` reached directly — a gated no-image `up` and a gated `down` refused
+against a real reported state, each then proceeding on an operator
+confirmation. The `env.provision`-only cases above, including a service that
+is `starting`, `unhealthy`, `exited` or `restarting` rather than cleanly up,
+are exercised directly against a fake provider in
+`src/policy/deploy-gate.test.ts` (`gateProvisionRelease`) and against the
+real `composeProvider` in `src/env/compose-provider.test.ts`.
 
 ## Failing closed
 
@@ -171,7 +299,15 @@ all-running set for an environment that is actually half down.
   and `environmentUp`, the pure decision every operation's output agrees with.
 - [`src/env/compose-provider.ts`](../src/env/compose-provider.ts) —
   `composeProvider`, satisfying the contract against `docker compose` and the
-  manifest at `deploy/environments/environments.yaml`.
-- `scripts/demo/env-provision.mjs` — this task's own verification: brings the
+  manifest at `deploy/environments/environments.yaml`; always gated (T4.1.4b).
+- [`src/policy/deploy-gate.ts`](../src/policy/deploy-gate.ts) —
+  `gateProvisionRelease`, the HIL-2 gate on `up`/`down` described above
+  (T4.1.4b).
+- `scripts/demo/env-provision.mjs` — T4.1.1's own verification: brings the
   `test` environment up from the committed IaC alone, asserts it is reachable,
-  and brings it back down.
+  and brings it back down. `test` marks `approval: none`, so this exercises
+  the gate's pass-through case, not its refusal.
+- `scripts/demo/deploy-gate.mjs` — T4.1.4a's own verification, against
+  `release.deliver`; the fingerprint an `up` carrying an `image` shares with
+  it is what lets a confirmation recorded there satisfy this contract's own
+  `up` too.

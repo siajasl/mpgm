@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { parse as parseYaml, YAMLParseError } from 'yaml';
 import { z } from 'zod';
 import type { Provider } from '../contract/capability.js';
+import { gateProvisionRelease, type DeployGateOptions } from '../policy/deploy-gate.js';
 import {
   environmentUp,
   serviceHealths,
@@ -28,12 +29,13 @@ import {
  * environments need an operator's approval" is answered from, read by
  * {@link gatedEnvironmentNames}/{@link gatedEnvironments} for
  * `../policy/deploy-gate.ts`'s `gateProductionRelease` (which
- * `../release/docker-provider.ts` applies to `release.deliver`). This
- * provider's own `up`/`down`/`status` do not consult it: gating
- * `env.provision` itself — every operation that can change what a gated
- * environment serves, `down` included — is the deliberately separate task
- * PLAN.md's split names next, not a gap this file's parsing leaves by
- * accident.
+ * `../release/docker-provider.ts` applies to `release.deliver`) and, since
+ * T4.1.4b, `gateProvisionRelease`, which this module applies to itself.
+ * `gate` is a required constructor option, the same shape
+ * `dockerReleaseProvider` already gives `release.deliver` (DESIGN §9
+ * decision 10): `composeProvider` always returns the `Provider`
+ * `gateProvisionRelease` wraps, never the raw translation above it, so there
+ * is no code path in this repository that binds `env.provision` ungated.
  */
 
 export class ComposeProviderError extends Error {}
@@ -351,6 +353,18 @@ async function servicesOf(
 export interface ComposeProviderOptions {
   readonly manifestPath?: string;
   readonly cli?: ComposeCli;
+  /**
+   * The HIL-2 deploy gate's options (`../policy/deploy-gate.ts`) — required,
+   * not optional: see this module's own doc for why `env.provision` gates
+   * its own gated-environment path rather than trusting a caller to wrap it
+   * afterward. `gatedEnvs` names which environments those are for a given
+   * `repo`, resolved per call — wire `gatedEnvironments` (below) directly,
+   * the same way `dockerReleaseProvider`'s own `DockerReleaseProviderOptions.gate`
+   * doc asks a caller to. A caller whose `gatedEnvs` always answers empty
+   * still supplies a ledger; it is simply never consulted (T4.1.4b, DESIGN §9
+   * decision 14).
+   */
+  readonly gate: DeployGateOptions;
 }
 
 /**
@@ -362,21 +376,36 @@ export interface ComposeProviderOptions {
  * and silently get another's IaC standing up in its place, with no signal
  * that anything went wrong; reading `repo` per call is what
  * `envRequestInput.repo` being declared on every operation is for.
+ *
+ * Returns a provider already wrapped by `gateProvisionRelease` — there is no
+ * unwrapped provider this function ever hands back for a caller to bind
+ * unguarded (DESIGN §9 decision 14).
  */
-export function composeProvider(options: ComposeProviderOptions = {}): Provider {
+export function composeProvider(options: ComposeProviderOptions): Provider {
   const cli = options.cli ?? dockerComposeCli;
   const manifestPath = options.manifestPath ?? DEFAULT_MANIFEST_PATH;
 
   const entryFor = (repo: string, env: string): EnvironmentEntry =>
     declaredEntry(loadDeclaredEnvironments(repo, manifestPath), manifestPath, env);
 
-  return {
+  const raw: Provider = {
     up: async (input: never): Promise<unknown> => {
       const { repo, env, image } = input as EnvUpInput;
       const entry = entryFor(repo, env);
+      // Absent `image`, `MPGM_SERVICE_IMAGE` is cleared explicitly rather
+      // than simply omitted from the child process's environment: `execFile`
+      // otherwise inherits this process's own environment unchanged
+      // (`dockerComposeCli`), so a value already set ambiently in the
+      // *caller's* process would reach `docker compose` regardless, and this
+      // project's own compose files' `${MPGM_SERVICE_IMAGE:-nginx:...}`
+      // treats only an unset-or-empty variable as "use the default" — a
+      // no-image call is supposed to mean exactly that, not "whatever image
+      // happens to be ambient", and `gateProvisionRelease`'s no-image `up`
+      // case reasons about "the compose default" as a fixed, known thing
+      // (CONV-4).
       const cliOptions =
         image === undefined
-          ? { cwd: repo }
+          ? { cwd: repo, env: { MPGM_SERVICE_IMAGE: '' } }
           : { cwd: repo, env: { MPGM_SERVICE_IMAGE: image } };
       const result = await cli(
         composeArgs(entry, ['up', '-d', '--wait'], {
@@ -413,4 +442,6 @@ export function composeProvider(options: ComposeProviderOptions = {}): Provider 
       return { env, up: environmentUp(services), services };
     },
   };
+
+  return gateProvisionRelease(raw, options.gate);
 }

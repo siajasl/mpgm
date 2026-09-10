@@ -1,7 +1,7 @@
 # PLAN — mpgm Build Plan
 
-**Status:** v0.10 — adds T4.1.4c (a confirmation spent once) and T4.2.4 (operator control that reaches its task) · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-09
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.32. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Status:** v0.11 — T4.1.4b closed: `env.provision#up`/`#down` gated and `production` declared · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-10
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.33. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 
@@ -130,7 +130,7 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 | T4.1.2 `release.deliver` contract: artifact assembly (version, changelog, rollback path), CD delegation | staged release with tested rollback on sample service | §4.7, DEP-2/3 | Sonnet 5 |
 | T4.1.3 Health verification + promote/rollback decisions | induced regression auto-rolls back; outcome recorded | §4.7, DEP-2/5 | Sonnet 5 |
 | T4.1.4a Approval gate on the release path | a release to an environment the project marks as requiring approval is impossible without an approval event; which environments those are is project configuration, never a hardcoded name | §4.4, §9.10, HIL-2 | Opus 5 |
-| T4.1.4b Approval gate on the environment path, and declaring production | every `env.provision` operation that can change what a gated environment serves is gated, `down` included; `production` is declared once nothing can reach it unapproved | §4.4, §9.10, HIL-2, DEP-4 | Opus 5 |
+| T4.1.4b Approval gate on the environment path, and declaring production | every `env.provision` operation that can change what a gated environment serves is gated, `down` included; `production` is declared once nothing can reach it unapproved | §4.4, §9.14, HIL-2, DEP-4 | Opus 5 |
 | T4.1.4c Single-use confirmation for a state that can recur | a confirmation of a no-image `up` or a `down` given against an environment reporting nothing is spent when that call proceeds, so an identical later call asks again; `{repo, env, digest}` confirmations are untouched, which is what a rollback firing in a different run than its deliver depends on; the change says whether a confirmation is spent on the gated call being entered or on its returning, and why that choice fails closed; DESIGN §9.14's acceptance of the recurring empty-state identity is withdrawn in the same change, per the operator decision of 2026-09-09 | §4.4, §9.14, HIL-2, DEP-2 | Opus 5 |
 | T4.1.5 The `mpgm rollback` verb (after T4.1.4b) | operator rolls back a declared environment from the CLI; recorded, and — for an environment the project marks as requiring approval — gated only when the digest was never confirmed for that environment | §4.4, §9.11, DEP-2, HIL-5 | Sonnet 5 |
 | T4.1.6 Release outcome artifacts | a deploy outcome is a versioned artifact that survives its run | §4.5, §9.12, DEP-5 | Sonnet 5 |

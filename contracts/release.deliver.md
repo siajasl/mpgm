@@ -143,22 +143,25 @@ guaranteed to be the run that delivered and got the release confirmed in the
 first place — proceed on that same earlier approval instead of stalling for
 a fresh one.
 
-**This is not the only route to a gated environment, and this task does not
-close the other one.** `deliver`/`rollback` hand the same digest to
-`env.provision#up` underneath (`contracts/env.provision.md`), and a caller
-reaching that operation directly — with an `image` override, bypassing this
-contract entirely — is not gated by anything this task built. Closing that
-for whichever environment a project marks `approval: required` — `down`
-included, since tearing a gated environment down and bringing it back up on
-the compose default is also a way to change what it serves — is
-`env.provision`'s own gate, and declaring `production` once that gate exists
-to stand in front of it: T4.1.4b, deliberately not this task (PLAN.md's
-split). Nothing in this project's own manifest is exposed by that gap today
-— `production` is undeclared, and `staging`/`test` reach no ungated
-`env.provision#up` call this repository's own demo scripts do not already
-make on their own behalf — but a project that declared a gated environment
-and called `env.provision#up` directly, outside `release.deliver`, would
-find it ungated until T4.1.4b lands.
+**This was not the only route to a gated environment, and this task did not
+close the other one — T4.1.4b did.** `deliver`/`rollback` hand the same
+digest to `env.provision#up` underneath (`contracts/env.provision.md`), and a
+caller reaching that operation directly — with an `image` override, bypassing
+this contract entirely — was not gated by anything this task built.
+`env.provision`'s own `gateProvisionRelease` (`src/policy/deploy-gate.ts`)
+closes that: every `env.provision#up`/`#down` call that could change what a
+gated environment serves is checked the same way, `down` included, since
+tearing a gated environment down and bringing it back up on the compose
+default is also a way to change what it serves. It shares this contract's
+own fingerprint identity for the case that matters most — an `up` carrying an
+`image` computes the identical `{repo, env, digest}` fingerprint a `deliver`
+of the same digest would, so a confirmation given through either contract
+satisfies both, and this contract's own `deliverTo` (which calls
+`env.provision#up` with `release.digest` after this gate has already let the
+call through) never gets asked to confirm the same digest twice. `production`
+is declared in this project's own manifest as of T4.1.4b, only once this
+second gate existed to stand in front of it (`deploy/environments/environments.yaml`,
+DESIGN §9 decision 14).
 
 ## The release artifact (DEP-3)
 
