@@ -733,10 +733,12 @@ export {
 } from './env/compose-provider.js';
 export type {
   ConfirmationNeeded,
+  ConfirmationSpent,
   DeployGateOptions,
   DeployLedger,
   DeployTarget,
   DryRunNeeded,
+  ProvisionGateOptions,
 } from './policy/deploy-gate.js';
 export {
   crossRunLedger,

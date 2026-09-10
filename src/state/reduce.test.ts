@@ -145,6 +145,11 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'DeployConfirmationSpent',
+        payload: { taskId: 'T1', tool: 'mcp__deploy__release', fingerprint: 'f1' },
+      },
+      {
+        runId: RUN,
         type: 'KnowledgeBaseUpdated',
         payload: {
           taskId: 'T1',
@@ -574,6 +579,8 @@ describe('reduce', () => {
       taskId: KERNEL_TASK,
       dryRun: true,
       confirmedBy: 'macg',
+      // RunStarted (1), DryRunRecorded (2), DestructiveOpConfirmed (3).
+      confirmedSeq: 3,
     });
   });
 
@@ -628,6 +635,82 @@ describe('reduce', () => {
       logWith([
         runStartedInput,
         { runId: RUN, type: 'DestructiveOpConfirmed', payload: confirmedPayload },
+      ]),
+    ).toThrow();
+  });
+
+  it('records a DeployConfirmationSpent as a global, cross-run table rather than folding it into any one run (T4.1.4c)', () => {
+    // RunStarted (1), DryRunRecorded (2), DestructiveOpConfirmed (3),
+    // DeployConfirmationSpent (4).
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'DryRunRecorded',
+          payload: {
+            taskId: KERNEL_TASK,
+            tool: 'deploy',
+            fingerprint: 'deploy-1',
+            summary: 'would recreate on the compose default',
+          },
+        },
+        {
+          runId: RUN,
+          type: 'DestructiveOpConfirmed',
+          payload: {
+            taskId: KERNEL_TASK,
+            tool: 'deploy',
+            fingerprint: 'deploy-1',
+            by: 'macg',
+          },
+        },
+        {
+          runId: RUN,
+          type: 'DeployConfirmationSpent',
+          payload: { taskId: KERNEL_TASK, tool: 'deploy', fingerprint: 'deploy-1' },
+        },
+      ]),
+    );
+
+    expect(state.spentConfirmations).toEqual({ 'deploy-1': 4 });
+    // The run's own destructiveCalls record is untouched by the spend —
+    // `confirmedBy`/`confirmedSeq` still describe the confirmation that was
+    // spent; only `KernelState.spentConfirmations`, which
+    // `crossRunLedger.confirmed` also reads, changes.
+    expect(state.runs[RUN]?.destructiveCalls['deploy-1']).toEqual({
+      fingerprint: 'deploy-1',
+      tool: 'deploy',
+      taskId: KERNEL_TASK,
+      dryRun: true,
+      confirmedBy: 'macg',
+      confirmedSeq: 3,
+    });
+  });
+
+  it('still refuses a DeployConfirmationSpent naming a real, unknown task', () => {
+    // Same CONV-4 exception, and the same check, as DryRunRecorded/
+    // DestructiveOpConfirmed above.
+    expect(() =>
+      fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'DeployConfirmationSpent',
+            payload: { taskId: 'never-ran', tool: 'deploy', fingerprint: 'f1' },
+          },
+        ]),
+      ),
+    ).toThrow();
+  });
+
+  it('refuses a DeployConfirmationSpent with no taskId at all (CONV-5)', () => {
+    const payload: Record<string, unknown> = { tool: 'deploy', fingerprint: 'f1' };
+    expect(() =>
+      logWith([
+        runStartedInput,
+        { runId: RUN, type: 'DeployConfirmationSpent', payload },
       ]),
     ).toThrow();
   });

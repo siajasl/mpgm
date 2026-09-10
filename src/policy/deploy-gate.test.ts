@@ -17,6 +17,7 @@ import {
   teardownDigest,
   type DeployGateOptions,
   type DeployLedger,
+  type ProvisionGateOptions,
 } from './deploy-gate.js';
 
 /**
@@ -479,11 +480,25 @@ interface GatedProvisionProvider {
   readonly status?: (input: never) => Promise<unknown>;
 }
 
+/**
+ * `options` stays the wider `DeployGateOptions`, `onConfirmationSpent`
+ * included, so a test below can still construct one that omits it — the
+ * fail-closed refusal `assertReady` raises for exactly that case (T4.1.4c,
+ * CONV-4) has to stay reachable from a test, even though
+ * `gateProvisionRelease`'s own signature now requires
+ * {@link ProvisionGateOptions} so no real caller in this repository can.
+ * Casting here is deliberately the same thing a JS caller unaware of
+ * `ProvisionGateOptions` would do — `gateProvisionRelease`'s own doc
+ * describes that caller as the one this cast stands in for.
+ */
 function provisionGate(
   provider: Provider,
   options: DeployGateOptions,
 ): GatedProvisionProvider {
-  return gateProvisionRelease(provider, options) as unknown as GatedProvisionProvider;
+  return gateProvisionRelease(
+    provider,
+    options as ProvisionGateOptions,
+  ) as unknown as GatedProvisionProvider;
 }
 
 /**
@@ -751,6 +766,15 @@ describe('gateProvisionRelease — up', () => {
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print]), new Set([print])),
+      // The empty-state identity is `singleUse` (T4.1.4c): wired here purely
+      // so this call has somewhere to record the spend and is not itself
+      // refused for lacking it — `assertReady` fails closed on a `singleUse`
+      // target with no `onConfirmationSpent` wired, the same as it fails
+      // closed on anything else unconfirmed. Whether the spend itself sticks
+      // is a different test's concern (below).
+      onConfirmationSpent: () => {
+        // No-op: this test's own concern is the confirmation, not the spend.
+      },
     });
 
     await gated.up({ repo: 'r', env: 'production' } as never);
@@ -763,48 +787,126 @@ describe('gateProvisionRelease — up', () => {
   /**
    * T4.1.4b review 4, finding 2: `servingIdentity([])` is the fixed string
    * `'none'`, so every empty state folds to the same identity — a
-   * confirmation given to *one* occurrence of "nothing serving" is,
-   * necessarily, a confirmation good for *any* later no-image `up` this
+   * confirmation given to *one* occurrence of "nothing serving" would,
+   * necessarily, be a confirmation good for *any* later no-image `up` this
    * environment is found in the same empty state for, whether that is the
    * environment's true first bring-up or a later one found empty again
-   * after an intervening teardown. This is the residual the review found and
-   * this task declares rather than closes (DESIGN §9 decision 14,
-   * `contracts/env.provision.md`): reusing a confirmation of an
-   * already-approved *state* for free is decision 11's own reasoning, and
-   * "nothing running" is one such state. A test that expected a *second*
-   * empty-state sighting to need its own confirmation would be asserting the
-   * behaviour this task chose not to build.
+   * after an intervening teardown, unless something spends it. DESIGN §9
+   * decision 14's fourth review accepted that rather than closing it;
+   * T4.1.4c withdrew the acceptance and closes it here: `assertReady` fires
+   * `onConfirmationSpent` for exactly this identity the moment it lets a
+   * call through, so a caller that wires that callback to actually retract
+   * the confirmation sees the *next* identical sighting refused again. A
+   * test that let the second sighting through unconfirmed would be
+   * asserting the behaviour this task withdrew.
    */
-  it('reuses one empty-state confirmation for any later no-image up also found in that same empty state', async () => {
+  it('spends the empty-state confirmation the moment a no-image up proceeds on it, refusing an identical later sighting', async () => {
     const emptyStatePrint = deployFingerprint({
       repo: 'r',
       env: 'production',
       digest: recreateOnDefaultDigest([]),
     });
-    const sharedLedger = ledger(new Set([emptyStatePrint]), new Set([emptyStatePrint]));
+    // A minimal ledger standing in for a real one backed by the event log
+    // (`crossRunLedger` is covered end-to-end below): `confirmed` reads a
+    // mutable flag that `onConfirmationSpent` — wired the way a real caller
+    // would wire it to record a `DeployConfirmationSpent` event — flips off,
+    // exactly the shape `assertReady` requires nothing more of a caller than.
+    let confirmed = true;
+    const spent: string[] = [];
+    const options: DeployGateOptions = {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: {
+        dryRunSeen: (print) => print === emptyStatePrint,
+        confirmed: (print) => print === emptyStatePrint && confirmed,
+      },
+      onConfirmationSpent: (record) => {
+        spent.push(record.fingerprint);
+        confirmed = false;
+      },
+    };
 
     const first = fakeEnvProvider(false);
-    await provisionGate(first.provider, {
-      gatedEnvs: PRODUCTION_GATED,
-      ledger: sharedLedger,
-    }).up({ repo: 'r', env: 'production' } as never);
-
-    // A distinct sighting of the same empty state — a different provider
-    // instance, standing in for a later run that finds this environment
-    // empty again — reaches `up` on the identical confirmation, with
-    // nothing here that re-confirms it.
-    const second = fakeEnvProvider(false);
-    await provisionGate(second.provider, {
-      gatedEnvs: PRODUCTION_GATED,
-      ledger: sharedLedger,
-    }).up({ repo: 'r', env: 'production' } as never);
-
+    await provisionGate(first.provider, options).up({
+      repo: 'r',
+      env: 'production',
+    } as never);
+    expect(spent).toEqual([emptyStatePrint]);
     expect(first.calls).toContain(
       `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
     );
-    expect(second.calls).toContain(
+
+    // A distinct sighting of the same empty state — a different provider
+    // instance, standing in for a later run that finds this environment
+    // empty again — computes the identical fingerprint, and finds it spent.
+    const second = fakeEnvProvider(false);
+    await expect(
+      provisionGate(second.provider, options).up({
+        repo: 'r',
+        env: 'production',
+      } as never),
+    ).rejects.toThrow(DeployGateError);
+    expect(second.calls).not.toContain(
       `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
     );
+  });
+
+  /**
+   * `ProvisionGateOptions` makes this unreachable for any caller
+   * `gateProvisionRelease`'s own TypeScript signature admits — its
+   * `onConfirmationSpent` is required, not optional (T4.1.4c, CONV-5) — so
+   * this test reaches `assertReady`'s runtime refusal the same way a
+   * plain-JS caller unaware of that type would: by casting an options
+   * object that omits the field past it (`provisionGate`'s own doc). Before
+   * this refusal existed, a `singleUse` target reaching here with the
+   * callback unwired passed the gate silently, leaving the confirmation
+   * standing for every later identical call — exactly the
+   * standing-authorisation gap this task exists to close, left open again by
+   * an unwired caller instead of by the fingerprint (CONV-4). Confirming the
+   * real, wrapped `up` is never invoked proves the refusal happens before
+   * any effect, not merely that a rejection surfaces eventually.
+   */
+  it('refuses a singleUse call outright when the caller has wired nowhere to record the spend, rather than letting it through unspent', async () => {
+    const emptyStatePrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const { provider, calls } = fakeEnvProvider(false);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([emptyStatePrint]), new Set([emptyStatePrint])),
+      // Deliberately omitted — see this test's own doc.
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      /has not wired 'onConfirmationSpent'/,
+    );
+    expect(calls).not.toContain(`up:${JSON.stringify({ repo: 'r', env: 'production' })}`);
+  });
+
+  it('does not spend a confirmation for a reported (non-empty) state — its fingerprint already changes with what it approves', async () => {
+    const print = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([
+        { name: 'service', state: 'exited', health: 'none', containerId: 'c1' },
+      ]),
+    });
+    let onConfirmationSpentCalled = false;
+    const { provider, calls } = fakeEnvProviderServing([
+      { name: 'service', state: 'exited', health: 'none', containerId: 'c1' },
+    ]);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([print]), new Set([print])),
+      onConfirmationSpent: () => {
+        onConfirmationSpentCalled = true;
+      },
+    });
+
+    await gated.up({ repo: 'r', env: 'production' } as never);
+    expect(calls).toContain(`up:${JSON.stringify({ repo: 'r', env: 'production' })}`);
+    expect(onConfirmationSpentCalled).toBe(false);
   });
 
   it('tells the operator the empty state is a single recurring identity, not a fresh one, when refusing a first bring-up', async () => {
@@ -923,7 +1025,14 @@ describe('gateProvisionRelease — up', () => {
     expect(() =>
       gateProvisionRelease(
         { status: () => Promise.resolve({ up: false, services: [] }) },
-        { gatedEnvs: PRODUCTION_GATED, ledger: ledger() },
+        {
+          gatedEnvs: PRODUCTION_GATED,
+          ledger: ledger(),
+          onConfirmationSpent: () => {
+            // No-op: this call never reaches `assertReady` — it is refused
+            // at construction, for lacking `up`, before any target exists.
+          },
+        },
       ),
     ).toThrow(DeployGateError);
   });
@@ -1125,6 +1234,14 @@ describe('gateProvisionRelease — down', () => {
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([downPrint, upPrint]), new Set([downPrint, upPrint])),
+      // The `up` below finds the environment `down` just left empty, so it
+      // is checked against the `singleUse` empty-state identity (T4.1.4c) —
+      // wired so that call has somewhere to record its spend rather than
+      // being refused for lacking it.
+      onConfirmationSpent: () => {
+        // No-op: this test's own concern is the up/down sequencing, not the
+        // spend.
+      },
     });
 
     await requireDown(gated)({ repo: 'r', env: 'production' } as never);
@@ -1377,6 +1494,171 @@ describe('crossRunLedger', () => {
     // original `deliver`'s dry run or confirmation.
     await gated.rollback({ repo: 'r', env: 'production', to: release('1.0.0') } as never);
     expect(calls).toHaveLength(1);
+  });
+
+  /**
+   * T4.1.4c, end to end: a no-image `up` against an environment reporting
+   * nothing proceeds once confirmed, is refused again on the next identical
+   * sighting because that confirmation is spent the moment it is used, and
+   * proceeds once more once an operator gives a fresh confirmation of the
+   * same (unchanged) fingerprint — closing DESIGN §9 decision 14's fourth
+   * review without ever making the empty-state identity unconfirmable
+   * outright.
+   */
+  it('spends a single-use empty-state confirmation across runs, and lets a fresh confirmation of the identical fingerprint through again', async () => {
+    const emptyStatePrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const log = EventLog.open(MEMORY, {
+      registry: kernelRegistry(),
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+    try {
+      log.appendMany([
+        {
+          runId: 'run-a',
+          type: 'RunStarted',
+          payload: { project: 'p', operator: 'macg' },
+        },
+        {
+          runId: 'run-a',
+          type: 'DryRunRecorded',
+          payload: { taskId: KERNEL_TASK, tool: 'deploy', fingerprint: emptyStatePrint },
+        },
+        {
+          runId: 'run-a',
+          type: 'DestructiveOpConfirmed',
+          payload: {
+            taskId: KERNEL_TASK,
+            tool: 'deploy',
+            fingerprint: emptyStatePrint,
+            by: 'macg',
+          },
+        },
+        {
+          runId: 'run-b',
+          type: 'RunStarted',
+          payload: { project: 'p', operator: 'macg' },
+        },
+      ]);
+      let state = fold(log.read());
+      const options: DeployGateOptions = {
+        gatedEnvs: PRODUCTION_GATED,
+        ledger: crossRunLedger(() => state),
+        onConfirmationSpent: (record) => {
+          log.appendMany([
+            {
+              runId: 'run-b',
+              type: 'DeployConfirmationSpent',
+              payload: {
+                taskId: KERNEL_TASK,
+                tool: record.tool,
+                fingerprint: record.fingerprint,
+              },
+            },
+          ]);
+          state = fold(log.read());
+        },
+      };
+
+      // `run-b` never itself saw the dry run or confirmation — the same
+      // cross-run reuse decision 11 already covers on the release path.
+      const first = fakeEnvProvider(false);
+      await provisionGate(first.provider, options).up({
+        repo: 'r',
+        env: 'production',
+      } as never);
+      expect(first.calls).toContain(
+        `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      );
+
+      // A later run finds the environment empty again — a later confirmed
+      // teardown, or containers removed outside this gate entirely, are
+      // indistinguishable from here — and computes the identical
+      // fingerprint. It is refused: the confirmation above was spent.
+      const second = fakeEnvProvider(false);
+      await expect(
+        provisionGate(second.provider, options).up({
+          repo: 'r',
+          env: 'production',
+        } as never),
+      ).rejects.toThrow(DeployGateError);
+      expect(second.calls).not.toContain(
+        `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      );
+
+      // An operator gives a fresh confirmation of the same fingerprint —
+      // `mpgm confirm <fingerprint> --run run-a`, the run the refusal above
+      // still names as where this fingerprint's dry run was recorded
+      // (`assertReady`'s own refusal message points an operator back there).
+      log.appendMany([
+        {
+          runId: 'run-a',
+          type: 'DestructiveOpConfirmed',
+          payload: {
+            taskId: KERNEL_TASK,
+            tool: 'deploy',
+            fingerprint: emptyStatePrint,
+            by: 'macg',
+          },
+        },
+      ]);
+      state = fold(log.read());
+
+      const third = fakeEnvProvider(false);
+      await provisionGate(third.provider, options).up({
+        repo: 'r',
+        env: 'production',
+      } as never);
+      expect(third.calls).toContain(
+        `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
+      );
+    } finally {
+      log.close();
+    }
+  });
+
+  /**
+   * Decision 11's own reuse — the reason a rollback firing in a run other
+   * than its deliver still finds a `{repo, env, digest}` confirmation
+   * waiting — is untouched by T4.1.4c: nothing on the release path is ever
+   * `singleUse`, so `assertReady` never fires `onConfirmationSpent` for it,
+   * and `deliver` of the identical digest proceeds a second time on the
+   * same confirmation with no fresh approval, exactly as before this task.
+   */
+  it('does not spend a {repo, env, digest} confirmation — deliver proceeds a second time on the same confirmation', async () => {
+    const state = stateWith([
+      { runId: 'run-a', type: 'RunStarted', payload: { project: 'p', operator: 'macg' } },
+      {
+        runId: 'run-a',
+        type: 'DryRunRecorded',
+        payload: { taskId: KERNEL_TASK, tool: 'deploy', fingerprint: print },
+      },
+      {
+        runId: 'run-a',
+        type: 'DestructiveOpConfirmed',
+        payload: { taskId: KERNEL_TASK, tool: 'deploy', fingerprint: print, by: 'macg' },
+      },
+    ]);
+    const { provider, calls } = fakeProvider();
+    const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: crossRunLedger(() => state),
+    });
+
+    await gated.deliver({
+      repo: target.repo,
+      env: target.env,
+      release: release('1.0.0'),
+    } as never);
+    await gated.deliver({
+      repo: target.repo,
+      env: target.env,
+      release: release('1.0.0'),
+    } as never);
+    expect(calls).toHaveLength(2);
   });
 });
 

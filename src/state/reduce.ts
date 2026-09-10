@@ -6,6 +6,7 @@ import type {
   changeMerged,
   changeReviewed,
   checksReported,
+  deployConfirmationSpent,
   destructiveOpConfirmed,
   dryRunRecorded,
   effectCompleted,
@@ -57,7 +58,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 10;
+export const REDUCER_VERSION = 11;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -96,7 +97,7 @@ function requireRun(state: KernelState, runId: string, type: string): RunState {
 }
 
 function withRun(state: KernelState, run: RunState, seq: number): KernelState {
-  return { lastSeq: seq, runs: { ...state.runs, [run.runId]: run } };
+  return { ...state, lastSeq: seq, runs: { ...state.runs, [run.runId]: run } };
 }
 
 function requireTask(run: RunState, taskId: string, type: string): TaskState {
@@ -490,6 +491,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         // the same call; the parameters are identical, so there is nothing new
         // for the operator to decide.
         confirmedBy: existing?.confirmedBy ?? null,
+        confirmedSeq: existing?.confirmedSeq ?? null,
       };
       return withRun(
         state,
@@ -520,6 +522,11 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         // the simulation SAF-4 asks for.
         dryRun: existing?.dryRun ?? false,
         confirmedBy: payload.by,
+        // This event's own `seq` — a fresh confirmation always outranks
+        // whatever `spentConfirmations` recorded before it (T4.1.4c): see
+        // 'DeployConfirmationSpent' below and `policy/deploy-gate.ts`'s
+        // `crossRunLedger.confirmed`, which is the only reader of this field.
+        confirmedSeq: seq,
       };
       return withRun(
         state,
@@ -529,6 +536,27 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         },
         seq,
       );
+    }
+
+    case 'DeployConfirmationSpent': {
+      const payload = event.payload as PayloadOf<typeof deployConfirmationSpent>;
+      // Same exception as 'DryRunRecorded'/'DestructiveOpConfirmed' above,
+      // for the same reason: the calls this event ever fires for are gated
+      // deploys the kernel makes itself, not a task's tool call.
+      const run = requireRun(state, event.runId, type);
+      if (payload.taskId !== KERNEL_TASK) {
+        requireTask(run, payload.taskId, type);
+      }
+      // Global, not folded into `run.destructiveCalls` (see
+      // `KernelState.spentConfirmations`'s own doc): the run that spends a
+      // fingerprint is never guaranteed to be the run that recorded its dry
+      // run or confirmation, so this has to outlive `run` the same way
+      // `crossRunLedger` already reads every run rather than one.
+      return {
+        ...state,
+        lastSeq: seq,
+        spentConfirmations: { ...state.spentConfirmations, [payload.fingerprint]: seq },
+      };
     }
 
     case 'KnowledgeBaseUpdated': {
