@@ -321,10 +321,8 @@ export type { PriorReview } from './implement/prior-review.js';
 export { lastReviewOf, renderPriorReview } from './implement/prior-review.js';
 export type { LateDeviationInput } from './implement/late-deviation.js';
 export {
-  earnsAnotherRound,
-  markShown,
-  renderLateDeviation,
-  unseenDeviations,
+  earnsDeclarationRound,
+  renderDeclarationRound,
 } from './implement/late-deviation.js';
 export type { TargetFacts } from './implement/target.js';
 export { githubSlug, targetRefusal } from './implement/target.js';
