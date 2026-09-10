@@ -1,8 +1,11 @@
 /**
- * T4.1.4a verification — a release delivered to an environment this project
- * marks `approval: required` is impossible without an approval event, and
- * which environments those are is read from project configuration, never a
- * hardcoded name.
+ * T4.1.4a/b verification — a release delivered to an environment this
+ * project marks `approval: required` is impossible without an approval
+ * event, and which environments those are is read from project
+ * configuration, never a hardcoded name. Steps 1-7 are T4.1.4a's
+ * `release.deliver` coverage; steps 8-9 are T4.1.4b's: `env.provision#up`/
+ * `#down`, reached directly rather than through `release.deliver`, are
+ * gated exactly the same way.
  *
  * Against the real providers this repository ships
  * (`composeProvider`/`dockerReleaseProvider`), targeting this repository's
@@ -13,17 +16,27 @@
  * refusal is a gate refusal, distinguishable from a `docker`-shaped failure
  * by its message; once a `DestructiveOpConfirmed` event is actually on the
  * log, the same call reaches the real provider instead, and fails for a
- * *different*, `docker`-shaped reason (an unresolvable image reference) —
+ * *different*, `docker`-shaped reason (an unresolvable image reference, or —
+ * for steps 8-9, which never name an image at all — no failure at all) —
  * proof that control passed the gate rather than the script asserting on
  * the gate's own refusal twice.
  *
  * `staging` stands in for whatever environment a project marks
- * `approval: required` — this task needs no `production` declared to prove
- * the release path is gated (PLAN.md's split of T4.1.4 into T4.1.4a/b):
- * `env.provision`'s own operations, and declaring `production` once they
- * are gated too, are T4.1.4b's task, not this one. `test` demonstrates the
- * opposite case: a manifest entry marked `approval: none` is never gated at
- * all, no matter what it is handed.
+ * `approval: required`. `test` demonstrates the opposite case: a manifest
+ * entry marked `approval: none` is never gated at all, no matter what it is
+ * handed.
+ *
+ * Steps 1-7 never leave `staging` with anything actually running —
+ * `release.deliver`'s digests are fake, so `docker compose up` fails to pull
+ * an image and creates no container, meaning `status` reports nothing by the
+ * time step 7 finishes (T4.1.4b review 6, finding 2). That left `down`'s own
+ * gated branch — the one a review found this script had never exercised —
+ * unreached on every run of this script, `demo:gate`'s only verification of
+ * it having been a one-off manual test recorded out of band (commit
+ * bedd342). Steps 8-9 close that: step 8 brings `staging` up on its compose
+ * default (a real, healthy `nginx` container — no image named, so nothing
+ * here can fail to pull), which is what gives step 9 an actual reported
+ * state for a gated `down` to have something to protect and refuse.
  *
  * Requires a Docker daemon, the same as `demo:env`/`demo:release`/`demo:verify`.
  */
@@ -42,6 +55,7 @@ import {
   gatedEnvironments,
   KERNEL_TASK,
   kernelRegistry,
+  recreateOnDefaultDigest,
   releaseDeliverContract,
   teardownDigest,
 } from '../../dist/index.js';
@@ -64,6 +78,12 @@ async function refused(promise) {
   } catch (cause) {
     return cause instanceof Error ? cause.message : String(cause);
   }
+}
+
+function describeStatus(status) {
+  return status.services.length === 0
+    ? 'no services reported'
+    : status.services.map((service) => `${service.name}:${service.state}`).join(', ');
 }
 
 const repo = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
@@ -278,6 +298,74 @@ try {
     testDeliver === undefined || !testDeliver.includes('simulated'),
     testDeliver ?? '(no error — deliver reported normally)',
   );
+
+  process.stdout.write(
+    "\n8. env.provision#up with no image, against 'staging' (approval: required), is gated exactly like release.deliver\n",
+  );
+  const noImageUp1 = await refused(envContract.invoke('up', { repo, env: 'staging' }));
+  check(
+    'a no-image up is refused without a recorded dry run — first bring-up is as gated as a recreate (T4.1.4b review 2)',
+    noImageUp1 !== undefined && noImageUp1.includes('has not been simulated'),
+    noImageUp1,
+  );
+  const noImageUp2 = await refused(envContract.invoke('up', { repo, env: 'staging' }));
+  check(
+    'still refused once simulated but not yet confirmed',
+    noImageUp2 !== undefined && noImageUp2.includes('simulated but not confirmed'),
+    noImageUp2,
+  );
+  // Confirmed against the exact reported state this call would replace
+  // (`recreateOnDefaultDigest`, T4.1.4b review 2) — `status` reports nothing
+  // yet, so this is the first-bring-up identity, not a recreate.
+  const beforeUp = await envContract.invoke('status', { repo, env: 'staging' });
+  const upPrint = deployFingerprint({
+    repo,
+    env: 'staging',
+    digest: recreateOnDefaultDigest(beforeUp.services),
+  });
+  operatorConfirms(upPrint, 'deploy');
+  const confirmedUp = await refused(envContract.invoke('up', { repo, env: 'staging' }));
+  check(
+    'up now reaches the real provider on the compose default — no image named, so nothing here fails to pull',
+    confirmedUp === undefined,
+    confirmedUp ?? '(no error — up reported normally)',
+  );
+
+  process.stdout.write(
+    "\n9. env.provision#down against the now-up 'staging' is refused until confirmed, then proceeds\n",
+  );
+  const downRefused = await refused(envContract.invoke('down', { repo, env: 'staging' }));
+  check(
+    "down is refused — 'staging' now reports a real service, which is something a gated down must protect",
+    downRefused !== undefined && downRefused.includes('has not been simulated'),
+    downRefused,
+  );
+  const beforeDown = await envContract.invoke('status', { repo, env: 'staging' });
+  check(
+    "down's refusal is over an environment status actually reports something running in",
+    beforeDown.services.length > 0,
+    describeStatus(beforeDown),
+  );
+  const downPrint = deployFingerprint({
+    repo,
+    env: 'staging',
+    digest: teardownDigest(beforeDown.services),
+  });
+  operatorConfirms(downPrint, 'deploy');
+  const confirmedDown = await refused(
+    envContract.invoke('down', { repo, env: 'staging' }),
+  );
+  check(
+    'down now reaches the real provider on the operator confirmation alone',
+    confirmedDown === undefined,
+    confirmedDown ?? '(no error — down reported normally)',
+  );
+  const afterDown = await envContract.invoke('status', { repo, env: 'staging' });
+  check(
+    "'staging' reports nothing once the confirmed down has actually run",
+    afterDown.services.length === 0,
+    describeStatus(afterDown),
+  );
 } finally {
   for (const env of ['staging', 'test']) {
     try {
@@ -296,7 +384,7 @@ try {
 
 process.stdout.write(
   failures.length === 0
-    ? '\nT4.1.4a verification passed\n\n'
-    : `\nT4.1.4a verification FAILED: ${String(failures.length)} check(s)\n\n`,
+    ? '\nT4.1.4a/b verification passed\n\n'
+    : `\nT4.1.4a/b verification FAILED: ${String(failures.length)} check(s)\n\n`,
 );
 process.exit(failures.length === 0 ? 0 : 1);
