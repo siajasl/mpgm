@@ -19,12 +19,7 @@ import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
 import { reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview } from './prior-review.js';
-import {
-  earnsAnotherRound,
-  markShown,
-  renderLateDeviation,
-  unseenDeviations,
-} from './late-deviation.js';
+import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
 import type { WorktreeManager } from './worktree.js';
 
 /**
@@ -481,7 +476,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // Deviations the author has already been sent back with, and whether the one
   // grace round for a late one has been spent. Both live outside the loop
   // because both are facts about the task, not about a round.
-  const shownDeviations = new Set<string>();
   // Keyed by convention id so that 'CONV-1' and 'CONV-1 (one logical change per
   // commit)' are one declaration rather than two.
   const declaredSoFar = new Map<string, string>();
@@ -649,37 +643,36 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
 
     const undeclared = undeclaredDeviations(review.deviations ?? [], declared);
 
-    if (round === attempts) {
-      // One extra round, once, when the only thing refusing an approved change
-      // is a deviation reported too late for the author to have declared it.
-      if (
-        !graceGranted &&
-        earnsAnotherRound({
-          decision,
-          approved: review.approved,
-          undeclared,
-          shown: shownDeviations,
-        })
-      ) {
-        graceGranted = true;
+    // The reviewer approved and the only thing refusing the change is a
+    // declaration, so ask for the declaration rather than for more work. Once
+    // per task: a second one would be spending a round on a signature the
+    // author has already declined to give.
+    const declarationRound =
+      !graceGranted && earnsDeclarationRound({ decision, approved: review.approved });
+    if (declarationRound) {
+      graceGranted = true;
+      // At the cap there is no round left to declare in, so this one is added
+      // rather than taken. Below the cap it costs the round it replaces, which
+      // would otherwise have been rework on a change the reviewer has passed.
+      if (round === attempts) {
         attempts += 1;
-      } else {
-        options.log.append({
-          runId,
-          type: 'BudgetExceeded',
-          payload: {
-            taskId: task.id,
-            kind: 'reviews',
-            limit: attempts,
-            observed: round,
-          },
-        });
-        return stop(
-          `the review still refuses the change after ${String(attempts)} attempt(s): ` +
-            decision.reasons.join('; '),
-          { ref: repair.ref, review, repair },
-        );
       }
+    } else if (round === attempts) {
+      options.log.append({
+        runId,
+        type: 'BudgetExceeded',
+        payload: {
+          taskId: task.id,
+          kind: 'reviews',
+          limit: attempts,
+          observed: round,
+        },
+      });
+      return stop(
+        `the review still refuses the change after ${String(attempts)} attempt(s): ` +
+          decision.reasons.join('; '),
+        { ref: repair.ref, review, repair },
+      );
     }
 
     // Back to the author, with what the reviewer found. Without this the review
@@ -689,24 +682,16 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       runId,
       taskId: task.id,
       role: implementerRole,
-      prompt:
-        graceGranted && round === attempts - 1
-          ? `${context.prompt}\n\n## One round, to declare what you were never shown\n\n${renderLateDeviation(
-              unseenDeviations(undeclared, shownDeviations),
-            )}`
-          : `${context.prompt}\n\n## The review asked for changes\n\n${renderReview({
-              review: parsed.data,
-              undeclared,
-              attempt: round,
-              attemptsRemaining: attempts - round,
-            })}`,
+      prompt: declarationRound
+        ? `${context.prompt}\n\n## The reviewer approved. One thing is missing\n\n${renderDeclarationRound(undeclared)}`
+        : `${context.prompt}\n\n## The review asked for changes\n\n${renderReview({
+            review: parsed.data,
+            undeclared,
+            attempt: round,
+            attemptsRemaining: attempts - round,
+          })}`,
       policyRoot: worktree.path,
     });
-
-    // Only now: the set must mean "shown in an earlier round" when the grace
-    // test reads it at the cap, and this round's deviations were shown by the
-    // prompt immediately above.
-    markShown(shownDeviations, undeclared);
 
     if (reworked.status !== 'completed') {
       return stop(`the rework session blocked: ${reworked.reason}`, {

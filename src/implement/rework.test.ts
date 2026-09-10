@@ -685,19 +685,165 @@ describe('a review that never approves (NFR-1)', () => {
       expect(result.rounds).toHaveLength(2);
 
       const granted = provider.requests.find((request) =>
-        request.prompt.includes('One round, to declare what you were never shown'),
+        request.prompt.includes('The reviewer approved. One thing is missing'),
       );
       expect(granted?.prompt).toContain('CONV-1');
-      expect(granted?.prompt).toMatch(/never given the chance to declare it/);
+      expect(granted?.prompt).toMatch(/reviewer approved this change/);
     } finally {
       log.close();
     }
   });
 
-  it('does not grant it twice, nor for a deviation already shown', async () => {
-    // The grace is once, and only for what nobody said. A reviewer that keeps
-    // reporting the same deviation the author keeps not declaring gets the
-    // budget it was given.
+  it('asks for the declaration at once, rather than reworking an approved change', async () => {
+    // T4.1.4b, four runs of it. The first review approved and reported CONV-1;
+    // the loop spent its other two rounds reworking a change the reviewer had
+    // already passed, and that rework drew the later reports that refused it
+    // for good. Five approving reviews across those runs, none merged, $57.20.
+    // The declaration is the only thing the gate is waiting for, so ask for it
+    // while there is still budget rather than at the cap.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const approving = scriptedSuccess({
+      ref: head,
+      verdict: 'approve',
+      summary: 'good',
+      findings: [],
+      deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+    });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      approving,
+      // The declaration round, at round two of three rather than at the cap.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'CONV-1', why: 'the loop made the commits' }],
+      }),
+      approving,
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 3,
+      });
+
+      expect(result.status).toBe('merged');
+      // Two rounds out of a budget of three: the loop stopped as soon as the
+      // reviewer was satisfied instead of spending what it was allowed.
+      expect(result.rounds).toHaveLength(2);
+      // And it asked for a declaration, not for rework.
+      const second = provider.requests.filter((request) =>
+        request.prompt.includes('The reviewer approved. One thing is missing'),
+      );
+      expect(second).toHaveLength(1);
+      expect(
+        provider.requests.some((request) =>
+          request.prompt.includes('The review asked for changes'),
+        ),
+      ).toBe(false);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('asks even for a deviation an earlier round already put to the author', async () => {
+    // The condition this replaces refused the round for a deviation the author
+    // had been shown, reading a re-report as silence. T4.1.4b's session did the
+    // first thing the rework prompt asks and fixed the departure; the reviewer
+    // approved and reported it anyway, because it reports what it finds and is
+    // deliberately not told what was declared. A fix is indistinguishable from
+    // silence from here, so the loop must not try to tell them apart.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const reviewed = (verdict: 'approve' | 'request-changes') =>
+      scriptedSuccess({
+        ref: head,
+        verdict,
+        summary: 'the gate leaves a state that recurs',
+        findings:
+          verdict === 'approve'
+            ? []
+            : [
+                {
+                  file: 'src/policy/deploy-gate.ts',
+                  concern: 'an empty state is one recurring identity',
+                  remedy: 'bind the confirmation to something that cannot recur',
+                  severity: 'major',
+                },
+              ],
+        deviations: [{ convention: 'CONV-4', where: 'the empty-state identity' }],
+      });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      // Round one refuses and reports CONV-4, so the author is shown it.
+      reviewed('request-changes'),
+      // The author fixes rather than declares, exactly as the prompt asks first.
+      scriptedSuccess(change),
+      // Round two approves and reports CONV-4 all the same.
+      reviewed('approve'),
+      // The declaration round.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'CONV-4', why: 'no stateless identity exists' }],
+      }),
+      reviewed('approve'),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 3,
+      });
+
+      expect(result.status).toBe('merged');
+      const granted = provider.requests.find((request) =>
+        request.prompt.includes('The reviewer approved. One thing is missing'),
+      );
+      expect(granted?.prompt).toContain('CONV-4');
+      // And it tells the author the thing that wasted this round in T4.1.4b.
+      expect(granted?.prompt).toMatch(/already fixed the departure/);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('does not grant it twice', async () => {
+    // Once per task is the whole of the bound. A reviewer that keeps reporting
+    // the same deviation the author keeps not declaring gets the budget it was
+    // given, because a second declaration round would be spent asking for a
+    // signature the author has already declined to give.
     const repo = newRepo();
     const head = git(repo, ['rev-parse', 'HEAD']);
     const change = {
