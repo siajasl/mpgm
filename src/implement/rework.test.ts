@@ -694,6 +694,30 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('tells the author a design document is not a declaration, and nor is a fix', () => {
+    // Both are what T4.1.4b actually did: it argued CONV-4 in DESIGN section 9,
+    // in contracts/env.provision.md and in the refusal text an operator reads,
+    // and it fixed CONV-4 and CONV-5 rather than declaring them. The old text
+    // enumerated commit messages, comments and `summary`, so neither case was
+    // named as one that does not count.
+    const rendered = renderReview({
+      review: {
+        ref: 'abc',
+        verdict: 'request-changes' as const,
+        summary: 'the gate leaves a state that recurs',
+        findings: [],
+        deviations: [{ convention: 'CONV-4', where: 'the gate' }],
+      },
+
+      undeclared: ['CONV-4'],
+      attempt: 1,
+      attemptsRemaining: 2,
+    });
+    expect(rendered).toMatch(/design document or a contract/);
+    expect(rendered).toMatch(/Fixing a departure does not stop the reviewer/);
+    expect(rendered).toMatch(/declare it as well/);
+  });
+
   it('asks for the declaration at once, rather than reworking an approved change', async () => {
     // T4.1.4b, four runs of it. The first review approved and reported CONV-1;
     // the loop spent its other two rounds reworking a change the reviewer had
