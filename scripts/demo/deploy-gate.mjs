@@ -1,11 +1,22 @@
 /**
- * T4.1.4a/b verification — a release delivered to an environment this
+ * T4.1.4a/b/c verification — a release delivered to an environment this
  * project marks `approval: required` is impossible without an approval
  * event, and which environments those are is read from project
  * configuration, never a hardcoded name. Steps 1-7 are T4.1.4a's
  * `release.deliver` coverage; steps 8-9 are T4.1.4b's: `env.provision#up`/
  * `#down`, reached directly rather than through `release.deliver`, are
- * gated exactly the same way.
+ * gated exactly the same way. Step 10 is T4.1.4c's: the empty-state
+ * confirmation step 8 spends is not good for a second, later sighting of the
+ * same empty state, and a fresh confirmation of the identical fingerprint
+ * lets that later sighting through in turn.
+ *
+ * Wiring `onConfirmationSpent` below (T4.1.4c) is not optional dressing —
+ * `composeProvider`'s `gate` option requires it of every TypeScript caller
+ * now (`ProvisionGateOptions`, `src/policy/deploy-gate.ts`, CONV-5), the
+ * shape this plain-JS script mirrors even though nothing here typechecks it
+ * directly. Without step 10, nothing in this repository's CI-run demos would
+ * ever observe the spend actually taking effect end to end, as opposed to in
+ * a unit test's fake ledger.
  *
  * Against the real providers this repository ships
  * (`composeProvider`/`dockerReleaseProvider`), targeting this repository's
@@ -115,6 +126,24 @@ const onDryRunNeeded = (record) => {
   });
 };
 
+/**
+ * Records a `singleUse` target's spend, the moment `assertReady` lets the
+ * call it authorised through (T4.1.4c). Wiring this is what makes
+ * `composeProvider` constructible at all as of this task
+ * (`ProvisionGateOptions.onConfirmationSpent`, `src/policy/deploy-gate.ts`)
+ * — before it, this script (and every other real caller of `composeProvider`
+ * in this repository) compiled and ran with `singleUse`'s confirmation never
+ * actually spent, which is exactly the standing-authorisation gap step 8b
+ * below now exercises the closing of.
+ */
+const onConfirmationSpent = (record) => {
+  log.append({
+    runId: RUN,
+    type: 'DeployConfirmationSpent',
+    payload: { taskId: KERNEL_TASK, tool: record.tool, fingerprint: record.fingerprint },
+  });
+};
+
 /** Exactly what `src/cli/commands.ts`'s `confirm` appends. */
 function operatorConfirms(fingerprint, tool) {
   log.append({
@@ -135,7 +164,12 @@ function operatorConfirms(fingerprint, tool) {
 // own manifest every time (DESIGN §9 decision 10; `deploy-gate.ts`'s own
 // doc on `DeployGateOptions.gatedEnvs`), so a provider built once never
 // judges a different repo's call by this repo's manifest.
-const gate = { gatedEnvs: gatedEnvironments, ledger, onDryRunNeeded };
+const gate = {
+  gatedEnvs: gatedEnvironments,
+  ledger,
+  onDryRunNeeded,
+  onConfirmationSpent,
+};
 
 const registry = new CapabilityRegistry();
 // The same `gate` object wires both providers (T4.1.4b): `env.provision`'s
@@ -366,6 +400,28 @@ try {
     afterDown.services.length === 0,
     describeStatus(afterDown),
   );
+
+  process.stdout.write(
+    "\n10. A second no-image up against 'staging', found empty again, is refused on step 8's spent confirmation — a fresh one lets it through (T4.1.4c)\n",
+  );
+  // `upPrint` is `deployFingerprint({repo, env: 'staging', digest:
+  // recreateOnDefaultDigest([])})` — the same fixed empty-state identity
+  // step 8 confirmed and spent. `staging` is empty again here (the check
+  // just above), so this call computes the identical fingerprint, not a
+  // fresh one — exactly the recurring identity T4.1.4c exists to catch.
+  const noImageUp3 = await refused(envContract.invoke('up', { repo, env: 'staging' }));
+  check(
+    "the identical empty-state fingerprint is refused — step 8's confirmation was spent by the call it authorised, not left standing",
+    noImageUp3 !== undefined && noImageUp3.includes('simulated but not confirmed'),
+    noImageUp3,
+  );
+  operatorConfirms(upPrint, 'deploy');
+  const confirmedUp2 = await refused(envContract.invoke('up', { repo, env: 'staging' }));
+  check(
+    'a fresh confirmation of the identical fingerprint lets the next call through in turn',
+    confirmedUp2 === undefined,
+    confirmedUp2 ?? '(no error — up reported normally)',
+  );
 } finally {
   for (const env of ['staging', 'test']) {
     try {
@@ -384,7 +440,7 @@ try {
 
 process.stdout.write(
   failures.length === 0
-    ? '\nT4.1.4a/b verification passed\n\n'
-    : `\nT4.1.4a/b verification FAILED: ${String(failures.length)} check(s)\n\n`,
+    ? '\nT4.1.4a/b/c verification passed\n\n'
+    : `\nT4.1.4a/b/c verification FAILED: ${String(failures.length)} check(s)\n\n`,
 );
 process.exit(failures.length === 0 ? 0 : 1);

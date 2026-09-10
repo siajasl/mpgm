@@ -248,11 +248,17 @@ closed it instead: this identity's confirmation is single-use, spent by
 `assertReady` the moment it lets a call proceed on it — not on that call's
 return, which would leave a window for a crash, a thrown effect, or a racing
 second call to find the confirmation still looking unspent — so a later
-no-image `up` (or, symmetrically, a `down`) found against the same empty
-state is refused again, pending a fresh confirmation, whatever fingerprint
-it computes. The no-image `up`/`down` refusal says this directly whenever
-`status` reports nothing, rather than leaving an operator to infer it from
-`servingIdentity`'s source.
+no-image `up` found against the same empty state is refused again, pending a
+fresh confirmation, even though it computes the identical fingerprint. The
+no-image `up` refusal says this directly whenever `status` reports nothing,
+rather than leaving an operator to infer it from `servingIdentity`'s source.
+
+`down` never reaches this identity at all, and so has no confirmation of it
+to spend: a `down` against an environment `status` reports no service in at
+all proceeds untouched, on the same "nothing here to protect" bypass
+described above, before `assertReady` — and this single-use identity — is
+ever reached. The only door this identity is ever confirmed or spent through
+is the no-image `up`.
 
 This is deliberately not the same question `up` in the output answers.
 `envStatusOutput.up` (`environmentUp`) fails closed for a service still

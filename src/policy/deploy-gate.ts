@@ -410,15 +410,58 @@ export interface DeployGateOptions {
    * spending on entry, not on the call's return, is the fail-closed choice.
    * Like `onDryRunNeeded`/`onConfirmationNeeded`, the gate performs no side
    * effect and records nothing itself; a caller that wants the spend to
-   * actually stick wires this to record a `DeployConfirmationSpent` event. A
-   * caller that does not wire it is choosing to let this exact confirmation
-   * go on authorising every later call found against the same recurring
-   * state — the DESIGN §9 decision 14 gap this event exists to close stays
-   * open for a caller that never wires it, the same as an unwired
-   * `onDryRunNeeded` leaves a fingerprint permanently unconfirmable.
+   * actually stick wires this to record a `DeployConfirmationSpent` event.
+   *
+   * Optional here only because most `DeployGateOptions` consumers —
+   * {@link gateProductionRelease} among them — never produce a `singleUse`
+   * target at all, so requiring this field on every options object this
+   * module's types admit would ask something of a caller that has no
+   * `singleUse` call to spend. {@link gateProvisionRelease} — the one
+   * function that *does* produce a `singleUse` target — does not accept a
+   * bare `DeployGateOptions` for exactly that reason; it takes
+   * {@link ProvisionGateOptions}, where this field is required, so a caller
+   * that has not wired it cannot construct a provider capable of reaching
+   * `singleUse` at all (CONV-5). A caller that reaches `assertReady` with
+   * `target.singleUse === true` and this still `undefined` regardless — only
+   * reachable by a caller that builds its options object outside TypeScript,
+   * or otherwise defeats {@link ProvisionGateOptions}'s own check — is
+   * refused outright rather than let through with its confirmation left
+   * standing (CONV-4): see `assertReady`'s own doc.
    */
   readonly onConfirmationSpent?: (record: ConfirmationSpent) => void;
 }
+
+/**
+ * {@link DeployGateOptions} with {@link DeployGateOptions.onConfirmationSpent}
+ * required rather than optional — what {@link gateProvisionRelease} actually
+ * takes, and what `composeProvider` (`../env/compose-provider.ts`) therefore
+ * requires of its own `gate` option, because `gateProvisionRelease`'s `up`
+ * and `down` are the only place a {@link DeployTarget.singleUse} target is
+ * ever produced (the `services.length === 0` identity, T4.1.4c), and
+ * `composeProvider` is the only structural path by which this repository
+ * ever obtains a live `env.provision` provider (`env/compose-provider.ts`'s
+ * own module doc). Before this type existed, `onConfirmationSpent` being
+ * optional on every `DeployGateOptions` meant a caller could construct a
+ * gated `env.provision` provider that compiled, ran, and let every
+ * `singleUse` call through with its confirmation intact — the exact
+ * standing-authorisation gap this task exists to close, left open again by
+ * the construction site rather than by the fingerprint this time. Expressing
+ * the obligation this way (CONV-5) — as a type a caller cannot satisfy
+ * without wiring the callback, rather than as a runtime check that only
+ * catches a caller who happens to exercise the path it guards — means there
+ * is no `composeProvider(...)` call in this repository, demo scripts
+ * included, that type-checks without one.
+ *
+ * {@link gateProductionRelease} keeps taking the wider {@link DeployGateOptions}:
+ * it never sets `singleUse`, so requiring this field of every caller of
+ * `dockerReleaseProvider` (`../release/docker-provider.ts`) — which only
+ * ever gates `deliver`/`rollback` directly, delegating `up`/`down` to a
+ * separately-constructed, already-gated `env.provision` contract — would ask
+ * something of a caller this function never needs.
+ */
+export type ProvisionGateOptions = DeployGateOptions & {
+  readonly onConfirmationSpent: (record: ConfirmationSpent) => void;
+};
 
 /**
  * Renders `target`'s clause: `<what> to '<env>'`. `target.caveat` is never
@@ -531,6 +574,24 @@ function stateBoundCaveat(env: string, services: readonly ServiceStatus[]): stri
  * the deploy it guards: ambiguity about whether the first attempt landed is
  * resolved by asking again, never by assuming it is still fine to go once
  * more on the same say-so (CONV-4).
+ *
+ * **A `singleUse` target with nowhere to record the spend refuses the call
+ * outright, rather than letting it through with the confirmation left
+ * standing.** {@link ProvisionGateOptions} already makes this unreachable
+ * for any caller `gateProvisionRelease` accepts — its `onConfirmationSpent`
+ * is required, not optional, so a caller that has not wired it cannot
+ * construct a provider capable of reaching this function with
+ * `target.singleUse === true` in the first place (CONV-5). This check exists
+ * for whatever reaches here anyway: a caller that builds its options object
+ * outside TypeScript (a plain-JS script importing this module's compiled
+ * output, exactly like every demo script in this repository) can still hand
+ * `assertReady` an options object `ProvisionGateOptions` would have refused
+ * to typecheck. Letting the call through regardless — the behaviour before
+ * this check existed — would spend nothing, leaving the confirmation
+ * standing for every later call found against the same recurring identity,
+ * which is precisely the standing-authorisation gap `singleUse` exists to
+ * close, reopened by an unwired caller instead of by the fingerprint
+ * (CONV-4).
  */
 function assertReady(target: DeployTarget, options: DeployGateOptions): void {
   const print = deployFingerprint(target);
@@ -586,7 +647,24 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
   // here, before the caller's wrapped `up`/`down` is ever invoked — see this
   // function's own doc for why entry, not return, is the fail-closed choice.
   if (target.singleUse === true) {
-    options.onConfirmationSpent?.({ tool: DEPLOY_TOOL, fingerprint: print, target });
+    if (options.onConfirmationSpent === undefined) {
+      // Fail closed rather than silently leave this confirmation standing
+      // (CONV-4) — see this function's own doc for why a `ProvisionGateOptions`
+      // caller cannot reach this branch at all, and why this function still
+      // checks for whatever reaches it anyway.
+      throw new DeployGateError(
+        `deploying ${describe(target)} would spend a single-use confirmation ` +
+          `(fingerprint ${print}) the moment it proceeds, but this caller has ` +
+          `not wired 'onConfirmationSpent' to record that anywhere.${caveat} ` +
+          `Letting this call through regardless would leave this confirmation ` +
+          `looking unspent for every later call found against the same ` +
+          `recurring state, which is exactly the standing-authorisation gap ` +
+          `'singleUse' exists to close (CONV-4). Construct this gate with ` +
+          `'onConfirmationSpent' wired to record a 'DeployConfirmationSpent' ` +
+          `event before this call is retried.`,
+      );
+    }
+    options.onConfirmationSpent({ tool: DEPLOY_TOOL, fingerprint: print, target });
   }
 }
 
@@ -878,10 +956,18 @@ export function teardownDigest(services: readonly ServiceStatus[]): string {
  * at all and is refused at construction, the same as `gateProductionRelease`
  * refuses a provider missing `deliver`. A provider with no `down` is left as
  * it is — there is no operation there to wrap.
+ *
+ * `options` is {@link ProvisionGateOptions}, not the bare
+ * {@link DeployGateOptions} `gateProductionRelease` takes: this is the one
+ * function that ever produces a {@link DeployTarget.singleUse} target (the
+ * `up`/`down` no-image-empty-state identity below), so this is where a
+ * caller that has not wired `onConfirmationSpent` is refused at
+ * construction rather than only once a `singleUse` call actually reaches
+ * `assertReady` (CONV-5) — see {@link ProvisionGateOptions}'s own doc.
  */
 export function gateProvisionRelease(
   provider: Provider,
-  options: DeployGateOptions,
+  options: ProvisionGateOptions,
 ): Provider {
   const up = provider.up;
   if (up === undefined) {

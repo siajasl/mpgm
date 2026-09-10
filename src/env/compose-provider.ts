@@ -5,7 +5,10 @@ import { promisify } from 'node:util';
 import { parse as parseYaml, YAMLParseError } from 'yaml';
 import { z } from 'zod';
 import type { Provider } from '../contract/capability.js';
-import { gateProvisionRelease, type DeployGateOptions } from '../policy/deploy-gate.js';
+import {
+  gateProvisionRelease,
+  type ProvisionGateOptions,
+} from '../policy/deploy-gate.js';
 import {
   environmentUp,
   serviceHealths,
@@ -363,8 +366,19 @@ export interface ComposeProviderOptions {
    * doc asks a caller to. A caller whose `gatedEnvs` always answers empty
    * still supplies a ledger; it is simply never consulted (T4.1.4b, DESIGN §9
    * decision 14).
+   *
+   * `ProvisionGateOptions`, not the wider `DeployGateOptions` — its
+   * `onConfirmationSpent` is required, not optional (T4.1.4c, CONV-5):
+   * `gateProvisionRelease`, which this function's own `up`/`down` are always
+   * returned wrapped in, is the one place a `singleUse` target is ever
+   * produced, and this is this repository's only structural path to a live
+   * `env.provision` provider — a caller with nowhere to record a `singleUse`
+   * spend cannot construct one at all, rather than obtaining a provider that
+   * compiles and runs but leaves that confirmation standing on every call
+   * that reaches it. See `../policy/deploy-gate.ts`'s `ProvisionGateOptions`
+   * for the full reasoning.
    */
-  readonly gate: DeployGateOptions;
+  readonly gate: ProvisionGateOptions;
 }
 
 /**

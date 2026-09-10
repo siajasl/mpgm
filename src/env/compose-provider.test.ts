@@ -9,8 +9,8 @@ import {
   deployFingerprint,
   recreateOnDefaultDigest,
   teardownDigest,
-  type DeployGateOptions,
   type DeployLedger,
+  type ProvisionGateOptions,
 } from '../policy/deploy-gate.js';
 import {
   ComposeProviderError,
@@ -31,10 +31,21 @@ import {
  * reasoning `docker-provider.test.ts`'s `noProductionGate` gives, so the
  * ledger only has to exist, not answer anything in particular.
  */
-function ungatedGate(gatedEnvs: ReadonlySet<string> = new Set()): DeployGateOptions {
+function ungatedGate(gatedEnvs: ReadonlySet<string> = new Set()): ProvisionGateOptions {
   return {
     gatedEnvs: () => gatedEnvs,
     ledger: { dryRunSeen: () => false, confirmed: () => false },
+    // No test in this file's ungated block ever reaches a `singleUse`
+    // target — every environment it names is left out of `gatedEnvs`, so
+    // `assertReady` is never called for it at all — but `composeProvider`'s
+    // own `gate` option now requires this to be wired regardless
+    // (`ProvisionGateOptions`, T4.1.4c, CONV-5): a caller that cannot say
+    // where a spend would go cannot construct this provider in the first
+    // place.
+    onConfirmationSpent: () => {
+      // No-op: this test never reaches a singleUse target, so nothing here
+      // is ever recorded.
+    },
   };
 }
 
@@ -538,7 +549,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await expect(
@@ -555,6 +573,10 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
       gate: {
         gatedEnvs: () => new Set(['staging']),
         ledger: ledger(new Set([print]), new Set([print])),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
       },
     });
 
@@ -575,7 +597,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await expect(
@@ -602,7 +631,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await expect(
@@ -620,7 +656,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await expect(
@@ -641,6 +684,10 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
       gate: {
         gatedEnvs: () => new Set(['staging']),
         ledger: ledger(new Set([print]), new Set([print])),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
       },
     });
 
@@ -663,7 +710,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok('')]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await expect(
@@ -684,6 +738,10 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
       gate: {
         gatedEnvs: () => new Set(['staging']),
         ledger: ledger(new Set([print]), new Set([print])),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
       },
     });
 
@@ -703,7 +761,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(notUpRow)]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await expect(
@@ -716,7 +781,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await expect(
@@ -737,6 +809,10 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
       gate: {
         gatedEnvs: () => new Set(['staging']),
         ledger: ledger(new Set([print]), new Set([print])),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
       },
     });
 
@@ -748,7 +824,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(''), ok(), ok('')]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await operation(provider, 'down')({ repo, env: 'staging' } as never);
@@ -759,7 +842,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(), ok('')]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await operation(provider, 'down')({ repo, env: 'test' } as never);
@@ -773,7 +863,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     const { cli, calls } = scriptedCli([ok(oneHealthyRow)]);
     const provider = composeProvider({
       cli,
-      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+      gate: {
+        gatedEnvs: () => new Set(['staging']),
+        ledger: ledger(),
+        onConfirmationSpent: () => {
+          // No-op: this test never reaches a singleUse target, so nothing here
+          // is ever recorded.
+        },
+      },
     });
 
     await operation(provider, 'status')({ repo, env: 'staging' } as never);

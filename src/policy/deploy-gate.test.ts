@@ -17,6 +17,7 @@ import {
   teardownDigest,
   type DeployGateOptions,
   type DeployLedger,
+  type ProvisionGateOptions,
 } from './deploy-gate.js';
 
 /**
@@ -479,11 +480,25 @@ interface GatedProvisionProvider {
   readonly status?: (input: never) => Promise<unknown>;
 }
 
+/**
+ * `options` stays the wider `DeployGateOptions`, `onConfirmationSpent`
+ * included, so a test below can still construct one that omits it — the
+ * fail-closed refusal `assertReady` raises for exactly that case (T4.1.4c,
+ * CONV-4) has to stay reachable from a test, even though
+ * `gateProvisionRelease`'s own signature now requires
+ * {@link ProvisionGateOptions} so no real caller in this repository can.
+ * Casting here is deliberately the same thing a JS caller unaware of
+ * `ProvisionGateOptions` would do — `gateProvisionRelease`'s own doc
+ * describes that caller as the one this cast stands in for.
+ */
 function provisionGate(
   provider: Provider,
   options: DeployGateOptions,
 ): GatedProvisionProvider {
-  return gateProvisionRelease(provider, options) as unknown as GatedProvisionProvider;
+  return gateProvisionRelease(
+    provider,
+    options as ProvisionGateOptions,
+  ) as unknown as GatedProvisionProvider;
 }
 
 /**
@@ -751,6 +766,15 @@ describe('gateProvisionRelease — up', () => {
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print]), new Set([print])),
+      // The empty-state identity is `singleUse` (T4.1.4c): wired here purely
+      // so this call has somewhere to record the spend and is not itself
+      // refused for lacking it — `assertReady` fails closed on a `singleUse`
+      // target with no `onConfirmationSpent` wired, the same as it fails
+      // closed on anything else unconfirmed. Whether the spend itself sticks
+      // is a different test's concern (below).
+      onConfirmationSpent: () => {
+        // No-op: this test's own concern is the confirmation, not the spend.
+      },
     });
 
     await gated.up({ repo: 'r', env: 'production' } as never);
@@ -824,6 +848,40 @@ describe('gateProvisionRelease — up', () => {
     expect(second.calls).not.toContain(
       `up:${JSON.stringify({ repo: 'r', env: 'production' })}`,
     );
+  });
+
+  /**
+   * `ProvisionGateOptions` makes this unreachable for any caller
+   * `gateProvisionRelease`'s own TypeScript signature admits — its
+   * `onConfirmationSpent` is required, not optional (T4.1.4c, CONV-5) — so
+   * this test reaches `assertReady`'s runtime refusal the same way a
+   * plain-JS caller unaware of that type would: by casting an options
+   * object that omits the field past it (`provisionGate`'s own doc). Before
+   * this refusal existed, a `singleUse` target reaching here with the
+   * callback unwired passed the gate silently, leaving the confirmation
+   * standing for every later identical call — exactly the
+   * standing-authorisation gap this task exists to close, left open again by
+   * an unwired caller instead of by the fingerprint (CONV-4). Confirming the
+   * real, wrapped `up` is never invoked proves the refusal happens before
+   * any effect, not merely that a rejection surfaces eventually.
+   */
+  it('refuses a singleUse call outright when the caller has wired nowhere to record the spend, rather than letting it through unspent', async () => {
+    const emptyStatePrint = deployFingerprint({
+      repo: 'r',
+      env: 'production',
+      digest: recreateOnDefaultDigest([]),
+    });
+    const { provider, calls } = fakeEnvProvider(false);
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(new Set([emptyStatePrint]), new Set([emptyStatePrint])),
+      // Deliberately omitted — see this test's own doc.
+    });
+
+    await expect(gated.up({ repo: 'r', env: 'production' } as never)).rejects.toThrow(
+      /has not wired 'onConfirmationSpent'/,
+    );
+    expect(calls).not.toContain(`up:${JSON.stringify({ repo: 'r', env: 'production' })}`);
   });
 
   it('does not spend a confirmation for a reported (non-empty) state — its fingerprint already changes with what it approves', async () => {
@@ -967,7 +1025,14 @@ describe('gateProvisionRelease — up', () => {
     expect(() =>
       gateProvisionRelease(
         { status: () => Promise.resolve({ up: false, services: [] }) },
-        { gatedEnvs: PRODUCTION_GATED, ledger: ledger() },
+        {
+          gatedEnvs: PRODUCTION_GATED,
+          ledger: ledger(),
+          onConfirmationSpent: () => {
+            // No-op: this call never reaches `assertReady` — it is refused
+            // at construction, for lacking `up`, before any target exists.
+          },
+        },
       ),
     ).toThrow(DeployGateError);
   });
@@ -1169,6 +1234,14 @@ describe('gateProvisionRelease — down', () => {
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([downPrint, upPrint]), new Set([downPrint, upPrint])),
+      // The `up` below finds the environment `down` just left empty, so it
+      // is checked against the `singleUse` empty-state identity (T4.1.4c) —
+      // wired so that call has somewhere to record its spend rather than
+      // being refused for lacking it.
+      onConfirmationSpent: () => {
+        // No-op: this test's own concern is the up/down sequencing, not the
+        // spend.
+      },
     });
 
     await requireDown(gated)({ repo: 'r', env: 'production' } as never);
