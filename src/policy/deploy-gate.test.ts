@@ -63,7 +63,20 @@ function ledger(seen = new Set<string>(), confirmed = new Set<string>()): Deploy
   };
 }
 
-function release(version: string, digest = `sha256:${version}`): ReleaseArtifact {
+/**
+ * `digest` defaults to a value actually shaped like one (T4.1.4b review 6):
+ * `gateProductionRelease` now refuses a non-digest-shaped `release.digest`/
+ * `to.digest` outright (`isDigestShaped`), so a default of `sha256:1.0.0` —
+ * `.` is not hex — would trip that check before any test naming `release`
+ * without a `digest` override ever reached the behaviour it means to
+ * exercise. Hex-encoding `version` keeps the old property tests below rely
+ * on — a distinct `digest` for a distinct `version` — without hand-picking
+ * one per call site.
+ */
+function release(
+  version: string,
+  digest = `sha256:${Buffer.from(version, 'utf8').toString('hex')}`,
+): ReleaseArtifact {
   return { version, image: 'sample:latest', digest, changelog: 'x', rollbackTo: null };
 }
 
@@ -105,6 +118,45 @@ describe('gateProductionRelease — deliver', () => {
       gated.deliver({ repo: 'r', env: 'production', release: release('1.0.0') } as never),
     ).rejects.toThrow(DeployGateError);
     expect(calls).toEqual([]);
+  });
+
+  /**
+   * T4.1.4b review 6: `releaseArtifactSchema.digest` (`../release/deliver.ts`)
+   * is `z.string().min(1)`, with no shape of its own — before this check, a
+   * tag-shaped `release.digest` reaching a gated `deliver` would be
+   * confirmed by an operator at this outer door and only *then* refused by
+   * `gateProvisionRelease`'s inner `up` gate underneath, with a message
+   * telling the caller to "deliver this through `release.deliver` instead" —
+   * advice it had already followed. Refused here, before the ledger is
+   * consulted at all, the same shape `gateProvisionRelease`'s own tag check
+   * already gives `up` (T4.1.4b review 5).
+   */
+  it('refuses a tag-shaped release.digest before the ledger is consulted at all', async () => {
+    const { provider, calls } = fakeProvider();
+    let ledgerAsked = false;
+    const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: {
+        dryRunSeen: () => {
+          ledgerAsked = true;
+          return true;
+        },
+        confirmed: () => {
+          ledgerAsked = true;
+          return true;
+        },
+      },
+    });
+
+    await expect(
+      gated.deliver({
+        repo: 'r',
+        env: 'production',
+        release: release('1.0.0', 'sample:1.0.0'),
+      } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toEqual([]);
+    expect(ledgerAsked).toBe(false);
   });
 
   /**
@@ -319,6 +371,36 @@ describe('gateProductionRelease — rollback', () => {
       gated.rollback({ repo: 'r', env: 'production', to: release('1.0.0') } as never),
     ).rejects.toThrow(DeployGateError);
     expect(calls).toEqual([]);
+  });
+
+  /** See `deliver`'s identical test above (T4.1.4b review 6) — the same
+   * fail-closed shape check applies to `to.digest`. */
+  it('refuses a tag-shaped to.digest before the ledger is consulted at all', async () => {
+    const { provider, calls } = fakeProvider();
+    let ledgerAsked = false;
+    const gated = gate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: {
+        dryRunSeen: () => {
+          ledgerAsked = true;
+          return true;
+        },
+        confirmed: () => {
+          ledgerAsked = true;
+          return true;
+        },
+      },
+    });
+
+    await expect(
+      gated.rollback({
+        repo: 'r',
+        env: 'production',
+        to: release('1.0.0', 'sample:1.0.0'),
+      } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toEqual([]);
+    expect(ledgerAsked).toBe(false);
   });
 
   it('restores a release the environment already had confirmed, with no new confirmation', async () => {

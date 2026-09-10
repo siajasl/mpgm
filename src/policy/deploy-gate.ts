@@ -64,7 +64,13 @@ import { fingerprint } from './destructive.js';
  * own build naming, and decision 9's "cannot be made to name another build"
  * reasoning does not hold for a mutable name, so a gated `up` naming
  * anything else is refused outright rather than fingerprinted on a value
- * that could point somewhere new by the time it is confirmed (CONV-4); an
+ * that could point somewhere new by the time it is confirmed (CONV-4).
+ * {@link gateProductionRelease} applies the identical check to
+ * `release.digest`/`to.digest` (T4.1.4b review 6): both take an unshaped
+ * `z.string().min(1)`, so a gated `up`'s check alone left a
+ * `release.deliver` call carrying a mutable `digest` confirmed at the outer
+ * door and only refused at this inner one, with a message pointing the
+ * caller back through the door it had already used. An
  * `up` with no `image` is gated unconditionally — an environment the project
  * marks `approval: required` never has a no-image `up` reach the provider
  * without a confirmation, whatever `status` currently reports, first bring-up
@@ -136,10 +142,42 @@ const DRY_RUN_PARAM = '__no_dry_run_field__';
  * supplies `release.digest`, straight from `--iidfile`, never a tag. A caller
  * that wants a gated `up` to carry a tag has `release.deliver`'s own gate
  * (`gateProductionRelease`) to go through first, on a real digest, same as
- * every other path to a gated environment.
+ * every other path to a gated environment — {@link gateProductionRelease}
+ * applies this identical check to `release.digest`/`to.digest` for exactly
+ * that reason (T4.1.4b review 6): `releaseArtifactSchema.digest`
+ * (`../release/deliver.ts`) is `z.string().min(1)`, with no shape of its own
+ * either, so nothing before this check stopped a `release.deliver#deliver`
+ * carrying a tag-shaped `digest` from being confirmed by an operator at the
+ * outer door and only then refused by this inner one — fail-closed either
+ * way, but with a refusal that told the caller to do exactly what it had
+ * already done ("deliver this through `release.deliver` instead").
  */
 function isDigestShaped(image: string): boolean {
   return /^sha256:[0-9a-f]+$/i.test(image);
+}
+
+/**
+ * The message {@link isDigestShaped}'s refusal carries, shared between
+ * {@link gateProvisionRelease}'s `up` and {@link gateProductionRelease}'s
+ * `deliver`/`rollback` (T4.1.4b review 6) — the same defect either call would
+ * otherwise let through: a mutable name repointed at a different build after
+ * an operator confirms it once would let that one confirmation stand for
+ * whatever the name currently resolves to, not the build it was actually
+ * given (DESIGN §9 decision 9/14, CONV-4). `field` names which input field
+ * carried the offending value, so an operator reading this refusal is told
+ * where to look without reading this module (CONV-3).
+ */
+function notDigestShapedMessage(env: string, field: string, value: string): string {
+  return (
+    `'${field}' for '${env}' is '${value}', which is not shaped like a digest ` +
+    "('sha256:' followed by its hex id — exactly what 'docker build --iidfile' " +
+    'writes). This gate keys its confirmation on that value, and a mutable ' +
+    'name — a tag, or anything else that is not the digest itself — can be ' +
+    'repointed at a different build after an operator approves it once, which ' +
+    'would let one confirmation stand for whatever the name currently ' +
+    'resolves to rather than the build it was actually given (DESIGN §9 ' +
+    'decision 9/14, CONV-4).'
+  );
 }
 
 /**
@@ -480,6 +518,20 @@ export function gateProductionRelease(
       if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
         return deliver(input);
       }
+      // Fail closed on a tag or any other mutable `release.digest` at this
+      // outer door, before `assertReady` ever computes a fingerprint over it
+      // (T4.1.4b review 6, CONV-4): `releaseArtifactSchema.digest`
+      // (`../release/deliver.ts`) is `z.string().min(1)`, with no shape of
+      // its own, so nothing before this check stopped a mutable name from
+      // being confirmed by an operator here and only then refused by
+      // `gateProvisionRelease`'s own `up` gate underneath, with a message
+      // pointing the caller back to `release.deliver` — the door it had
+      // already come through. See `isDigestShaped`'s own doc.
+      if (!isDigestShaped(parsed.release.digest)) {
+        throw new DeployGateError(
+          notDigestShapedMessage(parsed.env, 'release.digest', parsed.release.digest),
+        );
+      }
       assertReady(
         {
           repo: parsed.repo,
@@ -496,6 +548,14 @@ export function gateProductionRelease(
       const parsed = releaseRollbackInput.parse(input);
       if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
         return rollbackOp(input);
+      }
+      // See `deliver`'s own comment above: the identical fail-closed shape
+      // check, at the same outer door, for the same reason (T4.1.4b review 6,
+      // CONV-4).
+      if (!isDigestShaped(parsed.to.digest)) {
+        throw new DeployGateError(
+          notDigestShapedMessage(parsed.env, 'to.digest', parsed.to.digest),
+        );
       }
       // Deliberately the *same* fingerprint a `deliver` of `to` would have
       // produced (see `deployFingerprint`): restoring a release this
@@ -787,18 +847,13 @@ export function gateProvisionRelease(
         // an operator actually saw.
         if (!isDigestShaped(parsed.image)) {
           throw new DeployGateError(
-            `'up' on '${parsed.env}' carries 'image: ${parsed.image}', which ` +
-              "is not shaped like a digest ('sha256:' followed by its hex id " +
-              "— exactly what 'docker build --iidfile' writes, and what " +
-              "'release.deliver' always supplies as 'release.digest'). This " +
-              'gate keys its confirmation on that value, and a mutable name ' +
-              '— a tag, or anything else that is not the digest itself — can ' +
-              'be repointed at a different build after an operator approves ' +
-              'it once, which would let one confirmation stand for whatever ' +
-              'the name currently resolves to rather than the build it was ' +
-              'actually given (DESIGN §9 decision 9/14, CONV-4). Deliver ' +
-              "this through 'release.deliver#deliver' instead, or pass the " +
-              "digest 'docker build --iidfile' recorded, not a tag.",
+            `${notDigestShapedMessage(parsed.env, 'image', parsed.image)} If ` +
+              "this reached you through 'release.deliver', its " +
+              "'release.digest' is not a digest — that is refused at " +
+              "'release.deliver's own gate now too (T4.1.4b review 6), so " +
+              'this call did not arrive that way. Deliver this through ' +
+              "'release.deliver#deliver' instead, or pass the digest " +
+              "'docker build --iidfile' recorded, not a tag.",
           );
         }
         assertReady(
