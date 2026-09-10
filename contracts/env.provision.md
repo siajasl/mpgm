@@ -260,13 +260,16 @@ fingerprint over what is actually there, and `down` additionally cannot tell
 "nothing to protect yet" from "this would replace a confirmed release",
 without asking first — and every provider satisfying this contract already
 implements `status` (see "Operations" above), so this asks nothing new of one
-that does. `scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) exercises the
-`release.deliver` side of this against a real `docker compose`; the
-`env.provision`-only cases above, including a service that is `starting`,
-`unhealthy`, `exited` or `restarting` rather than cleanly up, are exercised
-directly against a fake provider in `src/policy/deploy-gate.test.ts`
-(`gateProvisionRelease`) and against the real `composeProvider` in
-`src/env/compose-provider.test.ts`.
+that does. `scripts/demo/deploy-gate.mjs` (`npm run demo:gate`) exercises
+both sides of this against a real `docker compose`: steps 1-7 are the
+`release.deliver` path, and steps 8-9 (T4.1.4b) are `env.provision#up`/
+`#down` reached directly — a gated no-image `up` and a gated `down` refused
+against a real reported state, each then proceeding on an operator
+confirmation. The `env.provision`-only cases above, including a service that
+is `starting`, `unhealthy`, `exited` or `restarting` rather than cleanly up,
+are exercised directly against a fake provider in
+`src/policy/deploy-gate.test.ts` (`gateProvisionRelease`) and against the
+real `composeProvider` in `src/env/compose-provider.test.ts`.
 
 ## Failing closed
 

@@ -153,7 +153,7 @@ const DRY_RUN_PARAM = '__no_dry_run_field__';
  * already done ("deliver this through `release.deliver` instead").
  */
 function isDigestShaped(image: string): boolean {
-  return /^sha256:[0-9a-f]+$/i.test(image);
+  return /^sha256:[0-9a-f]{64}$/.test(image);
 }
 
 /**

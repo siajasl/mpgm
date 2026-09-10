@@ -47,6 +47,17 @@ function ledger(seen = new Set<string>(), confirmed = new Set<string>()): Deploy
 }
 
 /**
+ * A stand-in digest actually shaped like one — exactly 64 lowercase hex
+ * characters, what `docker build --iidfile` writes (`isDigestShaped`,
+ * `../policy/deploy-gate.ts`) — mirroring `deploy-gate.test.ts`'s own
+ * `DIGEST_A` (T4.1.4b review 7): `'sha256:aaa'` no longer passes that check
+ * now that it is exact-length, so a test below that means to exercise a
+ * gated call's own behaviour, not the shape check itself, needs a value the
+ * check actually accepts.
+ */
+const DIGEST_A = `sha256:${'a'.repeat(64)}`;
+
+/**
  * `Provider`'s handlers are looked up by name (`noUncheckedIndexedAccess`), so
  * a test calling `provider.up(...)` gets a value TypeScript cannot promise is
  * there. Asserting it non-null would just be trusting the same thing this
@@ -531,14 +542,14 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
     });
 
     await expect(
-      operation(provider, 'up')({ repo, env: 'staging', image: 'sha256:aaa' } as never),
+      operation(provider, 'up')({ repo, env: 'staging', image: DIGEST_A } as never),
     ).rejects.toThrow(DeployGateError);
     expect(calls).toHaveLength(0);
   });
 
   it('lets up carrying an image through once the identical {repo, env, digest} fingerprint release.deliver would compute is confirmed', async () => {
     const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
-    const print = deployFingerprint({ repo, env: 'staging', digest: 'sha256:aaa' });
+    const print = deployFingerprint({ repo, env: 'staging', digest: DIGEST_A });
     const provider = composeProvider({
       cli,
       gate: {
@@ -547,12 +558,33 @@ describe('composeProvider — the environment-path gate (T4.1.4b)', () => {
       },
     });
 
-    await operation(
-      provider,
-      'up',
-    )({ repo, env: 'staging', image: 'sha256:aaa' } as never);
+    await operation(provider, 'up')({ repo, env: 'staging', image: DIGEST_A } as never);
 
     expect(calls).toHaveLength(2);
+  });
+
+  /**
+   * T4.1.4b review 7: `isDigestShaped` requires exactly 64 lowercase hex
+   * characters, not merely a `sha256:` prefix followed by *some* hex — a
+   * truncated value is a valid (if short) Docker image id, and which image
+   * it resolves to depends on what exists on the host when the call finally
+   * runs, so a confirmation keyed on it is a confirmation over a mutable
+   * name, the exact failure mode `isDigestShaped` exists to refuse (CONV-4).
+   */
+  it('refuses a truncated (but validly-hex) digest on a gated environment', async () => {
+    const { cli, calls } = scriptedCli([ok(), ok(oneHealthyRow)]);
+    const provider = composeProvider({
+      cli,
+      gate: { gatedEnvs: () => new Set(['staging']), ledger: ledger() },
+    });
+
+    await expect(
+      operation(
+        provider,
+        'up',
+      )({ repo, env: 'staging', image: 'sha256:e8983ff7edad' } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toHaveLength(0);
   });
 
   /**

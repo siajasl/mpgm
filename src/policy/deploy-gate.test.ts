@@ -55,6 +55,17 @@ const PRODUCTION_GATED: (repo: string) => ReadonlySet<string> = fixedGate(
   new Set(['production']),
 );
 
+/**
+ * A stand-in digest actually shaped like one — exactly 64 lowercase hex
+ * characters, what `docker build --iidfile` writes (`isDigestShaped`,
+ * `./deploy-gate.ts`) — for tests below that exercise a gated call's own
+ * behaviour rather than the shape check itself (T4.1.4b review 7). `'aaa'`
+ * alone no longer passes that check now that it is exact-length, and a test
+ * using it where the value is meant to be *some* digest, not *the* shape
+ * under test, would fail for the wrong reason.
+ */
+const DIGEST_A = `sha256:${'a'.repeat(64)}`;
+
 /** A ledger over in-memory sets, mirroring `stateLedger`'s shape. */
 function ledger(seen = new Set<string>(), confirmed = new Set<string>()): DeployLedger {
   return {
@@ -71,11 +82,15 @@ function ledger(seen = new Set<string>(), confirmed = new Set<string>()): Deploy
  * without a `digest` override ever reached the behaviour it means to
  * exercise. Hex-encoding `version` keeps the old property tests below rely
  * on — a distinct `digest` for a distinct `version` — without hand-picking
- * one per call site.
+ * one per call site; padding to exactly 64 hex characters (rather than
+ * whatever length `version`'s own UTF-8 encoding happens to be) keeps that
+ * default passing `isDigestShaped`'s exact-length check too, now that it is
+ * exact (T4.1.4b review 7, CONV-4) — a short `version` no longer produces a
+ * default `digest` this suite's own subject would refuse.
  */
 function release(
   version: string,
-  digest = `sha256:${Buffer.from(version, 'utf8').toString('hex')}`,
+  digest = `sha256:${Buffer.from(version, 'utf8').toString('hex').padEnd(64, '0')}`,
 ): ReleaseArtifact {
   return { version, image: 'sample:latest', digest, changelog: 'x', rollbackTo: null };
 }
@@ -591,7 +606,7 @@ describe('gateProvisionRelease — up', () => {
     });
 
     await expect(
-      gated.up({ repo: 'r', env: 'production', image: 'sha256:aaa' } as never),
+      gated.up({ repo: 'r', env: 'production', image: DIGEST_A } as never),
     ).rejects.toThrow(DeployGateError);
     expect(calls).toEqual([]);
   });
@@ -601,14 +616,14 @@ describe('gateProvisionRelease — up', () => {
     const print = deployFingerprint({
       repo: 'r',
       env: 'production',
-      digest: 'sha256:aaa',
+      digest: DIGEST_A,
     });
     const gated = provisionGate(provider, {
       gatedEnvs: PRODUCTION_GATED,
       ledger: ledger(new Set([print]), new Set([print])),
     });
 
-    await gated.up({ repo: 'r', env: 'production', image: 'sha256:aaa' } as never);
+    await gated.up({ repo: 'r', env: 'production', image: DIGEST_A } as never);
     expect(calls).toHaveLength(1);
   });
 
@@ -621,6 +636,34 @@ describe('gateProvisionRelease — up', () => {
 
     await gated.up({ repo: 'r', env: 'staging', image: 'sha256:aaa' } as never);
     expect(calls).toHaveLength(1);
+  });
+
+  /**
+   * T4.1.4b review 7: `isDigestShaped` (`./deploy-gate.ts`) requires exactly
+   * 64 lowercase hex characters — the length and case `docker build
+   * --iidfile` actually writes — not merely a `sha256:` prefix followed by
+   * *some* hex. A shorter hex string is a live, mutable reference: it is a
+   * valid (truncated) Docker image id, and which image it resolves to
+   * depends on what exists on the host when the call finally runs, so a
+   * confirmation keyed on it is the same confirmation-over-a-mutable-name
+   * this check exists to refuse (CONV-4). This is the case the prior,
+   * length-unbounded regex let through.
+   */
+  it('refuses a truncated (but validly-hex) digest on a gated environment', async () => {
+    const { provider, calls } = fakeEnvProvider();
+    const gated = provisionGate(provider, {
+      gatedEnvs: PRODUCTION_GATED,
+      ledger: ledger(),
+    });
+
+    await expect(
+      gated.up({
+        repo: 'r',
+        env: 'production',
+        image: 'sha256:e8983ff7edad',
+      } as never),
+    ).rejects.toThrow(/not shaped like a digest/);
+    expect(calls).toEqual([]);
   });
 
   /**
