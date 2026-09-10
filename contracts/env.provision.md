@@ -229,18 +229,30 @@ against says this directly — "this confirmation covers only this exact
 reported state" — rather than leaving it to be inferred from reading this
 module (CONV-3).
 
-One state is a declared exception to that per-state guarantee, not an
-oversight: an environment reporting no services at all folds to the single
-identity `'none'`, so a confirmation of a first bring-up found there is good
-for any later no-image `up` this environment is found in the same empty
-state for — after a later confirmed teardown, or after the containers are
-removed by something outside this gate entirely — with no fresh approval.
-This mirrors DESIGN §9 decision 11's own reasoning on the release path: a
-digest naming one already-approved state may be re-approved for free, and
-"nothing running" is one such state, not a different one each time it
-recurs. The no-image `up` refusal says so directly whenever `status` reports
-nothing, rather than leaving an operator to infer it from `servingIdentity`'s
-source.
+One state cannot be told apart from itself the way every other state can: an
+environment reporting no services at all folds to the single identity
+`'none'`, so a later empty sighting computes the identical fingerprint a
+first bring-up did, rather than a fresh one the way a new `containerId`
+gives every other reported state. An earlier version of this gate accepted
+the consequence rather than closing it — a confirmation of a first bring-up
+was good for any later no-image `up` this environment was found empty for,
+including one after a later confirmed teardown, or after the containers were
+removed by something outside this gate entirely — reasoning by analogy from
+DESIGN §9 decision 11's digest reuse on the release path. That analogy did
+not hold: a digest names a build an operator actually inspected once, and
+cannot later be made to mean a different one; "nothing running" names no
+build at all, and every later empty sighting is a materially new question —
+is it safe to (re)create *now* — that merely renders identically to the
+last one. T4.1.4c withdrew that acceptance (DESIGN §9 decision 14) and
+closed it instead: this identity's confirmation is single-use, spent by
+`assertReady` the moment it lets a call proceed on it — not on that call's
+return, which would leave a window for a crash, a thrown effect, or a racing
+second call to find the confirmation still looking unspent — so a later
+no-image `up` (or, symmetrically, a `down`) found against the same empty
+state is refused again, pending a fresh confirmation, whatever fingerprint
+it computes. The no-image `up`/`down` refusal says this directly whenever
+`status` reports nothing, rather than leaving an operator to infer it from
+`servingIdentity`'s source.
 
 This is deliberately not the same question `up` in the output answers.
 `envStatusOutput.up` (`environmentUp`) fails closed for a service still

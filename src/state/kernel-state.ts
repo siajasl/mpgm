@@ -62,6 +62,18 @@ export interface DestructiveCallState {
   readonly taskId: string;
   readonly dryRun: boolean;
   readonly confirmedBy: string | null;
+  /**
+   * Sequence number of the `DestructiveOpConfirmed` event that set
+   * `confirmedBy`, or null alongside it before one has arrived (T4.1.4c).
+   *
+   * What a single-use fingerprint's ledger answer needs and `confirmedBy`
+   * alone cannot give it: whether *this* confirmation is more recent than
+   * the last `DeployConfirmationSpent` recorded for the same fingerprint
+   * (`KernelState.spentConfirmations`), which a boolean cannot express and a
+   * plain "has this ever been confirmed" answers wrongly for a fingerprint
+   * that was confirmed, spent, and never confirmed again.
+   */
+  readonly confirmedSeq: number | null;
 }
 
 /** Where a task's change ended up (IMP-1). */
@@ -190,8 +202,24 @@ export interface KernelState {
   /** Sequence number of the last event folded in. 0 for the empty state. */
   readonly lastSeq: number;
   readonly runs: Readonly<Record<string, RunState>>;
+  /**
+   * Fingerprint → sequence number of the last `DeployConfirmationSpent`
+   * recorded for it (T4.1.4c, HIL-2, DEP-2, DESIGN §9 decision 14).
+   *
+   * Kept outside any one `RunState` rather than folded into
+   * `destructiveCalls` there, on purpose: a single-use fingerprint's
+   * confirmation is spent by whichever run's call actually proceeds on it,
+   * which — the same as the confirmation itself (`crossRunLedger`) — is
+   * never guaranteed to be the run that recorded the original dry run or
+   * confirmation. Scoping "spent" to one run's table would let a spend
+   * recorded in run B leave run A's own record looking untouched, and a
+   * ledger that read only one run's record would answer "still confirmed"
+   * from the wrong place. This table is global for the same reason
+   * `crossRunLedger` reads every run rather than one.
+   */
+  readonly spentConfirmations: Readonly<Record<string, number>>;
 }
 
-export const emptyState: KernelState = { lastSeq: 0, runs: {} };
+export const emptyState: KernelState = { lastSeq: 0, runs: {}, spentConfirmations: {} };
 
 export const zeroUsage: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };

@@ -463,6 +463,52 @@ export const destructiveOpConfirmed = defineEvent(
   }),
 );
 
+/**
+ * A single-use confirmation was spent by the call it authorised (T4.1.4c,
+ * HIL-2, DEP-2, DESIGN §9 decision 14).
+ *
+ * `env.provision#up` (no `image`) and `#down`, gated against a `{repo, env}`
+ * `status` reports no service running in at all, fold to the single fixed
+ * identity `servingIdentity([])` (`'none'`, via `recreateOnDefaultDigest`/
+ * `teardownDigest`, `policy/deploy-gate.ts`) — an environment reporting
+ * nothing is one recurring state, not a fresh one each time it recurs, so it
+ * cannot be told apart from itself by folding more of `status` into the
+ * fingerprint the way every other reported state already is. Left as an
+ * ordinary confirmation, one operator approval of a first bring-up would
+ * silently authorise every later no-image `up` this environment is later
+ * found empty for — after a confirmed teardown, or after whatever was
+ * running is removed by something outside this gate entirely — with no
+ * fresh approval, however different the intervening history. This event
+ * closes that without minting a new identity per empty sighting (which
+ * would just be the timestamp `RECREATE_ON_DEFAULT_DIGEST`/
+ * `TEARDOWN_ENV_DIGEST` were deliberately kept clear of, DESIGN §9 decision
+ * 14): the fingerprint stays the single recurring identity, and this event
+ * records that *this* confirmation of it has now been used, so the ledger
+ * that answers "is this call confirmed" stops saying yes for it until a
+ * fresh `DestructiveOpConfirmed` for the same fingerprint arrives.
+ *
+ * `taskId` is {@link KERNEL_TASK} for the same reason `DryRunRecorded`'s and
+ * `DestructiveOpConfirmed`'s are: `env.provision`'s gated calls are made by
+ * the kernel itself, not by a task's tool call.
+ *
+ * Deliberately narrower than "every confirmation is single-use": a `{repo,
+ * env, digest}` confirmation on the release path is a digest naming one
+ * already-approved build, and DESIGN §9 decision 11 already lets `rollback`
+ * reuse a `deliver` confirmed in an earlier run for exactly that reason — an
+ * automatic rollback (DEP-2) firing in a run other than the one that
+ * delivered depends on that confirmation still being there to find. Nothing
+ * in this module spends one of those; only the two fixed empty-state
+ * identities above ever do.
+ */
+export const deployConfirmationSpent = defineEvent(
+  'DeployConfirmationSpent',
+  z.object({
+    taskId: nonEmpty,
+    tool: nonEmpty,
+    fingerprint: nonEmpty,
+  }),
+);
+
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
   z.object({ action: nonEmpty, detail: z.string().default('') }),
@@ -474,6 +520,7 @@ export const kernelEvents = [
   changeMerged,
   changeReviewed,
   checksReported,
+  deployConfirmationSpent,
   destructiveOpConfirmed,
   dryRunRecorded,
   effectCompleted,

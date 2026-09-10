@@ -217,6 +217,28 @@ export interface DeployTarget {
    * parenthetical, reading as broken English rather than a second claim.
    */
   readonly caveat?: string;
+  /**
+   * True only for {@link recreateOnDefaultDigest}'s and {@link teardownDigest}'s
+   * fixed `services.length === 0` identity — `servingIdentity([])`'s constant
+   * `'none'` (T4.1.4c, HIL-2, DEP-2, DESIGN §9 decision 14).
+   *
+   * Every other target's fingerprint already changes with what it approves
+   * — a new digest for a new build, a new `containerId` for a replacement
+   * container — so reusing an old confirmation for a new call of either
+   * simply is not possible: the new call computes a different fingerprint
+   * and finds no confirmation at all. An environment reporting nothing
+   * cannot be told apart from itself that way; every empty sighting folds to
+   * the identical fingerprint forever, which is what let one confirmation of
+   * a first bring-up authorise every later no-image `up` this environment
+   * was later found empty for — after a confirmed teardown, or after
+   * whatever was running was removed by something outside this gate
+   * entirely — with no fresh approval (DESIGN §9 decision 14's fourth
+   * review, withdrawn by this flag). `assertReady` spends a `singleUse`
+   * target's confirmation itself, the moment it lets the call through, so
+   * the identical fingerprint the *next* call computes is unconfirmed again
+   * until an operator gives a fresh one.
+   */
+  readonly singleUse?: boolean;
 }
 
 /**
@@ -277,12 +299,34 @@ export function crossRunLedger(state: () => KernelState): DeployLedger {
 
   return {
     dryRunSeen: (print) => calls(print).some((call) => call.dryRun),
-    confirmed: (print) =>
-      // Both, not either, on some run's record of it — the same rule
-      // `stateLedger` applies within one run: an operator cannot approve
-      // their way past a simulation SAF-4/HIL-2 both require to have
-      // actually happened somewhere.
-      calls(print).some((call) => call.dryRun && call.confirmedBy !== null),
+    confirmed: (print) => {
+      // A single-use fingerprint's last spend (T4.1.4c, `spentConfirmations`
+      // — see `KernelState`'s own doc) outranks every confirmation recorded
+      // before it: a confirmation this gate has already let one call proceed
+      // on is not "still confirmed" for the next identical call, however
+      // many runs' records claim `dryRun && confirmedBy !== null` for it.
+      // `undefined` here means this fingerprint has never been spent at
+      // all — every ordinary, non-single-use confirmation (a `{repo, env,
+      // digest}` `deliver`/`rollback`, decision 11) takes this branch
+      // forever, exactly as before this event existed.
+      const spentSeq = state().spentConfirmations[print];
+      return calls(print).some(
+        (call) =>
+          // Both, not either, on some run's record of it — the same rule
+          // `stateLedger` applies within one run: an operator cannot approve
+          // their way past a simulation SAF-4/HIL-2 both require to have
+          // actually happened somewhere.
+          call.dryRun &&
+          call.confirmedBy !== null &&
+          // A confirmation recorded *after* the last spend is a fresh one —
+          // an operator confirming this fingerprint again, once it is asked
+          // for again, is exactly what un-spends it. `confirmedSeq` is only
+          // null when `confirmedBy` is (defensive; the `&&` above already
+          // excludes that case), so the fallback below is never actually
+          // reached on this branch.
+          (spentSeq === undefined || (call.confirmedSeq ?? -1) > spentSeq),
+      );
+    },
   };
 }
 
@@ -297,6 +341,17 @@ export interface ConfirmationNeeded {
   readonly fingerprint: string;
   readonly target: DeployTarget;
   readonly reason: string;
+}
+
+/**
+ * A {@link DeployTarget.singleUse} confirmation was just spent by the call it
+ * authorised (T4.1.4c). See {@link DeployGateOptions.onConfirmationSpent} for
+ * when this fires relative to that call, and why.
+ */
+export interface ConfirmationSpent {
+  readonly tool: string;
+  readonly fingerprint: string;
+  readonly target: DeployTarget;
 }
 
 export interface DeployGateOptions {
@@ -345,6 +400,24 @@ export interface DeployGateOptions {
   readonly onDryRunNeeded?: (record: DryRunNeeded) => void;
   /** A call was refused for want of a confirmation, after a dry run. */
   readonly onConfirmationNeeded?: (record: ConfirmationNeeded) => void;
+  /**
+   * A {@link DeployTarget.singleUse} target's confirmation was just spent by
+   * the call it authorised — fired by `assertReady` for every `singleUse`
+   * target that passes the gate, never for an ordinary one (T4.1.4c).
+   *
+   * Fired the moment the gate itself decides the call may proceed, before
+   * that call is actually made — see `assertReady`'s own doc for why
+   * spending on entry, not on the call's return, is the fail-closed choice.
+   * Like `onDryRunNeeded`/`onConfirmationNeeded`, the gate performs no side
+   * effect and records nothing itself; a caller that wants the spend to
+   * actually stick wires this to record a `DeployConfirmationSpent` event. A
+   * caller that does not wire it is choosing to let this exact confirmation
+   * go on authorising every later call found against the same recurring
+   * state — the DESIGN §9 decision 14 gap this event exists to close stays
+   * open for a caller that never wires it, the same as an unwired
+   * `onDryRunNeeded` leaves a fingerprint permanently unconfirmable.
+   */
+  readonly onConfirmationSpent?: (record: ConfirmationSpent) => void;
 }
 
 /**
@@ -393,20 +466,28 @@ function describeServices(services: readonly ServiceStatus[]): string {
  * general, and an operator confirming it is told so directly rather than
  * left to infer it by reading this module.
  *
- * For `services.length === 0` specifically, this states the residual
- * T4.1.4b review 4 found rather than closing it (that review's second
- * finding): {@link servingIdentity}`([])` is the fixed string `'none'`, so
- * every empty state is the same identity — a confirmation of a first
- * bring-up found against no services at all is therefore good for any later
- * no-image `up` this environment is found in the same empty state for,
- * including one after a later confirmed teardown, or after the containers
- * are removed by something outside this gate entirely. That is deliberately
- * not closed by minting a fresh identity per empty moment (a timestamp,
- * say): decision 11's own reasoning already accepts reusing a confirmation
- * of an already-approved *state* for free, and "nothing running" is one
- * such state, not a different one each time it recurs — see DESIGN §9
- * decision 14 and `contracts/env.provision.md` for the residual stated in
- * full.
+ * For `services.length === 0` specifically, this now states T4.1.4c's fix
+ * rather than the gap T4.1.4b review 4 found and left open: {@link
+ * servingIdentity}`([])` is the fixed string `'none'`, so every empty state
+ * is the same identity, and a confirmation of it cannot be told apart from
+ * a confirmation of any other empty sighting the way every other target's
+ * confirmation can — a new digest, or a new `containerId`, computes a
+ * different fingerprint on its own. DESIGN §9 decision 14's fourth review
+ * accepted the consequence rather than closing it: a confirmation of a
+ * first bring-up would stand good for any later no-image `up` this
+ * environment was later found empty for, including one after a later
+ * confirmed teardown, or after the containers were removed by something
+ * outside this gate entirely — reasoning by analogy from decision 11's
+ * digest reuse, that "nothing running" is one already-approved state, not a
+ * different one each time it recurs. That analogy does not hold: decision
+ * 11's digest names a build an operator inspected once and which cannot
+ * change meaning underneath the confirmation; "nothing running" names no
+ * build at all, and every later empty sighting is a materially new question
+ * — is it safe to (re)create *now* — that happens to render identically.
+ * T4.1.4c withdraws the acceptance (DESIGN §9 decision 14, this module's own
+ * doc) and closes it instead: `DeployTarget.singleUse`, set for exactly this
+ * identity, makes `assertReady` spend the confirmation the moment it lets
+ * the call through, so the next identical call finds it unconfirmed again.
  */
 function stateBoundCaveat(env: string, services: readonly ServiceStatus[]): string {
   const base =
@@ -418,9 +499,10 @@ function stateBoundCaveat(env: string, services: readonly ServiceStatus[]): stri
   }
   return (
     `${base} An environment reporting nothing is a single recurring ` +
-    `identity, not a fresh one each time it recurs, so this same ` +
-    `confirmation also covers any later call found against the same empty ` +
-    `state, until '${env}' reports something.`
+    `identity, not a fresh one each time it recurs, so this confirmation is ` +
+    `spent by this exact call the moment it proceeds: a later call found ` +
+    `against the same empty state is refused again, pending a fresh ` +
+    `confirmation, even though its fingerprint is identical to this one's.`
   );
 }
 
@@ -428,6 +510,27 @@ function stateBoundCaveat(env: string, services: readonly ServiceStatus[]): stri
  * Refuses `target` unless it has been recorded and confirmed. Fails closed
  * (CONV-4): an unrecognised or absent ledger answer refuses the call, never
  * allows it.
+ *
+ * **`target.singleUse` is spent here, on the call being let through — not
+ * on that call's return, and that choice is itself part of what keeps this
+ * fail closed (T4.1.4c).** The alternative — waiting for the wrapped
+ * `up`/`down` to resolve before recording the spend — leaves a window
+ * between "the gate said yes" and "the spend is recorded" during which the
+ * kernel could crash, the call could throw partway through an effect
+ * already begun, or a second identical call could race this one through the
+ * same still-unspent check; any of those would leave the confirmation
+ * looking unspent to whatever resumes or retries next, which is exactly the
+ * standing-authorisation failure this event exists to close, just moved
+ * from "the fingerprint never changes" to "the spend never lands". Spending
+ * synchronously, before the wrapped call is ever invoked, means the
+ * confirmation is gone the instant this gate commits to letting the call
+ * through, whatever happens to the call itself afterwards — a crash
+ * mid-effect costs a fresh confirmation on resume rather than a second,
+ * unapproved attempt at the same effect, which is DESIGN §5's
+ * intent-before-effect idiom applied to the approval itself rather than to
+ * the deploy it guards: ambiguity about whether the first attempt landed is
+ * resolved by asking again, never by assuming it is still fine to go once
+ * more on the same say-so (CONV-4).
  */
 function assertReady(target: DeployTarget, options: DeployGateOptions): void {
   const print = deployFingerprint(target);
@@ -477,6 +580,13 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
         `run this call's dry run was recorded under — 'run-1' only if that ` +
         `is where it actually ran>`,
     );
+  }
+
+  // Both checks above passed: this call is authorised to proceed. Spent
+  // here, before the caller's wrapped `up`/`down` is ever invoked — see this
+  // function's own doc for why entry, not return, is the fail-closed choice.
+  if (target.singleUse === true) {
+    options.onConfirmationSpent?.({ tool: DEPLOY_TOOL, fingerprint: print, target });
   }
 }
 
@@ -718,6 +828,14 @@ export function teardownDigest(services: readonly ServiceStatus[]): string {
  *   latter would let one first-bring-up confirmation authorise recreating
  *   over whatever this environment serves in every later run, exactly the
  *   standing-authorisation failure mode the same review found in `down`.
+ *   Folding in `status` closes that for every reported state except one:
+ *   `servingIdentity([])` is the fixed string `'none'`, so an environment
+ *   reporting nothing cannot be told apart from itself the way any other
+ *   state can — a later review (DESIGN §9 decision 14's fourth) found this,
+ *   and accepted it rather than closing it; T4.1.4c withdrew that acceptance
+ *   and closed it instead, by spending this one confirmation the moment it
+ *   lets a call through ({@link DeployTarget.singleUse}, `assertReady`),
+ *   rather than by trying to fold anything further into the fingerprint.
  * - **`down`.** `status` decides whether there is anything here to protect
  *   in the first place — tearing down infrastructure nothing is serving
  *   genuinely changes nothing, so a `down` against an environment `status`
@@ -880,6 +998,15 @@ export function gateProvisionRelease(
           synthetic: true,
           label: `recreate on the compose default — currently: ${current.summary}`,
           caveat: stateBoundCaveat(parsed.env, current.services),
+          // The one live way this gate ever reaches `singleUse` (T4.1.4c):
+          // `recreateOnDefaultDigest([])` is the fixed `'none'` identity
+          // every empty sighting shares, so a confirmation of it is spent by
+          // this call the moment it proceeds — see `DeployTarget.singleUse`.
+          // Any other reported state already changes `recreateOnDefaultDigest`
+          // itself (a different `containerId`), so `singleUse` is false —
+          // there is nothing to spend that a fresh fingerprint would not
+          // already require on its own.
+          singleUse: current.services.length === 0,
         },
         options,
       );
@@ -906,6 +1033,19 @@ export function gateProvisionRelease(
                 synthetic: true,
                 label: `torn down — currently: ${current.summary}`,
                 caveat: stateBoundCaveat(parsed.env, current.services),
+                // Named for the same reason the `up` branch above names it,
+                // even though `current.anything` above already refuses this
+                // call ever reaching here with `current.services.length ===
+                // 0` — a `down` finding nothing to protect proceeds
+                // untouched a few lines up, never through `assertReady`, so
+                // there is no confirmation of "torn down, nothing there" for
+                // this flag to ever actually spend (T4.1.4c; that bypass is
+                // T4.1.4b's own decision, unchanged here). Left explicit
+                // rather than omitted so the rule this module applies is one
+                // rule — "the empty-state identity is single-use, whichever
+                // operation reaches it" — not an `up`-only special case a
+                // reader has to notice `down` was quietly exempted from.
+                singleUse: current.services.length === 0,
               },
               options,
             );

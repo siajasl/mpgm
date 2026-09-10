@@ -96,7 +96,7 @@ describe('Projector', () => {
         seq: 10,
         ts: '2026-01-01T00:00:00.000Z',
         reducerVersion: REDUCER_VERSION + 1,
-        state: { lastSeq: 10, runs: {} },
+        state: { lastSeq: 10, runs: {}, spentConfirmations: {} },
       });
 
       expect(projector.project()).toStrictEqual(projector.rebuild());
@@ -108,7 +108,11 @@ describe('Projector', () => {
   it('projects an empty log to the empty state', () => {
     const { db, projector } = harness(5);
     try {
-      expect(projector.project()).toStrictEqual({ lastSeq: 0, runs: {} });
+      expect(projector.project()).toStrictEqual({
+        lastSeq: 0,
+        runs: {},
+        spentConfirmations: {},
+      });
     } finally {
       db.close();
     }

@@ -215,6 +215,7 @@ describe('runDetailPage', () => {
             taskId: '<b>T1</b>',
             dryRun: false,
             confirmedBy: '"><i>op</i>',
+            confirmedSeq: 1,
           },
         ],
       }),
