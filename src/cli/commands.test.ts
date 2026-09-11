@@ -50,7 +50,17 @@ function newContext(root: string, writes: string[]): CliContext {
   };
 }
 
-/** A fake `env.provision` reporting whatever `up`/`services` a test wants. */
+/**
+ * A fake `env.provision` reporting whatever `up`/`services` a test wants.
+ *
+ * `onUp`, when given, runs synchronously at the moment `up` is *called* —
+ * before it resolves, and before `rollback` can have done anything in
+ * response to the outcome. A test that wants to prove `ReleaseRollbackStarted`
+ * exists *before* the provider is invoked (not merely before `rollback`
+ * returns) reads the log from inside this callback: reading it only after
+ * `rollback` settles cannot tell "recorded before the call" from "recorded
+ * once the outcome was known", since by then both are already true.
+ */
 function fakeEnvProvision(
   up: boolean,
   services: readonly {
@@ -59,10 +69,14 @@ function fakeEnvProvision(
     health?: string;
     containerId?: string;
   }[] = [],
+  onUp?: () => void,
 ) {
   const registry = new CapabilityRegistry();
   return registry.bind(envProvisionContract, {
-    up: () => Promise.resolve({ env: 'x', up, services }),
+    up: () => {
+      onUp?.();
+      return Promise.resolve({ env: 'x', up, services });
+    },
     down: () => Promise.resolve({ env: 'x', up: false, services: [] }),
     status: () => Promise.resolve({ env: 'x', up: false, services: [] }),
   });
@@ -75,11 +89,17 @@ function fakeEnvProvision(
  * recreated on the restored digest, never before. Exercises the same "the
  * gate let this through, then the call itself failed" path without a real
  * Docker daemon.
+ *
+ * `onUp` runs synchronously at the moment `up` is called, before the
+ * rejection — see `fakeEnvProvision` above for why that timing is the point.
  */
-function fakeEnvProvisionRejecting(error: Error) {
+function fakeEnvProvisionRejecting(error: Error, onUp?: () => void) {
   const registry = new CapabilityRegistry();
   return registry.bind(envProvisionContract, {
-    up: () => Promise.reject(error),
+    up: () => {
+      onUp?.();
+      return Promise.reject(error);
+    },
     down: () => Promise.resolve({ env: 'x', up: false, services: [] }),
     status: () => Promise.resolve({ env: 'x', up: false, services: [] }),
   });
@@ -159,6 +179,13 @@ describe('rollback', () => {
     const repo = declaredRepo('test', 'none');
     const writes: string[] = [];
     const to = artifact();
+    // Captured *inside* the provider's `up`, at the moment it is called —
+    // not after `rollback` returns, when both "recorded before the call"
+    // and "recorded only once the outcome is known" would already look the
+    // same (T4.1.5). A version of `rollback` that appended
+    // `ReleaseRollbackStarted` only after `release.invoke` settled would
+    // leave this `[]`.
+    let startedWhenProviderRan: readonly unknown[] | undefined;
 
     const result = await rollback(
       newContext(root, writes),
@@ -169,9 +196,13 @@ describe('rollback', () => {
       'macg',
       'restoring the last known-good build',
       {
-        envProvision: fakeEnvProvision(true, [
-          { name: 'svc', state: 'running', health: 'healthy', containerId: 'c1' },
-        ]),
+        envProvision: fakeEnvProvision(
+          true,
+          [{ name: 'svc', state: 'running', health: 'healthy', containerId: 'c1' }],
+          () => {
+            startedWhenProviderRan = releaseRollbackStartedEvents(root);
+          },
+        ),
       },
     );
 
@@ -180,10 +211,12 @@ describe('rollback', () => {
 
     // The durable "reached the environment" record exists before the
     // provider is called (T4.1.5, DESIGN §6), not only once the outcome is
-    // known.
-    expect(releaseRollbackStartedEvents(root)).toEqual([
+    // known — proved by reading it from inside the provider itself, above.
+    const expectedStarted = [
       { repo, env: 'test', to: { version: to.version, digest: to.digest }, by: 'macg' },
-    ]);
+    ];
+    expect(startedWhenProviderRan).toEqual(expectedStarted);
+    expect(releaseRollbackStartedEvents(root)).toEqual(expectedStarted);
     const recorded = releaseRolledBackEvents(root);
     expect(recorded).toEqual([
       {
@@ -250,6 +283,10 @@ describe('rollback', () => {
     const failure = new Error(
       "'docker compose up' for 'test' did not become healthy: some stderr",
     );
+    // See the ungated success test above: captured inside the provider,
+    // before it rejects, so this proves the record predates the call rather
+    // than merely predating `rollback`'s return.
+    let startedWhenProviderRan: readonly unknown[] | undefined;
 
     const result = await rollback(
       newContext(root, writes),
@@ -259,7 +296,11 @@ describe('rollback', () => {
       to,
       'macg',
       'restoring the last known-good build',
-      { envProvision: fakeEnvProvisionRejecting(failure) },
+      {
+        envProvision: fakeEnvProvisionRejecting(failure, () => {
+          startedWhenProviderRan = releaseRollbackStartedEvents(root);
+        }),
+      },
     );
 
     expect(result.ok).toBe(false);
@@ -278,10 +319,14 @@ describe('rollback', () => {
     expect(writes.join('\n')).toContain('ReleaseRolledBack');
 
     // The environment was reached before this failure — the durable record
-    // proves it, not just the classification of what was thrown.
-    expect(releaseRollbackStartedEvents(root)).toEqual([
+    // proves it, not just the classification of what was thrown. Read from
+    // inside the provider, `startedWhenProviderRan` shows the record already
+    // existed *before* the rejection, not merely before `rollback` returned.
+    const expectedStarted = [
       { repo, env: 'test', to: { version: to.version, digest: to.digest }, by: 'macg' },
-    ]);
+    ];
+    expect(startedWhenProviderRan).toEqual(expectedStarted);
+    expect(releaseRollbackStartedEvents(root)).toEqual(expectedStarted);
     const recorded = releaseRolledBackEvents(root);
     expect(recorded).toEqual([
       {
