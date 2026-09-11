@@ -67,6 +67,23 @@ function fakeEnvProvision(
   });
 }
 
+/**
+ * A fake `env.provision` whose `up` rejects, the way `composeProvider#up`
+ * does once `docker compose up -d --wait` exits non-zero
+ * (`../env/compose-provider.ts`) — after the containers have already been
+ * recreated on the restored digest, never before. Exercises the same "the
+ * gate let this through, then the call itself failed" path without a real
+ * Docker daemon.
+ */
+function fakeEnvProvisionRejecting(error: Error) {
+  const registry = new CapabilityRegistry();
+  return registry.bind(envProvisionContract, {
+    up: () => Promise.reject(error),
+    down: () => Promise.resolve({ env: 'x', up: false, services: [] }),
+    status: () => Promise.resolve({ env: 'x', up: false, services: [] }),
+  });
+}
+
 function artifact(overrides: Partial<ReleaseArtifact> = {}): ReleaseArtifact {
   return {
     version: '1.0.0',
@@ -178,6 +195,47 @@ describe('rollback', () => {
         to: { version: to.version, digest: to.digest },
         by: 'macg',
         reason: 'restoring the last known-good build',
+        up: false,
+      },
+    ]);
+  });
+
+  it('records a rollback that threw after the gate let it through, rather than reporting it as refused', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-rollback-'));
+    const repo = declaredRepo('test', 'none');
+    const writes: string[] = [];
+    const to = artifact();
+    const failure = new Error(
+      "'docker compose up' for 'test' did not become healthy: some stderr",
+    );
+
+    const result = await rollback(
+      newContext(root, writes),
+      'r1',
+      'test',
+      repo,
+      to,
+      'macg',
+      'restoring the last known-good build',
+      { envProvision: fakeEnvProvisionRejecting(failure) },
+    );
+
+    expect(result.ok).toBe(false);
+    // Not 'rollback refused' — the provider was actually invoked, and by the
+    // time it threw the containers had already been recreated on the
+    // restored digest (`composeProvider#up` throws only after `docker
+    // compose up -d --wait` runs).
+    expect(result.detail).toBe('rollback failed');
+    expect(writes.join('\n')).toContain('did not become healthy');
+
+    const recorded = releaseRolledBackEvents(root);
+    expect(recorded).toEqual([
+      {
+        repo,
+        env: 'test',
+        to: { version: to.version, digest: to.digest },
+        by: 'macg',
+        reason: `restoring the last known-good build — rollback failed: ${failure.message}`,
         up: false,
       },
     ]);

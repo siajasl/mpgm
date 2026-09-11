@@ -25,6 +25,7 @@ import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
 import {
   crossRunLedger,
+  DeployGateError,
   type ConfirmationSpent,
   type DryRunNeeded,
 } from '../policy/deploy-gate.js';
@@ -670,7 +671,21 @@ export function confirm(
  * is appended once the call actually returns, which is the fact HIL-5 asks
  * for — that an operator intervened, and what happened — distinct from the
  * gate's own dry-run/confirm/spend trail, which exists only when this
- * environment needed one and records the *approval*, not the outcome.
+ * environment needed one and records the *approval*, not the outcome. It is
+ * also appended when the call throws *after* the gate has let it through:
+ * `dockerReleaseProvider#rollback` delegates straight to `env.provision#up`,
+ * and `composeProvider#up` runs `docker compose up -d --wait` before it ever
+ * throws (`../env/compose-provider.ts`) — the containers are already
+ * recreated on the restored digest by the time a non-zero exit is reported,
+ * which is the commonest way a real rollback fails. Only a `DeployGateError`
+ * — thrown by either gate before the wrapped provider is ever invoked, or
+ * the `to`-is-not-a-valid-artifact refusal above, which never reaches a gate
+ * at all — provably had no effect and is reported as a refusal with nothing
+ * recorded; anything else is a rollback that ran and is recorded exactly
+ * like one that returned, `up: false`, with the failure folded into
+ * `reason` (CONV-5: there is no way to construct a "the environment was
+ * touched" fact without the event that says so once the try below can throw
+ * past the gate).
  *
  * `deps.envProvision` is injectable, and only for tests: `rollback` never
  * calls `docker build` (`dockerReleaseProvider#rollback` delegates straight
@@ -766,8 +781,44 @@ export async function rollback(
         to: parsedTo.data,
       });
     } catch (cause) {
-      context.write(cause instanceof Error ? cause.message : String(cause));
-      return { ok: false, detail: 'rollback refused' };
+      const message = cause instanceof Error ? cause.message : String(cause);
+      context.write(message);
+      if (cause instanceof DeployGateError) {
+        // Thrown before the wrapped provider was ever invoked — by the
+        // release-path gate here, or by the env-path gate underneath
+        // (`gateProvisionRelease`'s own `up` check inside `composeProvider`,
+        // reached through the identical `{repo, env, digest}` fingerprint) —
+        // so this call provably had no effect on the environment: a refusal,
+        // not a failed attempt, and nothing to record.
+        return { ok: false, detail: 'rollback refused' };
+      }
+      // Anything else was thrown once the gate let this call through, which
+      // means `env.provision#up` had already begun — `composeProvider#up`
+      // runs `docker compose up -d --wait` and only then throws on a
+      // non-zero exit (`../env/compose-provider.ts`), by which point the
+      // containers are already recreated on the restored digest. HIL-5 asks
+      // for the fact that an operator intervened and what happened, not only
+      // for the fact that the intervention worked, so this is recorded the
+      // same as a rollback that returned `up: false`, with the failure
+      // folded into `reason` — there is no `up` to report from a call that
+      // never returned one.
+      const failedReason =
+        reason === ''
+          ? `rollback failed: ${message}`
+          : `${reason} — rollback failed: ${message}`;
+      log.append({
+        runId,
+        type: 'ReleaseRolledBack',
+        payload: {
+          repo,
+          env,
+          to: { version: parsedTo.data.version, digest: parsedTo.data.digest },
+          by,
+          reason: failedReason,
+          up: false,
+        },
+      });
+      return { ok: false, detail: 'rollback failed' };
     }
 
     log.append({
