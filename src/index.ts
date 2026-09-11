@@ -740,8 +740,10 @@ export type {
   DeployTarget,
   DryRunNeeded,
   ProvisionGateOptions,
+  RollbackTarget,
 } from './policy/deploy-gate.js';
 export {
+  assertRollbackReady,
   crossRunLedger,
   DeployGateError,
   deployFingerprint,

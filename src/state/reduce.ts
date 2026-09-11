@@ -58,7 +58,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 12;
+export const REDUCER_VERSION = 13;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -585,6 +585,21 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       // it back the way `crossRunLedger` reads `destructiveCalls`, so, like
       // `RoleApproved` above, this only has to exist on the log, not in run
       // state.
+      requireRun(state, event.runId, type);
+      return { ...state, lastSeq: seq };
+    }
+
+    case 'ReleaseRollbackStarted': {
+      // Audit log only (HIL-5, T4.1.5, DESIGN §6): the durable "this reached
+      // the environment" fact `ReleaseRolledBack`'s own doc relies on, folded
+      // into no run state, the same as `ReleaseRolledBack` itself above.
+      requireRun(state, event.runId, type);
+      return { ...state, lastSeq: seq };
+    }
+
+    case 'ReleaseRollbackRefused': {
+      // Audit log only (HIL-5, T4.1.5): an attempt is still an attempt, even
+      // refused before the environment was touched.
       requireRun(state, event.runId, type);
       return { ...state, lastSeq: seq };
     }

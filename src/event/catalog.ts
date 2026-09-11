@@ -548,6 +548,63 @@ export const releaseRolledBack = defineEvent(
   }),
 );
 
+/**
+ * `mpgm rollback` is about to call `release.deliver#rollback` against `env`
+ * (T4.1.5, DESIGN §6's intent-before-effect idiom — the same reasoning
+ * {@link effectIntended} applies to a task's own effects, applied here to an
+ * operator-invoked one). Appended *before* that call, once every refusal the
+ * verb can reach in advance has already passed — an undeclared environment,
+ * an absent or unreadable repository, a malformed target release, or a gate
+ * refusal (`policy/deploy-gate.ts`'s `assertRollbackReady`) — so this event
+ * existing is itself proof the environment was about to be touched, however
+ * the process fares afterwards: a crash between this append and the
+ * {@link releaseRolledBack} that would otherwise follow still leaves this in
+ * the log, rather than silence a killed rollback would otherwise leave
+ * behind. Distinct from `ReleaseRolledBack` on purpose — folding this into
+ * that event would mean writing it twice, once with an outcome not yet known
+ * and once with the real one, which `ReleaseRolledBack`'s own doc already
+ * relies on never happening (one event per rollback attempt that reached the
+ * environment).
+ */
+export const releaseRollbackStarted = defineEvent(
+  'ReleaseRollbackStarted',
+  z.object({
+    repo: nonEmpty,
+    env: nonEmpty,
+    to: z.object({ version: nonEmpty, digest: nonEmpty }),
+    by: nonEmpty,
+  }),
+);
+
+/**
+ * `mpgm rollback` was refused before the environment was ever touched
+ * (T4.1.5, HIL-5): an undeclared environment, an absent or unreadable
+ * repository, a malformed target release, or a gate refusal
+ * (`policy/deploy-gate.ts`'s `assertRollbackReady`) — every refusal this
+ * verb can reach ahead of {@link releaseRollbackStarted}.
+ *
+ * HIL-5 requires every operator intervention recorded, and an attempt that
+ * was refused is still an attempt: an operator who ran `mpgm rollback` and
+ * was turned away belongs in the log the same as one whose call went
+ * through, so a reader of the log does not have to take an operator's word
+ * for what was tried. `reason` carries the refusal's own message — the exact
+ * text `mpgm rollback` printed (CONV-3) — rather than a category, because the
+ * detail that would let someone fix the cause (which environment, which
+ * fingerprint, what a `mpgm confirm` would need) lives only in that message.
+ * `env` is still the environment named on the command line even when that
+ * name turned out to be the problem (an undeclared environment, say) — this
+ * is a record of what was asked for, not an assertion that it was valid.
+ */
+export const releaseRollbackRefused = defineEvent(
+  'ReleaseRollbackRefused',
+  z.object({
+    repo: nonEmpty,
+    env: nonEmpty,
+    by: nonEmpty,
+    reason: nonEmpty,
+  }),
+);
+
 /** Every kernel event type currently defined. */
 export const kernelEvents = [
   budgetExceeded,
@@ -571,6 +628,8 @@ export const kernelEvents = [
   phaseReopened,
   planRevised,
   releaseRolledBack,
+  releaseRollbackRefused,
+  releaseRollbackStarted,
   roleApproved,
   runStarted,
   sessionUsage,
