@@ -116,6 +116,20 @@ export async function runCli(
     return value;
   };
 
+  // `--repo` on `rollback` is optional — it falls back to `context.root` —
+  // but an empty value given anyway (`--repo ""`) is not "not given"; it is
+  // a path that would otherwise reach `loadDeclaredEnvironments('')` and,
+  // once past that, the `repo: nonEmpty` event schema, surfacing as an
+  // uncaught `EventValidationError` naming the schema rather than the flag
+  // the operator typed (CONV-3). Caught here, the same way `require` catches
+  // it for flags that have no default at all.
+  const optional = (what: string, value: string | undefined): string | undefined => {
+    if (value === '') {
+      throw new Error(`${String(verb)}: ${what} must not be empty\n\n${USAGE}`);
+    }
+    return value;
+  };
+
   switch (verb) {
     case 'run':
       return run(context, runId, require('a phase name', positional[0]));
@@ -257,7 +271,7 @@ export async function runCli(
         context,
         runId,
         require('an environment name', positional[0]),
-        flags.repo ?? context.root,
+        optional('--repo', flags.repo) ?? context.root,
         {
           version: require('--to-version', flags['to-version']),
           image: require('--to-image', flags['to-image']),

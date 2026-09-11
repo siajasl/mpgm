@@ -560,6 +560,38 @@ try {
       mutuallyExclusive.error?.message,
     );
 
+    // An empty `--repo` is not "omitted" — `flags.repo ?? context.root` would
+    // let `''` straight through to `loadDeclaredEnvironments('')` and then to
+    // the `repo: nonEmpty` event schema, surfacing as an uncaught
+    // `EventValidationError` naming the schema rather than the flag the
+    // operator typed. Refused here, before `rollback` (the function) is ever
+    // reached, the same way `require` refuses an empty `--by` (CONV-3).
+    const emptyRepo = await call([
+      'rollback',
+      'staging',
+      '--repo',
+      '',
+      '--to-version',
+      '1.0.0',
+      '--to-image',
+      'x',
+      '--to-digest',
+      `sha256:${'a'.repeat(64)}`,
+      '--to-changelog',
+      'test',
+      '--to-first-release',
+      '--by',
+      'macg',
+    ]).catch((cause) => ({ result: undefined, output: '', error: cause }));
+    check(
+      'rollback refuses an empty --repo, naming the flag rather than an internal event schema',
+      emptyRepo.result === undefined &&
+        emptyRepo.error?.message.includes('--repo') &&
+        emptyRepo.error?.message.includes('must not be empty') &&
+        !emptyRepo.error?.message.includes('EventValidationError'),
+      emptyRepo.error?.message,
+    );
+
     const rollbackDigest = `sha256:${'c'.repeat(64)}`;
     const rollbackPrint = deployFingerprint({
       repo: projectRoot,
