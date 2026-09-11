@@ -57,7 +57,7 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 | T1.3.3 Context assembler v1: task spec + upstream artifacts + KB digest + egress filter (`egress:` labels enforced) | assembled context snapshot-tested; restricted file excluded (test) | §4.3, CTX-1/2, SAF-6 | Opus 5 |
 | T1.3.4 Interactive mode: `mpgm chat definition` elicitation session; transcript → artifact; structured conclusions | operator dialogue produces Definition artifact | §4.2, DEF-1 | Sonnet 5 |
 | T1.3.5 Gate manager v1: approval packet (options/trade-offs/recommendation), `mpgm approve`, decision events | gate blocks until approval; decision in log | §4.1, HIL-1/4/5 | Opus 5 |
-| T1.3.6 CLI v1: `run, status, pause, resume, kill, redirect, approve, chat, replay` | each verb exercised in an e2e script; `replay` reproduces a run from the log | §4.4, HIL-3, ORC-3 | Sonnet 5 |
+| T1.3.6 CLI v1: `run, status, pause, resume, kill, redirect, approve, chat, replay` | each verb is reachable from the CLI, refuses arguments it cannot honour, and records its event; `replay` reproduces a run from the log. That an intervention *reaches* a running task is T4.2.4's, not this task's — exercising a verb in a script shows the verb exists, which is how `redirect` shipped inert | §4.4, ORC-3 | Sonnet 5 |
 
 **Verification (skeleton complete):** full Definition phase run on a sample project — elicitation chat → analyst agent drafts Definition artifact → gate packet → operator approval → tagged artifact. Then `mpgm replay` reproduces the run from the log.
 
