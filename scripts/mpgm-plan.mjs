@@ -304,10 +304,33 @@ export const MPGM_PLAN = {
               id: 'T4.1.5',
               title: 'The rollback verb',
               completionCriteria: [
-                'An operator can roll back a declared environment from the CLI, ' +
-                  'and the rollback is recorded; for an environment the project ' +
-                  'marks as requiring approval, gated only when the digest was ' +
-                  'never confirmed for that environment.',
+                'An operator can roll back a declared environment from the CLI; ' +
+                  'for an environment the project marks as requiring approval, ' +
+                  'gated only when the digest was never confirmed for that ' +
+                  'environment.',
+                'A rollback that reaches the environment is recorded in the event ' +
+                  'log as having reached it, even when it then fails, and that ' +
+                  'record exists before the provider is called — the way every ' +
+                  'other side effect in this kernel is recorded (EffectIntended, ' +
+                  'src/effect/journal.ts, DESIGN section 6) — so a rollback ' +
+                  'killed mid-call is not lost.',
+                'Two rollbacks that fail with the identical error type, one ' +
+                  'thrown before the environment is touched and one thrown after ' +
+                  'it has been recreated on the restored digest, are recorded ' +
+                  'differently (test).',
+                'Every refusal this verb can reach before the environment is ' +
+                  'touched is enumerated in the change and tested to leave no ' +
+                  'record of a rollback: an environment the manifest does not ' +
+                  'declare, an absent or unreadable repository, a malformed ' +
+                  'target release, and a gate refusal. Each records the refusal ' +
+                  'itself, so an operator who tried is in the log either way ' +
+                  '(HIL-5). The automatic DEP-2 path, which records a ' +
+                  'rollback-failed outcome for every throw, is unchanged.',
+                'A rollback whose provider returns with the environment not up ' +
+                  'is reported to the operator as a failure and exits non-zero.',
+                'The failure message says whether the environment may already be ' +
+                  'serving the restored digest, and what was recorded, alongside ' +
+                  "the provider's own message (CONV-3).",
               ],
               dependsOn: ['T4.1.4b'],
               tracesTo: ['DEP-2', 'HIL-5'],
