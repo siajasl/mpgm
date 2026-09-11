@@ -54,6 +54,7 @@ import {
   openPullRequest,
 } from '../implement/github-checks.js';
 import { implementTask } from '../implement/loop.js';
+import { renderProgress } from '../implement/progress.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
@@ -529,6 +530,13 @@ export async function implement(
       log,
       kb: knowledgeBase(context),
       policy: context.policy ?? DEFAULT_EGRESS_POLICY,
+      // A task runs 20-40 minutes across several sessions and, until now,
+      // printed nothing between dispatch and its final line — the terminal
+      // that started it could not tell an implementing session from a
+      // review, or a stall from one still in progress (OBS-3, NFR-2).
+      onProgress: (event) => {
+        context.write(renderProgress(event));
+      },
       // The kernel publishes; agents cannot (the destructive guard refuses
       // `git push`). Without this the branch is invisible to CI and every
       // required check reports nothing, which blocks rather than merges.

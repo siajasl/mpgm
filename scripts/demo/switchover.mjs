@@ -31,6 +31,7 @@ import {
   projectArtifactSchemas,
   projectOutputSchemas,
   readyTasks,
+  renderProgress,
   RoleRegistry,
   ScriptedProvider,
   scriptedSuccess,
@@ -253,6 +254,10 @@ log.append({
   payload: { project: 'mpgm', operator: 'macg' },
 });
 
+// T4.2.3: progress lines, collected as the run produces them rather than
+// read back afterwards — the whole difference between a terminal that is
+// silent for 20-40 minutes and one that is not.
+const progress = [];
 const result = await implementTask({
   runId: 'switchover',
   task,
@@ -269,6 +274,9 @@ const result = await implementTask({
   policy: DEFAULT_EGRESS_POLICY,
   checks,
   openPullRequest,
+  onProgress: (event) => {
+    progress.push(renderProgress(event));
+  },
 });
 
 check(
@@ -293,6 +301,23 @@ check(
   'the rework was reviewed again, by a task of its own',
   result.rounds?.[0]?.review.reviewTaskId !== result.rounds?.[1]?.review.reviewTaskId,
   `${String(result.rounds?.[0]?.review.reviewTaskId)} then ${String(result.rounds?.[1]?.review.reviewTaskId)}`,
+);
+check(
+  'the terminal was told about each session as it started and finished (T4.2.3)',
+  progress.join('\n') ===
+    [
+      `${task.id} — implement (implementer) starting`,
+      `${task.id} — implement (implementer) finished: completed`,
+      `${task.id} — repair (implementer) starting`,
+      `${task.id} — repair (implementer) finished: completed`,
+      `${task.id}-review — review (code-reviewer) starting`,
+      `${task.id}-review — review (code-reviewer) finished: completed`,
+      `${task.id} — rework (implementer) starting`,
+      `${task.id} — rework (implementer) finished: completed`,
+      `${task.id}-review-2 — review round 2 (code-reviewer) starting`,
+      `${task.id}-review-2 — review round 2 (code-reviewer) finished: completed`,
+    ].join('\n'),
+  progress.join(' | '),
 );
 check(
   'and the reworked commit cleared CI in its own right',
