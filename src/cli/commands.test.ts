@@ -149,6 +149,40 @@ describe('rollback', () => {
     ]);
   });
 
+  it('reports failure, not success, when the restored environment does not come up — but still records it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-rollback-'));
+    const repo = declaredRepo('test', 'none');
+    const writes: string[] = [];
+    const to = artifact();
+
+    const result = await rollback(
+      newContext(root, writes),
+      'r1',
+      'test',
+      repo,
+      to,
+      'macg',
+      'restoring the last known-good build',
+      { envProvision: fakeEnvProvision(false) },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('not up');
+    expect(writes.join('\n')).toContain('NOT up — check the environment');
+
+    const recorded = releaseRolledBackEvents(root);
+    expect(recorded).toEqual([
+      {
+        repo,
+        env: 'test',
+        to: { version: to.version, digest: to.digest },
+        by: 'macg',
+        reason: 'restoring the last known-good build',
+        up: false,
+      },
+    ]);
+  });
+
   it('refuses a gated environment whose digest was never confirmed, and records nothing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-rollback-'));
     const repo = declaredRepo('staging', 'required');

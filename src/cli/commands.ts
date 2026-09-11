@@ -788,7 +788,7 @@ export async function rollback(
         `(${parsedTo.data.digest.slice(0, 12)}) by ${by} — ` +
         (status.up ? 'up' : 'NOT up — check the environment'),
     );
-    return { ok: true, detail: status.up ? 'up' : 'not up' };
+    return { ok: status.up, detail: status.up ? 'up' : 'not up' };
   } finally {
     db.close();
   }
