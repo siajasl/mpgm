@@ -353,7 +353,9 @@ export const MPGM_PLAN = {
           verification:
             'Spend and quality dashboards populated from real self-hosted runs; kernel ' +
             'overhead measured under 10% of run wall-clock; a clean-machine install ' +
-            'reaches a gated Definition artifact within one hour, timed.',
+            'reaches a gated Definition artifact within one hour, timed; a coverage run ' +
+            "over this repository's own history names every commit whose trace " +
+            'claim it could not read, and names none.',
           validatesRisk: null,
           tasks: [
             {
@@ -394,6 +396,44 @@ export const MPGM_PLAN = {
               ],
               dependsOn: [],
               tracesTo: ['HIL-3', 'HIL-5'],
+            },
+            {
+              id: 'T4.2.5',
+              title: 'A trace claim a commit makes is read, or reported unread',
+              completionCriteria: [
+                'The Traces trailer is read as a traces-to-kind link, which is ' +
+                  'what the P1 bootstrap commits spell their claims with and ' +
+                  'what the index does not read today. The set of keys counted ' +
+                  'as verifying is unchanged: Verifies remains the only one, ' +
+                  'so nothing this task adds can raise a coverage figure ' +
+                  '(test).',
+                'A trailer value that is not id-shaped puts no node in the ' +
+                  'graph — it is reported, never indexed; this history carries ' +
+                  'values like DESIGN section 4.1 and PLAN M1.3 verification ' +
+                  'alongside the ids. A value that is id-shaped only once ' +
+                  'trailing punctuation is stripped resolves to that id and ' +
+                  'never becomes a second node beside it (test).',
+                'An unrecognised trailer whose values are id-shaped is ' +
+                  'reported by key and commit, so the next spelling somebody ' +
+                  'invents is visible rather than discarded. One whose values ' +
+                  'are not — Co-Authored-By, Signed-off-by — is not reported, ' +
+                  'and a commit carrying only those produces no output (test).',
+                'The tests stand on a repository the test builds, not on this ' +
+                  "repository's own history: CI checks out at depth one, so a " +
+                  'test that counts commits here finds nothing dropped and ' +
+                  'passes while the defect is live.',
+                'The keys the index reads are written down where a commit ' +
+                  'author looks, not only in the module that reads them. The ' +
+                  'vocabulary was invented around rather than followed because ' +
+                  'nothing outside that module states it.',
+                'The change says which requirements move from untraced to ' +
+                  'traced once these trailers are read. T3.2.1 delivered the ' +
+                  'coverage report and was accepted against an index that ' +
+                  'discarded them, so the report changes under a milestone ' +
+                  'already signed off.',
+              ],
+              dependsOn: [],
+              tracesTo: ['ADR-4', 'TST-2'],
             },
           ],
         },
