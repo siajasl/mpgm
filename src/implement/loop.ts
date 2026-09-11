@@ -20,6 +20,7 @@ import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js
 import { reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview } from './prior-review.js';
 import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
+import type { ProgressReporter, SessionKind } from './progress.js';
 import type { WorktreeManager } from './worktree.js';
 
 /**
@@ -95,6 +96,18 @@ export interface ImplementOptions {
   readonly into?: string;
   /** Remove the worktree once the change has merged. Off while debugging. */
   readonly cleanUp?: boolean;
+  /**
+   * Told each time a session starts and finishes (OBS-3, NFR-2).
+   *
+   * A task runs 20-40 minutes across an implementing session, a bounded
+   * repair loop and a bounded review loop, and printed nothing at all between
+   * dispatch and its final line — an operator watching the terminal could not
+   * tell an implementing session from a review, a rework round from a stall,
+   * or a run that never launched from one in progress. Optional because a
+   * caller with nowhere to print — a test, `replay` — has nothing to lose by
+   * leaving it unset.
+   */
+  readonly onProgress?: ProgressReporter;
 }
 
 /**
@@ -306,6 +319,34 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     );
   }
 
+  // Every session the loop dispatches goes through here, so `onProgress` is
+  // told about all four kinds from one place rather than from four call
+  // sites that could drift apart (OBS-3, NFR-2). Wraps `sessions.runTask`
+  // rather than replacing it: the caller still sees the same `TaskOutcome`.
+  const track = async (
+    kind: SessionKind,
+    round: number,
+    request: Omit<Parameters<typeof options.sessions.runTask>[0], 'runId'>,
+  ) => {
+    options.onProgress?.({
+      phase: 'start',
+      taskId: request.taskId,
+      kind,
+      role: request.role.name,
+      round,
+    });
+    const outcome = await options.sessions.runTask({ runId, ...request });
+    options.onProgress?.({
+      phase: 'finish',
+      taskId: request.taskId,
+      kind,
+      role: request.role.name,
+      round,
+      outcome: outcome.status === 'completed' ? 'completed' : outcome.reason,
+    });
+    return outcome;
+  };
+
   const worktree = await options.worktrees.acquire(task.id);
   // Asked before any session runs, so it is a fact about what the checkout was
   // handed over carrying rather than about anything this run did. A reused
@@ -404,8 +445,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     policy: options.policy,
   });
 
-  const authored = await options.sessions.runTask({
-    runId,
+  const authored = await track('implement', 1, {
     taskId: task.id,
     role: implementerRole,
     prompt: context.prompt,
@@ -500,8 +540,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         options.log.append(event);
       },
       repair: async (request) => {
-        const retry = await options.sessions.runTask({
-          runId,
+        const retry = await track('repair', request.attempt, {
           taskId: task.id,
           role: implementerRole,
           prompt: `${context.prompt}\n\n## The checks failed\n\n${request.feedback}`,
@@ -552,8 +591,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // overwrite the record of the one that asked for it (OBS-1).
     const reviewTaskId =
       round === 1 ? `${task.id}-review` : `${task.id}-review-${String(round)}`;
-    const reviewed = await options.sessions.runTask({
-      runId,
+    const reviewed = await track('review', round, {
       taskId: reviewTaskId,
       role: reviewerRole,
       prompt: reviewPrompt(task, tip, into, round > 1 || inheritedCommits > 0),
@@ -678,8 +716,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // Back to the author, with what the reviewer found. Without this the review
     // is written, recorded and read by nobody, and the next attempt at the task
     // reproduces the defect because a fresh session knows nothing about it.
-    const reworked = await options.sessions.runTask({
-      runId,
+    const reworked = await track('rework', round, {
       taskId: task.id,
       role: implementerRole,
       prompt: declarationRound

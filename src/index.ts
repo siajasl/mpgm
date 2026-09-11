@@ -392,6 +392,14 @@ export type {
   PullRequestRequest,
 } from './implement/loop.js';
 export { implementTask } from './implement/loop.js';
+export type {
+  ProgressReporter,
+  SessionFinished,
+  SessionKind,
+  SessionProgress,
+  SessionStarted,
+} from './implement/progress.js';
+export { renderProgress } from './implement/progress.js';
 export type { Review } from './implement/rework.js';
 export {
   DEFAULT_REVIEW_ATTEMPTS,
