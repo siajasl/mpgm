@@ -216,7 +216,15 @@ describe('rollback', () => {
 
     expect(result.ok).toBe(false);
     expect(result.detail).toBe('not up');
-    expect(writes.join('\n')).toContain('NOT up — check the environment');
+    // CONV-3: the caveat this outcome is most concretely true for — the
+    // provider *returned*, so the environment may already be serving the
+    // restored digest and is merely not reporting healthy — plus what was
+    // recorded, alongside the existing summary.
+    const message = writes.join('\n');
+    expect(message).toContain('NOT up — check the environment');
+    expect(message).toContain('may already be serving the restored digest');
+    expect(message).toContain('ReleaseRollbackStarted');
+    expect(message).toContain('ReleaseRolledBack');
 
     expect(releaseRollbackStartedEvents(root)).toEqual([
       { repo, env: 'test', to: { version: to.version, digest: to.digest }, by: 'macg' },

@@ -914,10 +914,25 @@ export async function rollback(
       },
     });
 
-    context.write(
+    const summary =
       `'${env}' rolled back to ${parsedTo.data.version} ` +
-        `(${parsedTo.data.digest.slice(0, 12)}) by ${by} — ` +
-        (status.up ? 'up' : 'NOT up — check the environment'),
+      `(${parsedTo.data.digest.slice(0, 12)}) by ${by} — `;
+    context.write(
+      status.up
+        ? `${summary}up`
+        : // The provider returned rather than threw, which for
+          // `composeProvider#up` means `docker compose up -d --wait`
+          // completed and `servicesOf` reported back — the containers were
+          // already recreated on the restored digest and are merely not
+          // reporting healthy, not that the rollback never touched the
+          // environment. Told alongside the provider's own summary, not
+          // instead of it (CONV-3): what this outcome means for the
+          // environment, and that it was recorded regardless.
+          `${summary}NOT up — check the environment; it may already be ` +
+            `serving the restored digest but is not reporting healthy. ` +
+            `'ReleaseRollbackStarted' was recorded before the call began ` +
+            `(HIL-5), and a 'ReleaseRolledBack' event recording this ` +
+            `outcome (up: false) has now been appended too.`,
     );
     return { ok: status.up, detail: status.up ? 'up' : 'not up' };
   } finally {
