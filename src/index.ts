@@ -298,7 +298,7 @@ export {
 } from './schemas.js';
 export type { PhaseOutcome, PhaseResult, PhaseRunOptions } from './phase/runner.js';
 export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
-export type { CliContext, CommandResult } from './cli/commands.js';
+export type { CliContext, CommandResult, RollbackDeps } from './cli/commands.js';
 export {
   approve,
   approveRole,
@@ -310,6 +310,7 @@ export {
   intervene,
   reopen,
   replay,
+  rollback,
   run,
   serve,
   status,
@@ -739,8 +740,10 @@ export type {
   DeployTarget,
   DryRunNeeded,
   ProvisionGateOptions,
+  RollbackTarget,
 } from './policy/deploy-gate.js';
 export {
+  assertRollbackReady,
   crossRunLedger,
   DeployGateError,
   deployFingerprint,

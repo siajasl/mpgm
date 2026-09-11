@@ -150,6 +150,38 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'ReleaseRollbackStarted',
+        payload: {
+          repo: '/repo',
+          env: 'staging',
+          to: { version: '1.0.0', digest: `sha256:${'a'.repeat(64)}` },
+          by: 'operator',
+        },
+      },
+      {
+        runId: RUN,
+        type: 'ReleaseRolledBack',
+        payload: {
+          repo: '/repo',
+          env: 'staging',
+          to: { version: '1.0.0', digest: `sha256:${'a'.repeat(64)}` },
+          by: 'operator',
+          reason: 'v2 failed its smoke checks',
+          up: true,
+        },
+      },
+      {
+        runId: RUN,
+        type: 'ReleaseRollbackRefused',
+        payload: {
+          repo: '/repo',
+          env: 'staging',
+          by: 'operator',
+          reason: "'staging' is not declared in this repo's environments manifest",
+        },
+      },
+      {
+        runId: RUN,
         type: 'KnowledgeBaseUpdated',
         payload: {
           taskId: 'T1',

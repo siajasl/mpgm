@@ -6,11 +6,19 @@ import { SessionRunner } from '../agent/runner.js';
 import type { OutputSchemaRegistry } from '../agent/output-registry.js';
 import { ArtifactStore } from '../artifact/store.js';
 import type { ArtifactSchemaRegistry } from '../artifact/schema-registry.js';
+import { CapabilityRegistry, type BoundContract } from '../contract/capability.js';
 import { DEFAULT_EGRESS_POLICY, type EgressPolicy } from '../context/egress.js';
 import { loadKnowledgeBase, type KbDocument } from '../context/knowledge-base.js';
 import { DashboardServer } from '../dashboard/server.js';
 import { openDatabase } from '../database.js';
-import { kernelRegistry } from '../event/catalog.js';
+import {
+  composeProvider,
+  gatedEnvironments,
+  loadDeclaredEnvironments,
+  type EnvironmentEntry,
+} from '../env/compose-provider.js';
+import { envProvisionContract } from '../env/provision.js';
+import { KERNEL_TASK, kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
 import { elicit, type OperatorIo } from '../elicit/session.js';
 import { GateManager, gateOracleFromState } from '../gate/manager.js';
@@ -20,6 +28,18 @@ import { TraceIndex } from '../trace/index-store.js';
 import { planReopen, reopenPhase } from '../gate/reopen.js';
 import { TraceIndexer } from '../trace/indexer.js';
 import { PlaybookRegistry } from '../playbook/loader.js';
+import {
+  assertRollbackReady,
+  crossRunLedger,
+  type ConfirmationSpent,
+  type DryRunNeeded,
+} from '../policy/deploy-gate.js';
+import {
+  releaseDeliverContract,
+  releaseArtifactSchema,
+  type ReleaseArtifact,
+} from '../release/deliver.js';
+import { dockerReleaseProvider } from '../release/docker-provider.js';
 import { RoleRegistry } from '../role/loader.js';
 import {
   approvalKey,
@@ -627,6 +647,294 @@ export function confirm(
     });
     context.write(`${call.tool} (${fingerprint.slice(0, 12)}) confirmed by ${by}`);
     return { ok: true, detail: 'confirmed' };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `mpgm rollback <env> --repo <path> --to-version <v> --to-image <img>
+ * --to-digest <sha256:...> --to-changelog <s> [--to-rollback-version <v>
+ * --to-rollback-digest <sha256:...> | --to-first-release] --by <who>
+ * [--reason <s>]` — restore a prior release to a declared environment from
+ * the CLI (DEP-2, DESIGN §9 decision 11, HIL-5).
+ *
+ * Wired exactly the way `scripts/demo/deploy-gate.mjs` wires the same
+ * providers for its own verification: `dockerReleaseProvider` over a
+ * `composeProvider`-bound `env.provision`, sharing one `gate` object so a
+ * confirmation either sees is visible to both — this is the release-path
+ * deploy gate (`../policy/deploy-gate.ts`), applied at construction, so this
+ * is not a second, unguarded way to reach `release.deliver#rollback`
+ * alongside whatever else this repository ever builds (DESIGN §9 decision
+ * 10). `to` is a full release artifact rather than a bare ref, because
+ * `release.deliver#rollback`'s own input is (DEP-3) — there is no durable
+ * store of past release artifacts yet (that arrives with T4.1.6), so an
+ * operator supplies the one they mean to restore from their own record of
+ * it, the same way they would type a fingerprint into `mpgm confirm`.
+ *
+ * **What gets recorded, and when, is the point of this function, not a
+ * detail of it (T4.1.5).** Four refusals are reachable before the
+ * environment is ever touched — `to` is not a valid release artifact; `repo`
+ * has no readable environments manifest; `env` is not declared in it; or
+ * `env` is gated and `{repo, env, to.digest}` was never confirmed
+ * (`assertRollbackReady`, `../policy/deploy-gate.ts`) — and every one of
+ * them is checked *before* anything downstream of it runs, each recorded as
+ * its own `ReleaseRollbackRefused` event (HIL-5: an attempt that was refused
+ * is still an attempt, so an operator who tried is in the log either way),
+ * never as a `ReleaseRolledBack`, which is reserved for a call that actually
+ * reached the environment.
+ *
+ * Once every refusal above has passed, a `ReleaseRollbackStarted` event is
+ * appended *before* `release.deliver#rollback` is ever invoked — the same
+ * idiom `EffectIntended` applies to a task's own effects (DESIGN §6,
+ * `../effect/journal.ts`), applied here to an operator-invoked one: the
+ * ordering is durable, not a flag held in memory, so a process killed
+ * between this append and the `ReleaseRolledBack` that follows still leaves
+ * a record that the environment was about to be — or already was — touched,
+ * rather than silence. This is what makes the distinction possible at all:
+ * `assertRollbackReady` runs the identical check `gateProductionRelease`
+ * itself applies (there is exactly one place that check is written), so by
+ * the time it returns without throwing, nothing left standing between here
+ * and the provider call can still refuse this rollback before it reaches
+ * `env.provision#up`.
+ *
+ * `ReleaseRolledBack` is appended once the call resolves, whether it
+ * returns or throws: `dockerReleaseProvider#rollback` delegates straight to
+ * `env.provision#up`, and `composeProvider#up` runs `docker compose up -d
+ * --wait` before it ever throws (`../env/compose-provider.ts`) — the
+ * containers are already recreated on the restored digest by the time a
+ * non-zero exit is reported, which is the commonest way a real rollback
+ * fails, so a throw here is recorded the same as a call that returned,
+ * `up: false`, with the failure folded into `reason` and, on the operator's
+ * console, alongside a caveat that the environment may already be serving
+ * the restored digest and that this was recorded regardless (CONV-3).
+ *
+ * `deps.envProvision` is injectable, and only for tests: `rollback` never
+ * calls `docker build` (`dockerReleaseProvider#rollback` delegates straight
+ * to `env.provision#up`, with no `assemble` step in between), so a fake
+ * `env.provision` provider is enough to exercise the real gate
+ * (`gateProductionRelease`, applied inside `dockerReleaseProvider` exactly
+ * as it is here) and the real event recording below with no Docker daemon
+ * involved — the same reasoning `docker-provider.test.ts`'s own
+ * `boundEnvProvision` fake already relies on. Left undefined, this
+ * constructs the real `composeProvider`, which is what every real
+ * invocation of this verb gets (DESIGN §9 decision 10: no code path here
+ * obtains an unguarded `rollback`, and none obtains one bound to a fake
+ * environment either, outside a test that asks for it by name).
+ */
+export interface RollbackDeps {
+  readonly envProvision?: BoundContract;
+}
+
+export async function rollback(
+  context: CliContext,
+  runId: string,
+  env: string,
+  repo: string,
+  to: ReleaseArtifact,
+  by: string,
+  reason = '',
+  deps: RollbackDeps = {},
+): Promise<CommandResult> {
+  const { db, log, projector } = open(context);
+  try {
+    if (projector.project().runs[runId] === undefined) {
+      log.append({
+        runId,
+        type: 'RunStarted',
+        payload: { project: context.root, operator: by },
+      });
+    }
+
+    // Every refusal below is recorded the same way: HIL-5 wants the attempt
+    // in the log even when it was turned away, and `reason` carries the
+    // refusal's own message — the exact text printed to the operator
+    // (CONV-3) — rather than a category, because the detail that would let
+    // someone fix the cause lives only in that message.
+    const refuse = (message: string): CommandResult => {
+      context.write(message);
+      log.append({
+        runId,
+        type: 'ReleaseRollbackRefused',
+        payload: { repo, env, by, reason: message },
+      });
+      return { ok: false, detail: 'rollback refused' };
+    };
+
+    const parsedTo = releaseArtifactSchema.safeParse(to);
+    if (!parsedTo.success) {
+      return refuse(`'to' is not a valid release artifact: ${parsedTo.error.message}`);
+    }
+
+    let declared: readonly EnvironmentEntry[];
+    try {
+      declared = loadDeclaredEnvironments(repo);
+    } catch (cause) {
+      return refuse(cause instanceof Error ? cause.message : String(cause));
+    }
+    if (!declared.some((entry) => entry.name === env)) {
+      return refuse(
+        `'${env}' is not declared in this repo's environments manifest; declared ` +
+          `environments are: ` +
+          (declared.length > 0
+            ? declared.map((entry) => entry.name).join(', ')
+            : '(none)'),
+      );
+    }
+
+    const onDryRunNeeded = (record: DryRunNeeded): void => {
+      log.append({
+        runId,
+        type: 'DryRunRecorded',
+        payload: {
+          taskId: KERNEL_TASK,
+          tool: record.tool,
+          fingerprint: record.fingerprint,
+          summary:
+            `deploy ${record.target.env} -> ` +
+            (record.target.label ?? record.target.digest.slice(0, 12)),
+        },
+      });
+    };
+    const onConfirmationSpent = (record: ConfirmationSpent): void => {
+      log.append({
+        runId,
+        type: 'DeployConfirmationSpent',
+        payload: {
+          taskId: KERNEL_TASK,
+          tool: record.tool,
+          fingerprint: record.fingerprint,
+        },
+      });
+    };
+    const gate = {
+      gatedEnvs: gatedEnvironments,
+      ledger: crossRunLedger(() => projector.project()),
+      onDryRunNeeded,
+      onConfirmationSpent,
+    };
+
+    // The identical check `gateProductionRelease#rollback` applies inside
+    // the gated provider below, run here first so a refusal (a gated
+    // environment whose digest was never confirmed, or a tag-shaped digest)
+    // is caught, and recorded, before anything is constructed that could
+    // reach the environment (DESIGN §9 decision 10 is not weakened by
+    // checking twice: the actual call below still goes through the same
+    // gate regardless of what this pre-check decided).
+    try {
+      assertRollbackReady(
+        { repo, env, digest: parsedTo.data.digest, version: parsedTo.data.version },
+        gate,
+      );
+    } catch (cause) {
+      return refuse(cause instanceof Error ? cause.message : String(cause));
+    }
+
+    // Every refusal this verb can reach in advance has now passed. Recorded
+    // *before* the provider is ever called — the way every other side
+    // effect in this kernel is recorded (`EffectIntended`,
+    // `../effect/journal.ts`, DESIGN §6) — so a rollback killed mid-call
+    // still leaves this fact in the log rather than silence.
+    log.append({
+      runId,
+      type: 'ReleaseRollbackStarted',
+      payload: {
+        repo,
+        env,
+        to: { version: parsedTo.data.version, digest: parsedTo.data.digest },
+        by,
+      },
+    });
+
+    const registry = new CapabilityRegistry();
+    const envContract =
+      deps.envProvision ?? registry.bind(envProvisionContract, composeProvider({ gate }));
+    const release = registry.bind(
+      releaseDeliverContract,
+      // Required at construction — there is no unwrapped provider this
+      // function, or any other caller in this repository, could obtain
+      // (DESIGN §9 decision 10).
+      dockerReleaseProvider({ envProvision: envContract, gate }),
+    );
+
+    let status: { readonly up: boolean };
+    try {
+      status = await release.invoke<{ readonly up: boolean }>('rollback', {
+        repo,
+        env,
+        to: parsedTo.data,
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      // Reached only after `ReleaseRollbackStarted` was already durably
+      // recorded above, so this is never the gate's refusal branch: whatever
+      // threw did so once the gate had already let this call through, which
+      // means `env.provision#up` had already begun — `composeProvider#up`
+      // runs `docker compose up -d --wait` and only then throws on a
+      // non-zero exit (`../env/compose-provider.ts`), by which point the
+      // containers are already recreated on the restored digest. Told to the
+      // operator alongside the provider's own message, not instead of it
+      // (CONV-3): what this failure means for the environment, and that it
+      // was recorded regardless of the outcome.
+      context.write(
+        `${message} The environment may already be serving the restored digest ` +
+          `— 'ReleaseRollbackStarted' was recorded before this call began (HIL-5), ` +
+          `and a 'ReleaseRolledBack' event recording this failure (up: false) has ` +
+          `now been appended too; check '${env}' directly before retrying.`,
+      );
+      const failedReason =
+        reason === ''
+          ? `rollback failed: ${message}`
+          : `${reason} — rollback failed: ${message}`;
+      log.append({
+        runId,
+        type: 'ReleaseRolledBack',
+        payload: {
+          repo,
+          env,
+          to: { version: parsedTo.data.version, digest: parsedTo.data.digest },
+          by,
+          reason: failedReason,
+          up: false,
+        },
+      });
+      return { ok: false, detail: 'rollback failed' };
+    }
+
+    log.append({
+      runId,
+      type: 'ReleaseRolledBack',
+      payload: {
+        repo,
+        env,
+        to: { version: parsedTo.data.version, digest: parsedTo.data.digest },
+        by,
+        reason,
+        up: status.up,
+      },
+    });
+
+    const summary =
+      `'${env}' rolled back to ${parsedTo.data.version} ` +
+      `(${parsedTo.data.digest.slice(0, 12)}) by ${by} — `;
+    context.write(
+      status.up
+        ? `${summary}up`
+        : // The provider returned rather than threw, which for
+          // `composeProvider#up` means `docker compose up -d --wait`
+          // completed and `servicesOf` reported back — the containers were
+          // already recreated on the restored digest and are merely not
+          // reporting healthy, not that the rollback never touched the
+          // environment. Told alongside the provider's own summary, not
+          // instead of it (CONV-3): what this outcome means for the
+          // environment, and that it was recorded regardless.
+          `${summary}NOT up — check the environment; it may already be ` +
+            `serving the restored digest but is not reporting healthy. ` +
+            `'ReleaseRollbackStarted' was recorded before the call began ` +
+            `(HIL-5), and a 'ReleaseRolledBack' event recording this ` +
+            `outcome (up: false) has now been appended too.`,
+    );
+    return { ok: status.up, detail: status.up ? 'up' : 'not up' };
   } finally {
     db.close();
   }

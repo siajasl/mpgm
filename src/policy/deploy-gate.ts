@@ -669,6 +669,64 @@ function assertReady(target: DeployTarget, options: DeployGateOptions): void {
 }
 
 /**
+ * What a `rollback` names to restore — enough to run
+ * {@link assertRollbackReady}'s check without a full `ReleaseRollbackInput`.
+ */
+export interface RollbackTarget {
+  readonly repo: string;
+  readonly env: string;
+  readonly digest: string;
+  readonly version: string;
+}
+
+/**
+ * The exact check `gateProductionRelease#rollback` applies to a gated
+ * environment, before its wrapped provider is ever called — factored out so
+ * `mpgm rollback` (`../cli/commands.ts`, T4.1.5) can run the identical check
+ * itself, ahead of invoking the gated `rollback` operation, and know in
+ * advance whether that call is about to touch the environment or be refused.
+ * This is what makes a durable "this reached the environment" record
+ * possible *before* the call (DESIGN §6's intent-before-effect idiom,
+ * applied here rather than duplicated): nothing else can tell, without a
+ * side effect, whether the gate below would let the call through.
+ *
+ * Returns normally — nothing to confirm — for any `{repo, env}`
+ * `options.gatedEnvs` does not name; throws {@link DeployGateError} for
+ * exactly the reasons `gateProductionRelease#rollback` itself would refuse:
+ * a tag-shaped `digest` ({@link isDigestShaped}), or a `{repo, env, digest}`
+ * that has not been simulated and confirmed ({@link assertReady}).
+ * `gateProductionRelease` calls this function too — there is exactly one
+ * place this check is written, not two copies that could drift apart.
+ */
+export function assertRollbackReady(
+  target: RollbackTarget,
+  options: DeployGateOptions,
+): void {
+  if (!options.gatedEnvs(target.repo).has(target.env)) {
+    return;
+  }
+  // See `gateProductionRelease#deliver`'s own comment: the identical
+  // fail-closed shape check, at the same outer door, for the same reason
+  // (T4.1.4b review 6, CONV-4).
+  if (!isDigestShaped(target.digest)) {
+    throw new DeployGateError(
+      notDigestShapedMessage(target.env, 'to.digest', target.digest),
+    );
+  }
+  // Deliberately the *same* fingerprint a `deliver` of `to` would have
+  // produced (see `deployFingerprint`): restoring a release this
+  // environment already had confirmed asks nothing new of an operator
+  // (decision 11). What it must not do is let `rollback` hand a gated
+  // environment a release that was never confirmed for it at all — that
+  // would be a second, ungated door into the same environment `deliver`
+  // refuses to open without one.
+  assertReady(
+    { repo: target.repo, env: target.env, digest: target.digest, label: target.version },
+    options,
+  );
+}
+
+/**
  * Wraps a `release.deliver` provider so its gated-environment path is
  * impossible to reach without a matching confirmation event (HIL-2, DESIGN
  * §9 decision 10).
@@ -734,30 +792,17 @@ export function gateProductionRelease(
 
     rollback: async (input: never): Promise<unknown> => {
       const parsed = releaseRollbackInput.parse(input);
-      if (!options.gatedEnvs(parsed.repo).has(parsed.env)) {
-        return rollbackOp(input);
-      }
-      // See `deliver`'s own comment above: the identical fail-closed shape
-      // check, at the same outer door, for the same reason (T4.1.4b review 6,
-      // CONV-4).
-      if (!isDigestShaped(parsed.to.digest)) {
-        throw new DeployGateError(
-          notDigestShapedMessage(parsed.env, 'to.digest', parsed.to.digest),
-        );
-      }
-      // Deliberately the *same* fingerprint a `deliver` of `to` would have
-      // produced (see `deployFingerprint`): restoring a release this
-      // environment already had confirmed asks nothing new of an operator
-      // (decision 11). What it must not do is let `rollback` hand a gated
-      // environment a release that was never confirmed for it at all — that
-      // would be a second, ungated door into the same environment `deliver`
-      // refuses to open without one.
-      assertReady(
+      // See `assertRollbackReady`'s own doc: this is the identical check
+      // `mpgm rollback` (`../cli/commands.ts`, T4.1.5) runs itself, ahead of
+      // ever reaching this wrapper, so it can record that a call is about to
+      // touch the environment before it does — there is exactly one place
+      // this check is written.
+      assertRollbackReady(
         {
           repo: parsed.repo,
           env: parsed.env,
           digest: parsed.to.digest,
-          label: parsed.to.version,
+          version: parsed.to.version,
         },
         options,
       );

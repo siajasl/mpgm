@@ -1,7 +1,7 @@
 # PLAN — mpgm Build Plan
 
-**Status:** v0.12 — T4.1.4c closed: the recurring empty-state confirmation is single-use, spent on entry · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-10
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.34. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Status:** v0.13 — T4.1.5 closed: the `mpgm rollback` verb, recorded and gated only when its digest was never confirmed for that environment · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-11
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.35. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 

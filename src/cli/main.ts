@@ -8,6 +8,7 @@ import {
   intervene,
   reopen,
   replay,
+  rollback,
   run,
   serve,
   status,
@@ -41,6 +42,7 @@ export const VERBS = [
   'chat',
   'trace',
   'replay',
+  'rollback',
 ] as const;
 
 export type Verb = (typeof VERBS)[number];
@@ -63,6 +65,9 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm chat <phase> [--run <id>] [--brief <s>]
   mpgm trace <id> | --coverage | --dangling
   mpgm replay [--run <id>]             re-derive state from the log alone
+  mpgm rollback <env> --to-version <v> --to-image <img> --to-digest <sha256:...>
+    --to-changelog <s> [--to-rollback-version <v> --to-rollback-digest <sha256:...>
+    | --to-first-release] --by <who> [--repo <path>] [--reason <s>] [--run <id>]
 `;
 
 interface ParsedArgs {
@@ -107,6 +112,20 @@ export async function runCli(
   const require = (what: string, value: string | undefined): string => {
     if (value === undefined || value === '') {
       throw new Error(`${String(verb)}: ${what} is required\n\n${USAGE}`);
+    }
+    return value;
+  };
+
+  // `--repo` on `rollback` is optional — it falls back to `context.root` —
+  // but an empty value given anyway (`--repo ""`) is not "not given"; it is
+  // a path that would otherwise reach `loadDeclaredEnvironments('')` and,
+  // once past that, the `repo: nonEmpty` event schema, surfacing as an
+  // uncaught `EventValidationError` naming the schema rather than the flag
+  // the operator typed (CONV-3). Caught here, the same way `require` catches
+  // it for flags that have no default at all.
+  const optional = (what: string, value: string | undefined): string | undefined => {
+    if (value === '') {
+      throw new Error(`${String(verb)}: ${what} must not be empty\n\n${USAGE}`);
     }
     return value;
   };
@@ -212,6 +231,58 @@ export async function runCli(
 
     case 'replay':
       return replay(context, flags.run);
+
+    case 'rollback': {
+      const rollbackVersion = flags['to-rollback-version'];
+      const rollbackDigest = flags['to-rollback-digest'];
+      const firstRelease = flags['to-first-release'] === 'true';
+      if (
+        firstRelease &&
+        (rollbackVersion !== undefined || rollbackDigest !== undefined)
+      ) {
+        throw new Error(
+          `rollback: --to-first-release and --to-rollback-version/` +
+            `--to-rollback-digest are mutually exclusive\n\n${USAGE}`,
+        );
+      }
+      if (
+        !firstRelease &&
+        (rollbackVersion === undefined) !== (rollbackDigest === undefined)
+      ) {
+        throw new Error(
+          `rollback: --to-rollback-version and --to-rollback-digest must be ` +
+            `given together\n\n${USAGE}`,
+        );
+      }
+      if (!firstRelease && rollbackVersion === undefined) {
+        throw new Error(
+          `rollback: state what --to-version rolls back to, with ` +
+            `--to-rollback-version/--to-rollback-digest, or assert it is this ` +
+            `environment's first release with --to-first-release\n\n${USAGE}`,
+        );
+      }
+      const rollbackTo = firstRelease
+        ? null
+        : {
+            version: require('--to-rollback-version', rollbackVersion),
+            digest: require('--to-rollback-digest', rollbackDigest),
+          };
+      return rollback(
+        context,
+        runId,
+        require('an environment name', positional[0]),
+        optional('--repo', flags.repo) ?? context.root,
+        {
+          version: require('--to-version', flags['to-version']),
+          image: require('--to-image', flags['to-image']),
+          digest: require('--to-digest', flags['to-digest']),
+          changelog: require('--to-changelog', flags['to-changelog']),
+          rollbackTo,
+        },
+        require('--by', flags.by),
+        flags.reason ?? '',
+      );
+    }
 
     case undefined:
     case 'help':
