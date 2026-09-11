@@ -58,7 +58,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 11;
+export const REDUCER_VERSION = 12;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -576,6 +576,15 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       // run is still approved in the next — so the freeze reads it from the
       // log directly. Folding it into run state would make it look like a
       // property of whichever run happened to record it.
+      requireRun(state, event.runId, type);
+      return { ...state, lastSeq: seq };
+    }
+
+    case 'ReleaseRolledBack': {
+      // Recorded for the audit log alone (HIL-5) — nothing downstream reads
+      // it back the way `crossRunLedger` reads `destructiveCalls`, so, like
+      // `RoleApproved` above, this only has to exist on the log, not in run
+      // state.
       requireRun(state, event.runId, type);
       return { ...state, lastSeq: seq };
     }

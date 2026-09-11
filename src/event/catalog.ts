@@ -514,6 +514,40 @@ export const operatorIntervened = defineEvent(
   z.object({ action: nonEmpty, detail: z.string().default('') }),
 );
 
+/**
+ * An operator rolled a declared environment back to a prior release, from
+ * the CLI (`mpgm rollback`, HIL-5, DEP-2, DESIGN §9 decision 11).
+ *
+ * `release.deliver#rollback` (`src/release/deliver.ts`) is the mechanism —
+ * this is the record that an operator invoked it, distinct from the gate's
+ * own `DryRunRecorded`/`DestructiveOpConfirmed`/`DeployConfirmationSpent`
+ * trail (which records the *approval*, when this environment needed one, not
+ * that a rollback actually happened). An ungated environment's rollback
+ * leaves none of those events at all, so without this one HIL-5's "all
+ * operator interventions MUST be recorded" would have nothing to point at
+ * for the commonest case — `test`-shaped environments nobody ever gates.
+ *
+ * `to` is the ref the release was restored to (`version`/`digest`), not the
+ * full release artifact `mpgm rollback` sent: the artifact's `image` and
+ * `changelog` are inputs an operator supplied by hand at the CLI, not facts
+ * this event exists to preserve, and `rollbackTo` would only restate what
+ * `to.digest` already names via decision 9's "a digest is a digest"
+ * reasoning. `up` is `release.deliver#rollback`'s own report of whether the
+ * environment came up under the restored release, so a reader of the log
+ * does not have to separately ask what happened.
+ */
+export const releaseRolledBack = defineEvent(
+  'ReleaseRolledBack',
+  z.object({
+    repo: nonEmpty,
+    env: nonEmpty,
+    to: z.object({ version: nonEmpty, digest: nonEmpty }),
+    by: nonEmpty,
+    reason: z.string().default(''),
+    up: z.boolean(),
+  }),
+);
+
 /** Every kernel event type currently defined. */
 export const kernelEvents = [
   budgetExceeded,
@@ -536,6 +570,7 @@ export const kernelEvents = [
   phaseEntered,
   phaseReopened,
   planRevised,
+  releaseRolledBack,
   roleApproved,
   runStarted,
   sessionUsage,

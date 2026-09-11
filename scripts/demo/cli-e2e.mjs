@@ -20,6 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ArtifactStore,
+  deployFingerprint,
   EventLog,
   fingerprint,
   kernelRegistry,
@@ -519,6 +520,103 @@ try {
     confirmed.result.ok && confirmed.output.includes('confirmed by macg'),
     confirmed.output,
   );
+
+  // rollback (T4.1.5) — real argument parsing and the real release-path
+  // deploy gate (`gateProductionRelease`, DESIGN §9 decision 10/11),
+  // against mpgm's own `deploy/environments/environments.yaml` (`staging`
+  // is `approval: required`), without ever reaching the real Docker-backed
+  // provider — `assertReady` refuses an unconfirmed call before that
+  // provider is ever invoked, so none of this needs a daemon. The confirmed
+  // path (a rollback actually restoring a release) is `commands.test.ts`'s
+  // job, against a fake `env.provision`, and `demo:gate`'s, against a real
+  // one — this script proves the CLI wires an operator's own invocation to
+  // that same gate, not that the gate itself works.
+  {
+    const mutuallyExclusive = await call([
+      'rollback',
+      'staging',
+      '--repo',
+      projectRoot,
+      '--to-version',
+      '1.0.0',
+      '--to-image',
+      'x',
+      '--to-digest',
+      `sha256:${'a'.repeat(64)}`,
+      '--to-changelog',
+      'test',
+      '--to-first-release',
+      '--to-rollback-version',
+      '0.9.0',
+      '--to-rollback-digest',
+      `sha256:${'b'.repeat(64)}`,
+      '--by',
+      'macg',
+    ]).catch((cause) => ({ result: undefined, output: '', error: cause }));
+    check(
+      'rollback refuses --to-first-release alongside --to-rollback-version/--to-rollback-digest',
+      mutuallyExclusive.result === undefined &&
+        mutuallyExclusive.error?.message.includes('mutually exclusive'),
+      mutuallyExclusive.error?.message,
+    );
+
+    const rollbackDigest = `sha256:${'c'.repeat(64)}`;
+    const rollbackPrint = deployFingerprint({
+      repo: projectRoot,
+      env: 'staging',
+      digest: rollbackDigest,
+    });
+    const rollbackArgs = [
+      'rollback',
+      'staging',
+      '--run',
+      'r1',
+      '--repo',
+      projectRoot,
+      '--to-version',
+      '9.9.9',
+      '--to-image',
+      'mpgm-cli-e2e-rollback-demo',
+      '--to-digest',
+      rollbackDigest,
+      '--to-changelog',
+      'a release this script never builds — only its digest matters to the gate',
+      '--to-first-release',
+      '--by',
+      'macg',
+    ];
+
+    const unsimulated = await call(rollbackArgs);
+    check(
+      'rollback to a gated environment is refused unsimulated',
+      !unsimulated.result.ok && unsimulated.output.includes('has not been simulated'),
+      unsimulated.output,
+    );
+    check(
+      "the refusal names this call's own fingerprint",
+      unsimulated.output.includes(rollbackPrint),
+      unsimulated.output,
+    );
+
+    const stillUnconfirmed = await call(rollbackArgs);
+    check(
+      'still refused once simulated but not yet confirmed — the same recorded dry run, not a fresh one',
+      !stillUnconfirmed.result.ok &&
+        stillUnconfirmed.output.includes('simulated but not confirmed'),
+      stillUnconfirmed.output,
+    );
+
+    check(
+      'neither refusal recorded a rollback',
+      (() => {
+        const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
+        const log = EventLog.attach(db, { registry: kernelRegistry() });
+        const recorded = log.read({ type: 'ReleaseRolledBack' });
+        db.close();
+        return recorded.length === 0;
+      })(),
+    );
+  }
 
   // approve-role — the half of a role exemption an agent cannot write.
   // The workspace carries this project's freeze manifest, whose exemptions

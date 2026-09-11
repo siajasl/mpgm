@@ -295,3 +295,13 @@ represent (CONV-4, CONV-5).
   verification and promote/rollback decisions, calling this contract's
   `rollback` once its own smoke checks decide a delivered release is not
   what it should be.
+- [`src/cli/commands.ts`](../src/cli/commands.ts) (T4.1.5) — the `mpgm
+  rollback` verb: an operator restoring a declared environment to a release
+  artifact they supply, wired through `dockerReleaseProvider`/
+  `composeProvider` exactly as `scripts/demo/deploy-gate.mjs` wires them,
+  so the gate above applies to an operator's own invocation the same way it
+  applies to everything else that reaches this contract. Recorded as
+  `ReleaseRolledBack` once the call returns, whether or not this
+  environment was gated — HIL-5's "all operator interventions MUST be
+  recorded" needs a record for the ungated case too, which leaves none of
+  the gate's own dry-run/confirm trail.

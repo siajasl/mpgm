@@ -150,6 +150,18 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'ReleaseRolledBack',
+        payload: {
+          repo: '/repo',
+          env: 'staging',
+          to: { version: '1.0.0', digest: `sha256:${'a'.repeat(64)}` },
+          by: 'operator',
+          reason: 'v2 failed its smoke checks',
+          up: true,
+        },
+      },
+      {
+        runId: RUN,
         type: 'KnowledgeBaseUpdated',
         payload: {
           taskId: 'T1',
