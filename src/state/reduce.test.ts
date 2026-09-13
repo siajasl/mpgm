@@ -271,7 +271,7 @@ describe('reduce', () => {
       {
         runId: RUN,
         type: 'OperatorIntervened',
-        payload: { action: 'redirect', detail: '' },
+        payload: { action: 'redirect', detail: '', taskId: 'T1' },
       },
     ];
 
@@ -797,11 +797,12 @@ describe('reduce', () => {
       expect(redirectNoteFor(state, RUN, 'T1')).toBe('second note');
     });
 
-    it('leaves redirects untouched, and control unchanged, for a redirect with no taskId', () => {
-      // A redirect with nowhere to reach has nothing to record — pause,
-      // resume and kill act on the whole run and carry no taskId either, so
-      // this is also what proves they cannot accidentally write one.
-      const state = fold(
+    it('refuses a redirect with no taskId rather than recording it and dropping the note (CONV-5)', () => {
+      // A redirect with nowhere to reach used to be recorded and silently
+      // land nowhere — checked for in the fold rather than made impossible
+      // to write. The schema's `redirect` variant now requires `taskId`, so
+      // this fails at `append`, before anything is ever folded.
+      expect(() =>
         logWith([
           runStartedInput,
           {
@@ -810,9 +811,7 @@ describe('reduce', () => {
             payload: { action: 'redirect', detail: 'nowhere to land' },
           },
         ]),
-      );
-
-      expect(state.runs[RUN]?.redirects).toStrictEqual({});
+      ).toThrow(/taskId/);
     });
 
     it('does not let pause, resume or kill touch a task-scoped redirect note', () => {

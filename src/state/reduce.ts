@@ -623,9 +623,11 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
 
       // Only a redirect naming a task updates it — pause/resume/kill act on
       // the whole run and carry no note for a task's next session to read
-      // (T4.2.4, HIL-3).
+      // (T4.2.4, HIL-3). No `payload.taskId !== undefined` check is needed
+      // here any more: the schema's `redirect` variant requires `taskId`, so
+      // a redirect naming no task never reaches this fold at all (CONV-5).
       const redirects =
-        payload.action === 'redirect' && payload.taskId !== undefined
+        payload.action === 'redirect'
           ? { ...run.redirects, [payload.taskId]: payload.detail }
           : run.redirects;
 
