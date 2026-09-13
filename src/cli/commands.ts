@@ -447,12 +447,21 @@ export async function serve(
   }
 }
 
-/** `mpgm pause|resume|kill|redirect` — operator control, recorded (HIL-3, HIL-5). */
+/**
+ * `mpgm pause|resume|kill|redirect` — operator control, recorded (HIL-3,
+ * HIL-5).
+ *
+ * `taskId` names what a redirection is aimed at (DESIGN §4.4 `redirect
+ * <task>`): the implement loop reads it back before dispatching that task's
+ * next session (`redirectNoteFor`, T4.2.4). `pause`/`resume`/`kill` act on
+ * the whole run and pass none.
+ */
 export function intervene(
   context: CliContext,
   runId: string,
   action: 'pause' | 'resume' | 'kill' | 'redirect',
   detail = '',
+  taskId?: string,
 ): CommandResult {
   const { db, log, projector } = open(context);
   try {
@@ -461,9 +470,17 @@ export function intervene(
       return { ok: false, detail: 'unknown run' };
     }
 
-    log.append({ runId, type: 'OperatorIntervened', payload: { action, detail } });
+    log.append({
+      runId,
+      type: 'OperatorIntervened',
+      payload: { action, detail, ...(taskId === undefined ? {} : { taskId }) },
+    });
     const control = projector.project().runs[runId]?.control ?? 'running';
-    context.write(`run ${runId} is now ${control}`);
+    context.write(
+      taskId === undefined
+        ? `run ${runId} is now ${control}`
+        : `run ${runId} is now ${control}; ${taskId} is redirected`,
+    );
     return { ok: true, detail: control };
   } finally {
     db.close();

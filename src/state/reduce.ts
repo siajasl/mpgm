@@ -58,7 +58,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 13;
+export const REDUCER_VERSION = 14;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -167,6 +167,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         destructiveCalls: {},
         usage: zeroUsage,
         interventions: 0,
+        redirects: {},
       };
       return withRun(state, run, seq);
     }
@@ -620,9 +621,17 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
                 ? 'killed'
                 : run.control;
 
+      // Only a redirect naming a task updates it — pause/resume/kill act on
+      // the whole run and carry no note for a task's next session to read
+      // (T4.2.4, HIL-3).
+      const redirects =
+        payload.action === 'redirect' && payload.taskId !== undefined
+          ? { ...run.redirects, [payload.taskId]: payload.detail }
+          : run.redirects;
+
       return withRun(
         state,
-        { ...run, control, interventions: run.interventions + 1 },
+        { ...run, control, redirects, interventions: run.interventions + 1 },
         seq,
       );
     }
@@ -702,4 +711,20 @@ export function pendingEffects(state: KernelState): EffectState[] {
 /** Operator control state for a run, defaulting to running. */
 export function runControl(state: KernelState, runId: string): RunControl {
   return state.runs[runId]?.control ?? 'running';
+}
+
+/**
+ * The latest operator redirection note aimed at a task, if any (HIL-3).
+ *
+ * What the implement loop reads before dispatching a task's next session
+ * (T4.2.4): a redirect names the task it is for, and this is how that
+ * session finds it again without the loop having to be the one watching for
+ * the event as it arrives.
+ */
+export function redirectNoteFor(
+  state: KernelState,
+  runId: string,
+  taskId: string,
+): string | undefined {
+  return state.runs[runId]?.redirects[taskId];
 }

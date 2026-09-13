@@ -196,6 +196,13 @@ export interface RunState {
   readonly destructiveCalls: Readonly<Record<string, DestructiveCallState>>;
   readonly usage: Usage;
   readonly interventions: number;
+  /**
+   * Task id → the latest operator redirection note aimed at it (HIL-3,
+   * HIL-5). Only the latest is kept, the same as `checks` and `review`
+   * above: what the implement loop's next session needs is the current
+   * instruction, not the history of ones it has superseded.
+   */
+  readonly redirects: Readonly<Record<string, string>>;
 }
 
 export interface KernelState {

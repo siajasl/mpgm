@@ -187,6 +187,50 @@ describe('repairUntilGreen', () => {
     expect(events.filter((event) => event.type === 'ChecksReported')).toHaveLength(3);
   });
 
+  it('stops for an operator intervention instead of spending the repair budget on it (T4.2.4, HIL-3)', async () => {
+    // A kill or a pause arriving while CI is still red must not read as
+    // exhaustion: the loop has nothing left to fix because it was told to
+    // stop, not because it ran out of attempts.
+    let repairs = 0;
+    const report = await repairUntilGreen({
+      runId: RUN,
+      taskId: TASK,
+      ref: 'c0',
+      model: 'claude-sonnet-5',
+      maxAttempts: 3,
+      checks: (ref) => Promise.resolve(verdictFor(ref, withFailure('scan'))),
+      shouldContinue: () => ({ ok: false, reason: 'the run was killed by an operator' }),
+      repair: (request) => {
+        repairs += 1;
+        return Promise.resolve({ ref: `c${String(request.attempt)}` });
+      },
+    });
+
+    expect(report.status).toBe('stopped');
+    expect(report.reason).toBe('the run was killed by an operator');
+    // Not one attempt spent: the check runs before `repair` is ever called.
+    expect(repairs).toBe(0);
+  });
+
+  it('checks CI before asking whether to continue, so a real failure is not misreported as a stop', async () => {
+    let continued = 0;
+    const report = await repairUntilGreen({
+      runId: RUN,
+      taskId: TASK,
+      ref: 'c0',
+      model: 'claude-sonnet-5',
+      checks: (ref) => Promise.resolve(verdictFor(ref, GREEN)),
+      shouldContinue: () => {
+        continued += 1;
+        return { ok: false, reason: 'should never be read' };
+      },
+      repair: () => Promise.resolve({ ref: 'c1' }),
+    });
+
+    expect(report.status).toBe('green');
+    expect(continued).toBe(0);
+  });
+
   it('does not spend an attempt on checks that are still running', async () => {
     let repairs = 0;
     const running: CheckRun[] = [

@@ -55,7 +55,8 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm pause --run <id>                stop dispatching new tasks
   mpgm resume --run <id>               resume a paused run
   mpgm kill --run <id>                 stop a run permanently
-  mpgm redirect --run <id> --note <s>  record an operator redirection
+  mpgm redirect <task> --run <id> --note <s>  record an operator redirection, read by
+    that task's next dispatched session
   mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>] [--tag]
   mpgm confirm <fingerprint> --run <id> --by <who> [--reason <s>]
   mpgm attest <task> --by <who> --evidence <s> [--note <s>] [--run <id>]
@@ -146,7 +147,13 @@ export async function runCli(
       return intervene(context, runId, verb);
 
     case 'redirect':
-      return intervene(context, runId, 'redirect', require('--note', flags.note));
+      return intervene(
+        context,
+        runId,
+        'redirect',
+        require('--note', flags.note),
+        require('a task id', positional[0]),
+      );
 
     case 'approve':
       return approve(

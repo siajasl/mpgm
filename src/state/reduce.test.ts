@@ -5,7 +5,14 @@ import type { EventInput, StoredEvent } from '../event/envelope.js';
 import { MEMORY } from '../database.js';
 import { EventLog } from '../event/store.js';
 import { emptyState } from './kernel-state.js';
-import { fold, reduce, UnhandledEventError, UnknownRunError } from './reduce.js';
+import {
+  fold,
+  redirectNoteFor,
+  reduce,
+  runControl,
+  UnhandledEventError,
+  UnknownRunError,
+} from './reduce.js';
 
 const RUN = 'run-1';
 
@@ -745,5 +752,97 @@ describe('reduce', () => {
         { runId: RUN, type: 'DeployConfirmationSpent', payload },
       ]),
     ).toThrow();
+  });
+
+  describe('OperatorIntervened redirect notes (HIL-3, T4.2.4)', () => {
+    it('stores a redirect note under the task it names', () => {
+      const state = fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              detail: 'focus on overdue fees',
+              taskId: 'T1',
+            },
+          },
+        ]),
+      );
+
+      expect(redirectNoteFor(state, RUN, 'T1')).toBe('focus on overdue fees');
+      // Nothing was said about T2 — a note reaches the task it names, not
+      // every task in the run.
+      expect(redirectNoteFor(state, RUN, 'T2')).toBeUndefined();
+    });
+
+    it('keeps only the latest note for a task', () => {
+      const state = fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'OperatorIntervened',
+            payload: { action: 'redirect', detail: 'first note', taskId: 'T1' },
+          },
+          {
+            runId: RUN,
+            type: 'OperatorIntervened',
+            payload: { action: 'redirect', detail: 'second note', taskId: 'T1' },
+          },
+        ]),
+      );
+
+      expect(redirectNoteFor(state, RUN, 'T1')).toBe('second note');
+    });
+
+    it('leaves redirects untouched, and control unchanged, for a redirect with no taskId', () => {
+      // A redirect with nowhere to reach has nothing to record — pause,
+      // resume and kill act on the whole run and carry no taskId either, so
+      // this is also what proves they cannot accidentally write one.
+      const state = fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'OperatorIntervened',
+            payload: { action: 'redirect', detail: 'nowhere to land' },
+          },
+        ]),
+      );
+
+      expect(state.runs[RUN]?.redirects).toStrictEqual({});
+    });
+
+    it('does not let pause, resume or kill touch a task-scoped redirect note', () => {
+      const state = fold(
+        logWith([
+          runStartedInput,
+          {
+            runId: RUN,
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              detail: 'focus on overdue fees',
+              taskId: 'T1',
+            },
+          },
+          {
+            runId: RUN,
+            type: 'OperatorIntervened',
+            payload: { action: 'pause', detail: '' },
+          },
+          {
+            runId: RUN,
+            type: 'OperatorIntervened',
+            payload: { action: 'resume', detail: '' },
+          },
+        ]),
+      );
+
+      expect(redirectNoteFor(state, RUN, 'T1')).toBe('focus on overdue fees');
+      expect(runControl(state, RUN)).toBe('running');
+    });
   });
 });
