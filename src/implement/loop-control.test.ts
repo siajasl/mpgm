@@ -11,6 +11,7 @@ import { SessionRunner } from '../agent/runner.js';
 import { ScriptedProvider, scriptedSuccess } from '../agent/scripted-provider.js';
 import { RoleRegistry } from '../role/loader.js';
 import { projectOutputSchemas } from '../schemas.js';
+import { fold } from '../state/reduce.js';
 import { implementTask } from './loop.js';
 import { WorktreeManager } from './worktree.js';
 import { mergeVerdict, type CheckRun } from './checks.js';
@@ -121,6 +122,13 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
       // Not "ran and failed" — never dispatched at all, which is the
       // difference between a control that is read and one that is not.
       expect(provider.requests).toHaveLength(0);
+      // The regression this task's first review found: a `TaskBlocked`
+      // appended for a task that never got a `TaskDispatched` makes every
+      // later fold of this run's log throw, which means `status`, `serve`,
+      // `replay` and even a later `implement` on the same run all break from
+      // here on. Folding the log is the only way to see that — the two
+      // fields above passed against the broken code just as they do here.
+      expect(() => fold(log.read())).not.toThrow();
     } finally {
       log.close();
     }
@@ -142,6 +150,7 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
       expect(result.status).toBe('blocked');
       expect(result.reason).toContain('paused');
       expect(provider.requests).toHaveLength(0);
+      expect(() => fold(log.read())).not.toThrow();
     } finally {
       log.close();
     }
@@ -338,6 +347,157 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
 
       expect(result.status).toBe('merged');
       expect(provider.requests[0]?.prompt).not.toContain('a note for someone else');
+    } finally {
+      log.close();
+    }
+  });
+
+  it('a redirection recorded while the task is in flight is obeyed by the review session that follows', async () => {
+    // The review session for T1 dispatches under `T1-review`, not `T1` — the
+    // regression this task's first review found: looking the note up under
+    // the session's own id, rather than the plan task's, meant a redirect
+    // landing after the implementing session and before the review reached
+    // nothing at all, and the change merged as if the operator had said
+    // nothing.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = openLog();
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        // The window PLAN M4.2's verification names: a redirection issued
+        // while a task is in flight, before its next (here, review) session
+        // has been dispatched.
+        checks: (ref) => {
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              detail: 'reject anything that raises the late fee',
+              taskId: 'T1',
+            },
+          });
+          return Promise.resolve(mergeVerdict({ ref, runs: GREEN }));
+        },
+      });
+
+      expect(result.status).toBe('merged');
+      // Not the implementing session's prompt — that was already sent
+      // before the redirect was recorded. The review's is.
+      expect(provider.requests[1]?.prompt).toContain(
+        'reject anything that raises the late fee',
+      );
+    } finally {
+      log.close();
+    }
+  });
+
+  it('a redirection reaches a blocked task when the operator requeues it by running implement again', async () => {
+    // DESIGN §4.4 glosses `redirect <task>` as "revise a task's
+    // instructions/context and requeue". This harness has no scheduler that
+    // pulls a blocked plan task back into work on its own — `mpgm implement
+    // <task>` is what does that, named, every time, whether the task has
+    // been dispatched before or not — so "requeues it" is exercised here the
+    // way an operator actually does it: run the task through the loop once
+    // to blocked, redirect it, then call `implementTask` again for the same
+    // task and run and show its very first session reads the note.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const log = openLog();
+
+    const firstAttempt = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'first attempt',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'request-changes',
+        summary: 'not yet',
+        findings: [
+          {
+            file: 'README.md',
+            concern: 'not good enough',
+            remedy: 'fix it',
+            severity: 'major',
+          },
+        ],
+        deviations: [],
+      }),
+    ]);
+
+    try {
+      const blocked = await implementTask({
+        ...baseOptions(repo, firstAttempt, log),
+        // One attempt: the review's refusal exhausts the budget and blocks
+        // the task without the run itself being paused or killed, which is
+        // the ordinary way a plan task ends up needing a redirect.
+        maxReviewAttempts: 1,
+      });
+
+      expect(blocked.status).toBe('blocked');
+
+      log.append({
+        runId: 'r',
+        type: 'OperatorIntervened',
+        payload: {
+          action: 'redirect',
+          detail: 'drop the fee waiver, keep the rest',
+          taskId: 'T1',
+        },
+      });
+
+      const secondAttempt = new ScriptedProvider([
+        scriptedSuccess({
+          ref: head,
+          summary: 'second attempt',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: head,
+          verdict: 'approve',
+          summary: 'good now',
+          findings: [],
+          deviations: [],
+        }),
+      ]);
+
+      const requeued = await implementTask(baseOptions(repo, secondAttempt, log));
+
+      expect(requeued.status).toBe('merged');
+      expect(secondAttempt.requests[0]?.prompt).toContain(
+        'drop the fee waiver, keep the rest',
+      );
     } finally {
       log.close();
     }

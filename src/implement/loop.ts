@@ -341,9 +341,10 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     const control = runControl(state, runId);
     if (control !== 'running') {
       // Not dispatched at all: `onProgress` reports sessions that ran, and
-      // this one never did. `stop()` at each call site turns this into
-      // `TaskBlocked` with the reason below, the same as any other outcome
-      // that is not `completed`.
+      // this one never did. `stop()` at each call site turns this into a
+      // `blocked` result, appending `TaskBlocked` only if some earlier
+      // session for this task already has (see `stop`'s own comment) — the
+      // same outcome shape as any other that is not `completed`.
       return {
         status: 'blocked',
         reason: `the run was ${control} by an operator`,
@@ -352,7 +353,15 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       };
     }
 
-    const note = redirectNoteFor(state, runId, request.taskId);
+    // Keyed on the owning plan task (`task.id`), not on `request.taskId`: a
+    // review session is dispatched under `${task.id}-review` (and a rework
+    // round under `-review-<n>`), so looking the note up under the session's
+    // own id missed a redirect that landed while the task was already in
+    // flight — the change would merge with the operator's note never having
+    // been read by anything. `task.id` is what a redirect names (DESIGN
+    // §4.4 `redirect <task>`), so it is what every dispatch under this task
+    // reads the note back under, whichever kind of session it is.
+    const note = redirectNoteFor(state, runId, task.id);
     const prompt =
       note === undefined
         ? request.prompt
@@ -417,11 +426,27 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // remembering to log is twelve chances not to. Without the event the fold
     // leaves the task saying `dispatched`, which is indistinguishable from one
     // still running (OBS-4).
-    options.log.append({
-      runId,
-      type: 'TaskBlocked',
-      payload: { taskId: task.id, reason },
-    });
+    //
+    // Appended only when a session for this task has actually been
+    // dispatched. `track` returns a `blocked` outcome without dispatching at
+    // all when the run is paused or killed before this task's first session
+    // — which is the outcome that reaches `stop` when an operator pauses or
+    // kills before `implementTask` gets this far. Appending `TaskBlocked` for
+    // that task then would write an event the fold has never seen a
+    // `TaskDispatched` for, and `requireTask` refuses exactly that — not just
+    // for this event, but for every event any run ever folds afterwards,
+    // because `Projector.project()` refolds the whole log (T4.2.4, CONV-5:
+    // the obligation "no event about a task before its `TaskDispatched`" is
+    // made impossible to violate here rather than merely checked for and
+    // reported after the fact). The catch-up refusal above already avoids
+    // this the same way, by returning bare rather than through `stop`.
+    if (fold(options.log.read()).runs[runId]?.tasks[task.id] !== undefined) {
+      options.log.append({
+        runId,
+        type: 'TaskBlocked',
+        payload: { taskId: task.id, reason },
+      });
+    }
     return {
       status: 'blocked',
       taskId: task.id,
