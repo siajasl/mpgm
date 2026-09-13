@@ -60,7 +60,9 @@ export type RepairStatus =
   /** Something no agent could fix from its worktree. */
   | 'unrepairable'
   /** CI never finished. */
-  | 'unsettled';
+  | 'unsettled'
+  /** An operator paused or killed the run before the next attempt (HIL-3). */
+  | 'stopped';
 
 export interface RepairReport {
   readonly taskId: string;
@@ -88,6 +90,16 @@ export interface RepairOptions {
   readonly checks: (ref: string) => Promise<MergeVerdict>;
   /** Run a session that tries to fix the failure and returns the new ref. */
   readonly repair: (request: RepairRequest) => Promise<RepairOutcome>;
+  /**
+   * Checked before every repair attempt, not only before the first (T4.2.4,
+   * HIL-3): an operator who kills a task mid-repair expects the attempt in
+   * flight to be the last one, the same as `runPhase`'s own `shouldDispatch`
+   * expects for a playbook step. A refusal stops the loop with `'stopped'`
+   * rather than spending the attempt it would otherwise have charged toward
+   * `maxAttempts`, since nothing was declined for cause.
+   */
+  readonly shouldContinue?: () =>
+    { readonly ok: true } | { readonly ok: false; readonly reason: string };
   /** Logs of a failing check, for the feedback. Empty text is fine. */
   readonly logsFor?: (check: string, ref: string) => Promise<string>;
   /** Lines of each check's log to feed back. */
@@ -237,6 +249,17 @@ export async function repairUntilGreen(options: RepairOptions): Promise<RepairRe
           `cannot build one that conflicts, and reports nothing at all rather ` +
           `than failing.`,
       );
+    }
+
+    // Checked after the diagnosis above, so a run an operator stopped while
+    // CI was already unrepairable still reports the real cause rather than
+    // the intervention that happened to arrive first. Checked before the
+    // budget below, so a stop is never misreported as exhaustion.
+    if (options.shouldContinue !== undefined) {
+      const continuing = options.shouldContinue();
+      if (!continuing.ok) {
+        return stop('stopped', continuing.reason);
+      }
     }
 
     if (attempt > maxAttempts) {

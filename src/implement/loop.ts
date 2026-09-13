@@ -1,9 +1,10 @@
-import type { SessionRunner } from '../agent/runner.js';
+import type { SessionRunner, TaskOutcome } from '../agent/runner.js';
 import { assembleContext } from '../context/assembler.js';
 import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
 import type { EventLog } from '../event/store.js';
 import type { RoleRegistry } from '../role/loader.js';
+import { fold, redirectNoteFor, runControl } from '../state/reduce.js';
 import { changeSchema, codeReviewSchema } from '../schemas.js';
 import type { MergeVerdict } from './checks.js';
 import { conventionIdOf, undeclaredDeviations } from '../context/conventions.js';
@@ -323,11 +324,40 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // told about all four kinds from one place rather than from four call
   // sites that could drift apart (OBS-3, NFR-2). Wraps `sessions.runTask`
   // rather than replacing it: the caller still sees the same `TaskOutcome`.
+  //
+  // It is also where pause, kill and redirect actually reach a running task
+  // (T4.2.4, HIL-3, HIL-5) — until now the loop read none of the three.
+  // Checked fresh before every dispatch, not once at the start, the same
+  // rule `runPhase`'s own `shouldDispatch` applies to a playbook's steps: an
+  // operator who pauses or kills mid-task expects the session already
+  // running to be the last one, and one who redirects expects the very next
+  // session — whichever kind it is — to read the note.
   const track = async (
     kind: SessionKind,
     round: number,
     request: Omit<Parameters<typeof options.sessions.runTask>[0], 'runId'>,
-  ) => {
+  ): Promise<TaskOutcome> => {
+    const state = fold(options.log.read());
+    const control = runControl(state, runId);
+    if (control !== 'running') {
+      // Not dispatched at all: `onProgress` reports sessions that ran, and
+      // this one never did. `stop()` at each call site turns this into
+      // `TaskBlocked` with the reason below, the same as any other outcome
+      // that is not `completed`.
+      return {
+        status: 'blocked',
+        reason: `the run was ${control} by an operator`,
+        attempts: 0,
+        lastIssues: [],
+      };
+    }
+
+    const note = redirectNoteFor(state, runId, request.taskId);
+    const prompt =
+      note === undefined
+        ? request.prompt
+        : `${request.prompt}\n\n## An operator redirected this task\n\n${note}`;
+
     options.onProgress?.({
       phase: 'start',
       taskId: request.taskId,
@@ -335,7 +365,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       role: request.role.name,
       round,
     });
-    const outcome = await options.sessions.runTask({ runId, ...request });
+    const outcome = await options.sessions.runTask({ runId, ...request, prompt });
     options.onProgress?.({
       phase: 'finish',
       taskId: request.taskId,
@@ -539,6 +569,18 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       emit: (event) => {
         options.log.append(event);
       },
+      // `track` already refuses to dispatch a repair session once the run is
+      // paused or killed, but `repairUntilGreen` keeps iterating without
+      // dispatching one whenever a repair produces nothing usable — which is
+      // exactly what an intervention causes here. Without this the loop would
+      // spend the rest of the repair budget on that instead of reporting the
+      // real cause (T4.2.4, HIL-3, CONV-3).
+      shouldContinue: () => {
+        const control = runControl(fold(options.log.read()), runId);
+        return control === 'running'
+          ? { ok: true }
+          : { ok: false, reason: `the run was ${control} by an operator` };
+      },
       repair: async (request) => {
         const retry = await track('repair', request.attempt, {
           taskId: task.id,
@@ -561,11 +603,19 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     });
 
     if (repair.status !== 'green') {
-      return stop(`CI did not go green: ${repair.reason}`, {
-        ref: repair.ref,
-        repair,
-        ...(pullRequest === undefined ? {} : { pullRequest }),
-      });
+      // 'stopped' is an operator's doing, not CI's (T4.2.4, CONV-3): saying
+      // "CI did not go green" over a kill or a pause would send an operator
+      // looking at a build that was never the cause.
+      return stop(
+        repair.status === 'stopped'
+          ? repair.reason
+          : `CI did not go green: ${repair.reason}`,
+        {
+          ref: repair.ref,
+          repair,
+          ...(pullRequest === undefined ? {} : { pullRequest }),
+        },
+      );
     }
 
     // What the checkout is on now that the round's commits have settled. Every

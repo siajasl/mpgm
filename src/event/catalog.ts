@@ -511,7 +511,18 @@ export const deployConfirmationSpent = defineEvent(
 
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
-  z.object({ action: nonEmpty, detail: z.string().default('') }),
+  z.object({
+    action: nonEmpty,
+    detail: z.string().default(''),
+    /**
+     * The task a redirection is aimed at (HIL-3, DESIGN §4.4 `redirect
+     * <task>`). Absent for `pause`/`resume`/`kill`, which act on the whole
+     * run; present and required at the CLI boundary for `redirect`, whose
+     * note has nowhere to reach without naming which task's next session
+     * should read it (T4.2.4).
+     */
+    taskId: z.string().min(1).optional(),
+  }),
 );
 
 /**

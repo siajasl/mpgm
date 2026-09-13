@@ -255,15 +255,23 @@ try {
     resumed.output,
   );
 
-  // redirect — recorded as an intervention
+  // redirect — names the task it is aimed at and is recorded as an
+  // intervention (T4.2.4). Reaching that task's next session is exercised by
+  // `implement/loop-control.test.ts`, not here: this script has no plan task
+  // whose implement loop it drives.
   const redirected = await call([
     'redirect',
+    'T9.1.1',
     '--run',
     'r1',
     '--note',
     'focus on overdue fees',
   ]);
-  check('redirect is recorded', redirected.result.ok, redirected.output);
+  check(
+    'redirect names the task it is aimed at and is recorded',
+    redirected.result.ok && redirected.output.includes('T9.1.1'),
+    redirected.output,
+  );
 
   // run — executes the phase and presents the gate
   const ran = await call(['run', 'definition', '--run', 'r1']);
