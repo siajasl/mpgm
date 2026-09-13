@@ -13,7 +13,7 @@ import { EventLog } from '../event/store.js';
 import { deployFingerprint } from '../policy/deploy-gate.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
-import { rollback, type CliContext } from './commands.js';
+import { rollback, status, type CliContext } from './commands.js';
 
 /**
  * `rollback` (T4.1.5), against a fake `env.provision` rather than a real
@@ -602,5 +602,78 @@ describe('rollback', () => {
       },
     ]);
     expect(releaseRollbackRefusedEvents(afterRoot)).toEqual([]);
+  });
+});
+
+/**
+ * `status --metrics` (T4.2.1, OBS-2) — exercises `formatMetric` (`./commands.ts`)
+ * through the real `status` command rather than as an unexported helper, the
+ * way `scripts/demo/cli-e2e.mjs` only ever asserts on shape (`/role \S+:
+ * tasks \d+/`) and never pins the documented "-" rendering down anywhere.
+ */
+describe('status --metrics', () => {
+  it('renders "-" for an unsettled bucket and real numbers once a task completes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      // A fixed clock, one second per event: real numbers below (`0ms`) must
+      // be exact, not merely non-null, and a wall clock would make this test
+      // flaky by however long the write to sqlite happens to take.
+      let seconds = 0;
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => {
+          const ts = new Date(2026_01_01_00_00_00 + seconds * 1000).toISOString();
+          seconds += 1;
+          return ts;
+        },
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        { runId: 'r1', type: 'PhaseEntered', payload: { phase: 'implement' } },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        { runId: 'r1', type: 'PhaseEntered', payload: { phase: 'review' } },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T2', role: 'reviewer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: { taskId: 'T2', inputTokens: 10, outputTokens: 5, costUsd: 0.25 },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T2', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    // T1 was dispatched but never reached a terminal event: nothing to
+    // average and nothing settled, and neither must read as 0ms/0%.
+    expect(output).toContain(
+      '  phase implement: tasks 1  cost $0.0000  tokens 0  avg-latency -  retries 0  success -',
+    );
+    // T2 completed, so its bucket reports real numbers rather than "-".
+    expect(output).toContain(
+      '  phase review: tasks 1  cost $0.2500  tokens 15  avg-latency 2000ms  retries 0  success 100% (1/1)',
+    );
   });
 });

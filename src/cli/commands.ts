@@ -58,6 +58,7 @@ import { renderProgress } from '../implement/progress.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
+import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
 import { Projector } from '../state/projector.js';
 import { fold } from '../state/reduce.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
@@ -251,9 +252,36 @@ export async function run(
   }
 }
 
-/** `mpgm status` — folded run state (OBS-3). */
-export function status(context: CliContext, runId?: string): CommandResult {
-  const { db, projector } = open(context);
+/**
+ * One line of `mpgm status --metrics` — cost (spend and tokens, OBS-2),
+ * latency, retries and success for a bucket (overall, one phase, or one
+ * role).
+ *
+ * `successRate`/`avgLatencyMs` render as `-` rather than `0%`/`0ms` when
+ * null: a bucket with no settled task has not failed, it has nothing to
+ * report yet, and the two must not read alike.
+ */
+function formatMetric(label: string, metric: AggregateMetric): string {
+  const success =
+    metric.successRate === null
+      ? '-'
+      : `${(metric.successRate * 100).toFixed(0)}% (${String(metric.completed)}/${String(metric.completed + metric.blocked)})`;
+  const latency =
+    metric.avgLatencyMs === null ? '-' : `${String(Math.round(metric.avgLatencyMs))}ms`;
+  return (
+    `  ${label}: tasks ${String(metric.tasks)}  cost $${metric.costUsd.toFixed(4)}  ` +
+    `tokens ${String(metric.inputTokens + metric.outputTokens)}  ` +
+    `avg-latency ${latency}  retries ${String(metric.retries)}  success ${success}`
+  );
+}
+
+/** `mpgm status` — folded run state (OBS-3), with per-phase/role/run metrics on `--metrics` (OBS-2). */
+export function status(
+  context: CliContext,
+  runId?: string,
+  options: { readonly metrics?: boolean } = {},
+): CommandResult {
+  const { db, log, projector } = open(context);
   try {
     const state = projector.project();
     const runs = runId === undefined ? Object.values(state.runs) : [state.runs[runId]];
@@ -295,6 +323,18 @@ export function status(context: CliContext, runId?: string): CommandResult {
         context.write(
           `  gate ${gate.gateId} ${gate.status}${gate.decidedBy === null ? '' : ` by ${gate.decidedBy}`}`,
         );
+      }
+
+      if (options.metrics === true) {
+        const report = computeRunMetrics(current, log.read({ runId: current.runId }));
+        context.write('  metrics:');
+        context.write(formatMetric('run', report.overall));
+        for (const [phase, metric] of Object.entries(report.byPhase)) {
+          context.write(formatMetric(`phase ${phase}`, metric));
+        }
+        for (const [role, metric] of Object.entries(report.byRole)) {
+          context.write(formatMetric(`role ${role}`, metric));
+        }
       }
     }
 
