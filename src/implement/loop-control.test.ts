@@ -7,6 +7,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MEMORY } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
+import type {
+  AgentSessionProvider,
+  SessionRequest,
+  SessionResult,
+} from '../agent/session.js';
 import { SessionRunner } from '../agent/runner.js';
 import { ScriptedProvider, scriptedSuccess } from '../agent/scripted-provider.js';
 import { RoleRegistry } from '../role/loader.js';
@@ -65,7 +70,7 @@ afterEach(() => {
   }
 });
 
-function baseOptions(repo: string, provider: ScriptedProvider, log: EventLog) {
+function baseOptions(repo: string, provider: AgentSessionProvider, log: EventLog) {
   return {
     runId: 'r',
     task: {
@@ -91,6 +96,46 @@ function baseOptions(repo: string, provider: ScriptedProvider, log: EventLog) {
     policy: { maxClass: 'internal' as const, unlabelled: 'internal' as const },
     checks: (ref: string) => Promise.resolve(mergeVerdict({ ref, runs: GREEN })),
   };
+}
+
+/**
+ * Replays scripted results like {@link ScriptedProvider}, but appends an
+ * `OperatorIntervened` to `log` the instant one particular call *returns* —
+ * simulating an operator's kill landing while that session was in flight, in
+ * the window between it finishing and whatever the loop does next. Used to
+ * reach the one gap `track`'s own check cannot: the interval after the final
+ * review has returned and before `mergeChange` runs, where nothing else in
+ * `implementTask` reads `runControl` again (T4.2.4).
+ */
+class KillAsCallReturns implements AgentSessionProvider {
+  readonly requests: SessionRequest[] = [];
+  #results: SessionResult[];
+  #calls = 0;
+
+  constructor(
+    private readonly log: EventLog,
+    private readonly killAfterCall: number,
+    results: readonly SessionResult[],
+  ) {
+    this.#results = [...results];
+  }
+
+  run(request: SessionRequest): Promise<SessionResult> {
+    this.#calls += 1;
+    this.requests.push(request);
+    const next = this.#results.shift();
+    if (next === undefined) {
+      throw new Error('KillAsCallReturns ran out of scripted results');
+    }
+    if (this.#calls === this.killAfterCall) {
+      this.log.append({
+        runId: 'r',
+        type: 'OperatorIntervened',
+        payload: { action: 'kill', detail: '' },
+      });
+    }
+    return Promise.resolve(next);
+  }
 }
 
 function openLog(): EventLog {
@@ -498,6 +543,49 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
       expect(secondAttempt.requests[0]?.prompt).toContain(
         'drop the fee waiver, keep the rest',
       );
+    } finally {
+      log.close();
+    }
+  });
+
+  it('kill recorded as the final review session returns stops the merge, not just the sessions before it', async () => {
+    // The gap `track`'s dispatch guard cannot reach: once the review session
+    // has returned an approval, nothing between `decideMerge` and
+    // `mergeChange` reads `runControl` again. Without a check placed there
+    // too, this kill — recorded the instant the review call returns, strictly
+    // after `track` last looked — would never be seen, and the task would
+    // merge to the trunk with the operator having already killed the run.
+    const repo = newRepo();
+    const trunkBefore = git(repo, ['rev-parse', 'main']);
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const log = openLog();
+    const provider = new KillAsCallReturns(log, 2, [
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('the run was killed by an operator');
+      // The irreversible act itself did not happen: the trunk is exactly
+      // where it was before this task ever ran.
+      expect(git(repo, ['rev-parse', 'main'])).toBe(trunkBefore);
     } finally {
       log.close();
     }
