@@ -255,11 +255,10 @@ try {
     resumed.output,
   );
 
-  // redirect — names the task it is aimed at and is recorded as an
-  // intervention (T4.2.4). Reaching that task's next session is exercised by
-  // `implement/loop-control.test.ts`, not here: this script has no plan task
-  // whose implement loop it drives.
-  const redirected = await call([
+  // redirect — refused before this run or the gated Plan has ever heard of
+  // the id (T4.2.4): nothing here yet has, so this has to precede the plan
+  // being written below, or the refusal would be untested.
+  const misdirected = await call([
     'redirect',
     'T9.1.1',
     '--run',
@@ -268,9 +267,9 @@ try {
     'focus on overdue fees',
   ]);
   check(
-    'redirect names the task it is aimed at and is recorded',
-    redirected.result.ok && redirected.output.includes('T9.1.1'),
-    redirected.output,
+    'redirect refuses an id neither this run nor a gated Plan knows',
+    !misdirected.result.ok && misdirected.output.includes("no task 'T9.1.1'"),
+    misdirected.output,
   );
 
   // run — executes the phase and presents the gate
@@ -913,6 +912,32 @@ try {
       runId: 'r1',
     },
   });
+
+  // redirect — now that the Plan names T9.1.1, the id is not a typo, and the
+  // command names the task it is aimed at and records it (T4.2.4). Reaching
+  // that task's next session is exercised by `implement/loop-control.test.ts`,
+  // not here: this script has no plan task whose implement loop it drives.
+  const redirected = await call([
+    'redirect',
+    'T9.1.1',
+    '--run',
+    'r1',
+    '--note',
+    'focus on overdue fees',
+  ]);
+  check(
+    'redirect names the task it is aimed at and is recorded',
+    redirected.result.ok && redirected.output.includes('T9.1.1'),
+    redirected.output,
+  );
+
+  const withRedirect = await call(['status', '--run', 'r1']);
+  check(
+    'status surfaces a pending redirect so a misdirected note is visible',
+    withRedirect.output.includes('redirected: T9.1.1 — focus on overdue fees'),
+    withRedirect.output.split('\n').find((line) => line.includes('redirected')) ??
+      '(no such line)',
+  );
 
   // What the attestation is *for*: the scheduler gates each milestone behind
   // the previous one's tasks, so unrecorded bootstrap work leaves the plan

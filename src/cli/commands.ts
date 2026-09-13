@@ -325,6 +325,18 @@ export function status(
         );
       }
 
+      // Surfaced even though `intervene` already checks the id it is given
+      // (T4.2.4): a redirect can still name a task correctly and reach
+      // nothing, if the task never runs again before the run ends. An
+      // operator watching only the terminal that issued it would have no way
+      // to tell a note delivered from one still waiting.
+      const redirects = Object.entries(current.redirects);
+      if (redirects.length > 0) {
+        for (const [redirectedTask, note] of redirects) {
+          context.write(`  redirected: ${redirectedTask} — ${note}`);
+        }
+      }
+
       if (options.metrics === true) {
         const report = computeRunMetrics(current, log.read({ runId: current.runId }));
         context.write('  metrics:');
@@ -455,6 +467,20 @@ export async function serve(
  * <task>`): the implement loop reads it back before dispatching that task's
  * next session (`redirectNoteFor`, T4.2.4). `pause`/`resume`/`kill` act on
  * the whole run and pass none.
+ *
+ * DESIGN §4.4 glosses `redirect` as "revise a task's instructions/context and
+ * requeue". There is no separate requeue step here, and none is added: this
+ * harness has no scheduler that pulls Implement-phase tasks off a queue on
+ * its own — `mpgm implement <task>` is what dispatches one, named, every
+ * time, and a blocked task was already the operator's to reissue that
+ * command against before this task existed. What redirecting changes is
+ * what that next invocation's first session — and, once a task is already
+ * in flight, whichever session comes after the redirect, review included —
+ * is told. A task that has already merged is deliberately not put back in
+ * front of the scheduler: `done` meaning merged, never reopened, is load-
+ * bearing elsewhere (§4.8, the PM projector) — a redirect that resurrected a
+ * merged task would contradict it, and a fresh plan task is where further
+ * work on a merged change belongs.
  */
 export function intervene(
   context: CliContext,
@@ -468,6 +494,45 @@ export function intervene(
     if (projector.project().runs[runId] === undefined) {
       context.write(`no such run: ${runId}`);
       return { ok: false, detail: 'unknown run' };
+    }
+
+    // A redirect nothing checks reaches the operator as success and nothing
+    // at all — a task that has already merged or was never dispatched reads
+    // no session's next prompt, so a typo'd or stale id is silently inert
+    // (CONV-3, T4.2.4). Checked against two sources, because a task's id
+    // exists in one or the other depending on when in its life the redirect
+    // is aimed at it: the run's own folded tasks (dispatched already, this
+    // run) and the gated Plan graph (an Implement-phase task not yet
+    // dispatched). Neither is required to exist on its own — a redirect
+    // aimed at a phase-playbook task the Plan schema has never heard of is
+    // still a task this run may have dispatched, and one aimed ahead of a
+    // plan task's first session is still one the gated Plan already lists.
+    if (taskId !== undefined) {
+      const dispatched = Object.keys(projector.project().runs[runId]?.tasks ?? {});
+      let planned: string[] = [];
+      try {
+        const artifacts = new ArtifactStore({
+          root: context.root,
+          schemas: context.artifactSchemas,
+        });
+        planned = ingestPlan(artifacts.read(PLAN_ARTIFACT).data as never).tasks.map(
+          (task) => task.id,
+        );
+      } catch {
+        // No gated Plan (yet), or it does not parse. Not refused for that
+        // alone — a redirect can still be aimed at a task this run has
+        // already dispatched with no Plan artifact in sight, the way the
+        // sample-service and phase-playbook tasks always are. `known` below
+        // falls back to `dispatched` alone in that case.
+      }
+      const known = new Set([...dispatched, ...planned]);
+      if (!known.has(taskId)) {
+        context.write(
+          `no task '${taskId}' in run ${runId} or the gated Plan at ${PLAN_ARTIFACT}. ` +
+            `Known: ${[...known].sort().join(', ') || '(none)'}`,
+        );
+        return { ok: false, detail: 'unknown task' };
+      }
     }
 
     log.append({
