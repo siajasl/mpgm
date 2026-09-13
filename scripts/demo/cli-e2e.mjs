@@ -374,11 +374,11 @@ try {
     after.output,
   );
 
-  // status --metrics — T4.2.1, OBS-2: cost/latency/retry/success per phase and role.
+  // status --metrics — T4.2.1, OBS-2: cost/tokens/latency/retry/success per phase and role.
   const metrics = await call(['status', '--run', 'r1', '--metrics']);
   check(
     'status --metrics reports the run total',
-    /run: tasks \d+ {2}cost \$\d+\.\d{4} {2}avg-latency \S+ {2}retries \d+ {2}success \S+/.test(
+    /run: tasks \d+ {2}cost \$\d+\.\d{4} {2}tokens \d+ {2}avg-latency \S+ {2}retries \d+ {2}success \S+/.test(
       metrics.output,
     ),
     metrics.output,
@@ -386,6 +386,17 @@ try {
   check(
     'status --metrics breaks cost/latency/retries/success down by phase',
     metrics.output.includes('phase definition:'),
+    metrics.output,
+  );
+  // The `chat` call above ran before `run definition` entered the phase, so
+  // its `elicit` task is genuinely a pre-phase dispatch — not the definition
+  // phase's own work. Pinned separately from the `phase definition:` check
+  // above: that one is satisfied by `survey-prior-art`/`draft-brief`/
+  // `challenge-brief` alone and would read the same whether or not `elicit`
+  // were (wrongly) filed under `definition` instead of `(none)`.
+  check(
+    'status --metrics files the pre-phase chat elicitation under phase (none), not definition',
+    metrics.output.includes('phase (none):'),
     metrics.output,
   );
   check(

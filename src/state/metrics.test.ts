@@ -96,6 +96,8 @@ describe('computeRunMetrics', () => {
     expect(report.overall).toEqual({
       tasks: 2,
       costUsd: 0.75,
+      inputTokens: 20,
+      outputTokens: 20,
       retries: 1,
       completed: 1,
       blocked: 1,
@@ -109,6 +111,8 @@ describe('computeRunMetrics', () => {
     expect(report.byPhase.implement).toEqual({
       tasks: 1,
       costUsd: 0.5,
+      inputTokens: 10,
+      outputTokens: 10,
       retries: 1,
       completed: 1,
       blocked: 0,
@@ -120,6 +124,8 @@ describe('computeRunMetrics', () => {
     expect(report.byPhase.review).toEqual({
       tasks: 1,
       costUsd: 0.25,
+      inputTokens: 10,
+      outputTokens: 10,
       retries: 0,
       completed: 0,
       blocked: 1,
@@ -199,5 +205,114 @@ describe('computeRunMetrics', () => {
 
     expect(report.overall.blocked).toBe(1);
     expect(report.overall.avgLatencyMs).toBe(1000);
+  });
+
+  it('latency spans every round of a task, not just its last dispatch', () => {
+    // `implement/loop.ts` re-dispatches the same taskId for a CI repair round
+    // and again for a review-rework round, appending a fresh `TaskDispatched`
+    // each time. Measuring from the *latest* one — the bug this fixture
+    // catches — would report only the final round's duration (1000ms here);
+    // measuring from the first reports the whole task's span (2000ms).
+    const events = logWith([
+      runStarted,
+      { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+      dispatched('T1', 'implementer'), // the implementing session
+      dispatched('T1', 'implementer'), // a CI repair round, same taskId
+      completed('T1'),
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    const report = computeRunMetrics(run, events);
+
+    expect(report.overall.avgLatencyMs).toBe(2000);
+  });
+
+  it('retries counts re-dispatches of a taskId, not only structured-output validation failures', () => {
+    // One session-internal retry (`ValidationFailed`) plus two loop-level
+    // re-dispatches of the same taskId — a repair round and a rework round —
+    // should both count: an operator's "retries" means both, and a task that
+    // went through repair and rework rounds with no `ValidationFailed` must
+    // not report 0.
+    //
+    // The `ValidationFailed` sits after the *last* `TaskDispatched`
+    // deliberately: `reduce.ts`'s `TaskDispatched` case starts a task's
+    // `validationFailures` fresh at 0 on every dispatch (each dispatch is a
+    // new session with its own structured-output retry loop), so one placed
+    // before a later dispatch would be reset before this reads it — a
+    // pre-existing property of the fold this task does not change, and
+    // orthogonal to what this test is pinning down: that re-dispatches
+    // themselves are counted at all.
+    const events = logWith([
+      runStarted,
+      { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+      dispatched('T1', 'implementer'), // the implementing session
+      dispatched('T1', 'implementer'), // a CI repair round
+      dispatched('T1', 'implementer'), // a review-rework round
+      validationFailed('T1'), // a schema retry inside the rework session
+      completed('T1'),
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    const report = computeRunMetrics(run, events);
+
+    expect(report.overall.retries).toBe(3);
+  });
+
+  it('a task dispatched after PhaseReopened is grouped under the reopened phase', () => {
+    // Distinct from a `PhaseEntered` fixture: if the `PhaseReopened` case
+    // were dropped from the switch, `phase` would stay at 'implement' and T1
+    // would land there instead of 'review'.
+    const events = logWith([
+      runStarted,
+      { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+      { runId: RUN, type: 'PhaseReopened', payload: { phase: 'review' } },
+      dispatched('T1', 'implementer'),
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    const report = computeRunMetrics(run, events);
+
+    expect(Object.keys(report.byPhase)).toEqual(['review']);
+    expect(report.byPhase.review?.tasks).toBe(1);
+  });
+
+  it('an attested task takes the phase current at attestation, not (none)', () => {
+    // Distinct from the earlier attested-task test, which attests with no
+    // `PhaseEntered` at all and so cannot tell a working `TaskAttested` case
+    // from a deleted one — both read '(none)'. Here a phase is already
+    // current, so dropping the `TaskAttested` case would leave T0 in
+    // '(none)' instead of 'implement'.
+    const events = logWith([
+      runStarted,
+      { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+      {
+        runId: RUN,
+        type: 'TaskAttested',
+        payload: {
+          taskId: 'T0',
+          by: 'operator',
+          evidence: 'merged as abc1234',
+          note: 'built before the harness could run it',
+        },
+      },
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    const report = computeRunMetrics(run, events);
+
+    expect(report.byPhase.implement?.attested).toBe(1);
+    expect(report.byPhase['(none)']).toBeUndefined();
   });
 });

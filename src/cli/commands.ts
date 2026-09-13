@@ -253,8 +253,9 @@ export async function run(
 }
 
 /**
- * One line of `mpgm status --metrics` — cost, latency, retries and success
- * for a bucket (overall, one phase, or one role).
+ * One line of `mpgm status --metrics` — cost (spend and tokens, OBS-2),
+ * latency, retries and success for a bucket (overall, one phase, or one
+ * role).
  *
  * `successRate`/`avgLatencyMs` render as `-` rather than `0%`/`0ms` when
  * null: a bucket with no settled task has not failed, it has nothing to
@@ -269,6 +270,7 @@ function formatMetric(label: string, metric: AggregateMetric): string {
     metric.avgLatencyMs === null ? '-' : `${String(Math.round(metric.avgLatencyMs))}ms`;
   return (
     `  ${label}: tasks ${String(metric.tasks)}  cost $${metric.costUsd.toFixed(4)}  ` +
+    `tokens ${String(metric.inputTokens + metric.outputTokens)}  ` +
     `avg-latency ${latency}  retries ${String(metric.retries)}  success ${success}`
   );
 }

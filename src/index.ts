@@ -418,6 +418,8 @@ export {
 } from './git/tag.js';
 export type { ChecksState, RunControl } from './state/kernel-state.js';
 export { runControl } from './state/reduce.js';
+export type { AggregateMetric, RunMetrics } from './state/metrics.js';
+export { computeRunMetrics } from './state/metrics.js';
 export type {
   ReleaseOptions,
   ReleaseResult,

@@ -18,7 +18,18 @@ import type { RunState, TaskStatus } from './kernel-state.js';
 export interface AggregateMetric {
   readonly tasks: number;
   readonly costUsd: number;
-  /** Sum of `validationFailures` (AGT-3 retries inside the session loop). */
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /**
+   * `validationFailures` (AGT-3 retries inside a session's own structured-
+   * output loop) plus every re-dispatch of the task's own `taskId` beyond
+   * its first — a CI repair round or a review-rework round, each of which
+   * `implement/loop.ts` sends back through `sessions.runTask` under the same
+   * `taskId` and so appends its own `TaskDispatched`. A task repaired three
+   * times and reworked twice reports 5, not 0: those rounds are retries an
+   * operator means by the word even though no session inside them failed to
+   * produce usable structured output.
+   */
   readonly retries: number;
   readonly completed: number;
   readonly blocked: number;
@@ -32,7 +43,12 @@ export interface AggregateMetric {
    */
   readonly successRate: number | null;
   /**
-   * Mean of `end - dispatch` over tasks that reached a terminal status.
+   * Mean of `end - firstDispatch` over tasks that reached a terminal status,
+   * where `firstDispatch` is the *earliest* `TaskDispatched` a task's own
+   * `taskId` carries, not the latest. `implement/loop.ts` re-dispatches the
+   * same `taskId` for every CI repair round and every review-rework round,
+   * so the latest dispatch is only the final session — using it would report
+   * a four-session task's latency as the duration of its last session alone.
    * Null when none have, for the same reason `successRate` is nullable.
    */
   readonly avgLatencyMs: number | null;
@@ -56,14 +72,22 @@ interface TaskFacts {
   readonly phase: string;
   readonly status: TaskStatus;
   readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
   readonly retries: number;
   readonly latencyMs: number | null;
 }
 
 function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[] {
   let phase: string = NO_PHASE;
+  // First dispatch only (see `avgLatencyMs`): a later `TaskDispatched` for a
+  // taskId already in this map is a repair or rework round, not a new task.
   const dispatchedAt = new Map<string, string>();
   const dispatchedPhase = new Map<string, string>();
+  // Every `TaskDispatched` a taskId carries, including the first — one
+  // dispatch is a task that ran once; a fifth is four rounds of repair or
+  // rework, which is what `retries` on `AggregateMetric` counts beyond it.
+  const dispatchCount = new Map<string, number>();
   const completedAt = new Map<string, string>();
   // Latest of `TaskBlocked`/`BudgetExceeded`, either of which can be what
   // actually put a task into `blocked` (§4.5, `../state/reduce.ts`).
@@ -82,8 +106,11 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
       }
       case 'TaskDispatched': {
         const payload = event.payload as { readonly taskId: string };
-        dispatchedAt.set(payload.taskId, event.ts);
+        if (!dispatchedAt.has(payload.taskId)) {
+          dispatchedAt.set(payload.taskId, event.ts);
+        }
         dispatchedPhase.set(payload.taskId, phase);
+        dispatchCount.set(payload.taskId, (dispatchCount.get(payload.taskId) ?? 0) + 1);
         break;
       }
       case 'TaskAttested': {
@@ -121,13 +148,20 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
         ? Date.parse(end) - Date.parse(start)
         : null;
 
+    // `dispatchCount - 1`: the first dispatch is the task running once, not
+    // a retry of itself. An attested task never dispatches at all, so this
+    // floors at 0 rather than reading -1.
+    const redispatches = Math.max((dispatchCount.get(task.taskId) ?? 0) - 1, 0);
+
     facts.push({
       taskId: task.taskId,
       role: task.role === '' ? '(attested)' : task.role,
       phase: dispatchedPhase.get(task.taskId) ?? NO_PHASE,
       status: task.status,
       costUsd: task.usage.costUsd,
-      retries: task.validationFailures,
+      inputTokens: task.usage.inputTokens,
+      outputTokens: task.usage.outputTokens,
+      retries: task.validationFailures + redispatches,
       latencyMs,
     });
   }
@@ -136,6 +170,8 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
 
 function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
   let costUsd = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
   let retries = 0;
   let completed = 0;
   let blocked = 0;
@@ -146,6 +182,8 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
 
   for (const fact of facts) {
     costUsd += fact.costUsd;
+    inputTokens += fact.inputTokens;
+    outputTokens += fact.outputTokens;
     retries += fact.retries;
     if (fact.latencyMs !== null) {
       latencySum += fact.latencyMs;
@@ -171,6 +209,8 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
   return {
     tasks: facts.length,
     costUsd,
+    inputTokens,
+    outputTokens,
     retries,
     completed,
     blocked,
