@@ -50,7 +50,7 @@ export type Verb = (typeof VERBS)[number];
 export const USAGE = `mpgm — agentic SDLC harness
 
   mpgm run <phase> [--run <id>]        execute a phase and present its gate
-  mpgm status [--run <id>]             folded state of a run
+  mpgm status [--run <id>] [--metrics] folded state of a run, with cost/latency/retry/success per phase, role and run on --metrics
   mpgm serve [--port <n>]              live dashboard over that state, until ctrl-c
   mpgm pause --run <id>                stop dispatching new tasks
   mpgm resume --run <id>               resume a paused run
@@ -135,7 +135,7 @@ export async function runCli(
       return run(context, runId, require('a phase name', positional[0]));
 
     case 'status':
-      return status(context, flags.run);
+      return status(context, flags.run, { metrics: flags.metrics === 'true' });
 
     case 'serve':
       return serve(context, flags.port);
