@@ -509,20 +509,32 @@ export const deployConfirmationSpent = defineEvent(
   }),
 );
 
+/**
+ * A discriminated union rather than one object with an optional `taskId`
+ * (CONV-5, T4.2.4): a redirect with nowhere to reach was representable
+ * before this, and `reduce.ts` had to check for it and silently drop the
+ * note — an obligation enforced by a runtime check rather than one the
+ * schema made impossible to violate. `taskId` is required on the `redirect`
+ * variant and does not exist on the other three, so a redirect naming no
+ * task, or a pause/resume/kill carrying one, fails validation at
+ * `EventLog.append` instead of reaching the fold at all.
+ */
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
-  z.object({
-    action: nonEmpty,
-    detail: z.string().default(''),
-    /**
-     * The task a redirection is aimed at (HIL-3, DESIGN §4.4 `redirect
-     * <task>`). Absent for `pause`/`resume`/`kill`, which act on the whole
-     * run; present and required at the CLI boundary for `redirect`, whose
-     * note has nowhere to reach without naming which task's next session
-     * should read it (T4.2.4).
-     */
-    taskId: z.string().min(1).optional(),
-  }),
+  z.discriminatedUnion('action', [
+    z.object({ action: z.literal('pause'), detail: z.string().default('') }),
+    z.object({ action: z.literal('resume'), detail: z.string().default('') }),
+    z.object({ action: z.literal('kill'), detail: z.string().default('') }),
+    z.object({
+      action: z.literal('redirect'),
+      detail: z.string().default(''),
+      /**
+       * The task a redirection is aimed at (HIL-3, DESIGN §4.4 `redirect
+       * <task>`), read back before that task's next session (T4.2.4).
+       */
+      taskId: nonEmpty,
+    }),
+  ]),
 );
 
 /**

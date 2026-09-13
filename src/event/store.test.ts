@@ -216,7 +216,7 @@ describe('EventLog redaction (SAF-6)', () => {
     log.append({
       runId: 'run-1',
       type: 'OperatorIntervened',
-      payload: { action: 'redirect', detail: 'ticket INT-4242' },
+      payload: { action: 'redirect', detail: 'ticket INT-4242', taskId: 'T1' },
     });
 
     expect(JSON.stringify(log.readRaw())).toContain(marker('internal-id'));
