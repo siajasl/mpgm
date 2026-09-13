@@ -846,6 +846,23 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     return stop('the review loop produced no decision');
   }
 
+  // Read once more, immediately before the one dispatch-shaped call `track`
+  // does not guard: merging is the loop's only irreversible act, and nothing
+  // between the review returning (above) and here checks the run's control
+  // again. Without this a kill or pause recorded while that review session
+  // was in flight — after `track` last read it, before the change was
+  // merged — reached everywhere else the loop stops but not this one
+  // (T4.2.4, HIL-3): the task would merge to the trunk with the operator
+  // having already told it not to.
+  const controlBeforeMerge = runControl(fold(options.log.read()), runId);
+  if (controlBeforeMerge !== 'running') {
+    return stop(`the run was ${controlBeforeMerge} by an operator`, {
+      ref: repair.ref,
+      review,
+      repair,
+    });
+  }
+
   const merged = await mergeChange({
     runId,
     repo: options.repo,
