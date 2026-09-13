@@ -92,6 +92,17 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
   // Latest of `TaskBlocked`/`BudgetExceeded`, either of which can be what
   // actually put a task into `blocked` (§4.5, `../state/reduce.ts`).
   const blockedAt = new Map<string, string>();
+  // Summed across every `SessionUsage` a taskId carries, not read off
+  // `task.usage`: `reduce.ts` rebuilds `TaskState` with `usage: zeroUsage`
+  // on every `TaskDispatched`, so a repaired or reworked task's `usage`
+  // holds only its last session's spend. `implement/loop.ts` re-dispatches
+  // the same `taskId` for each repair and rework round, so the run's own
+  // event slice — this loop's second pass, per DESIGN §4.5 — is the only
+  // place the full spend survives.
+  const usageByTask = new Map<
+    string,
+    { costUsd: number; inputTokens: number; outputTokens: number }
+  >();
 
   for (const event of events) {
     if (event.runId !== run.runId) {
@@ -129,6 +140,25 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
         blockedAt.set(payload.taskId, event.ts);
         break;
       }
+      case 'SessionUsage': {
+        const payload = event.payload as {
+          readonly taskId: string;
+          readonly costUsd: number;
+          readonly inputTokens: number;
+          readonly outputTokens: number;
+        };
+        const prior = usageByTask.get(payload.taskId) ?? {
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        };
+        usageByTask.set(payload.taskId, {
+          costUsd: prior.costUsd + payload.costUsd,
+          inputTokens: prior.inputTokens + payload.inputTokens,
+          outputTokens: prior.outputTokens + payload.outputTokens,
+        });
+        break;
+      }
       default:
         break;
     }
@@ -152,15 +182,20 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
     // a retry of itself. An attested task never dispatches at all, so this
     // floors at 0 rather than reading -1.
     const redispatches = Math.max((dispatchCount.get(task.taskId) ?? 0) - 1, 0);
+    const usage = usageByTask.get(task.taskId) ?? {
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
 
     facts.push({
       taskId: task.taskId,
       role: task.role === '' ? '(attested)' : task.role,
       phase: dispatchedPhase.get(task.taskId) ?? NO_PHASE,
       status: task.status,
-      costUsd: task.usage.costUsd,
-      inputTokens: task.usage.inputTokens,
-      outputTokens: task.usage.outputTokens,
+      costUsd: usage.costUsd,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
       retries: task.validationFailures + redispatches,
       latencyMs,
     });

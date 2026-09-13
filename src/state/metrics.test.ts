@@ -264,6 +264,44 @@ describe('computeRunMetrics', () => {
     expect(report.overall.retries).toBe(3);
   });
 
+  it('cost and tokens sum every round of a task, not only its last dispatch', () => {
+    // `reduce.ts` rebuilds `TaskState` with `usage: zeroUsage` on every
+    // `TaskDispatched`, so `task.usage` after a repair round holds only that
+    // round's spend. Reading `task.usage` instead of summing `SessionUsage`
+    // over the run's own event slice would report this task's cost as
+    // $0.25/20 tokens (the rework round alone) rather than $1.25/220 (both
+    // rounds) — and would silently disagree with `run.usage`, which already
+    // sums every `SessionUsage` regardless of which dispatch it followed.
+    const events = logWith([
+      runStarted,
+      { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+      dispatched('T1', 'implementer'), // the implementing session
+      {
+        runId: RUN,
+        type: 'SessionUsage',
+        payload: { taskId: 'T1', inputTokens: 200, outputTokens: 0, costUsd: 1.0 },
+      },
+      dispatched('T1', 'implementer'), // a review-rework round, same taskId
+      {
+        runId: RUN,
+        type: 'SessionUsage',
+        payload: { taskId: 'T1', inputTokens: 20, outputTokens: 0, costUsd: 0.25 },
+      },
+      completed('T1'),
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    const report = computeRunMetrics(run, events);
+
+    expect(report.overall.costUsd).toBeCloseTo(1.25);
+    expect(report.overall.inputTokens).toBe(220);
+    expect(report.overall.costUsd).toBeCloseTo(run.usage.costUsd);
+    expect(report.overall.inputTokens).toBe(run.usage.inputTokens);
+  });
+
   it('a task dispatched after PhaseReopened is grouped under the reopened phase', () => {
     // Distinct from a `PhaseEntered` fixture: if the `PhaseReopened` case
     // were dropped from the switch, `phase` would stay at 'implement' and T1
