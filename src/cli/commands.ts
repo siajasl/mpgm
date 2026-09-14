@@ -58,6 +58,7 @@ import { renderProgress } from '../implement/progress.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
+import { computeGateRates, type RunGateRates } from '../state/gate-rates.js';
 import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
 import { Projector } from '../state/projector.js';
 import { fold } from '../state/reduce.js';
@@ -275,11 +276,41 @@ function formatMetric(label: string, metric: AggregateMetric): string {
   );
 }
 
-/** `mpgm status` — folded run state (OBS-3), with per-phase/role/run metrics on `--metrics` (OBS-2). */
+/**
+ * `mpgm status --rates` — gate rejection and rework rates for a run (OBS-4).
+ *
+ * Two rates, not one, printed on their own lines rather than summed: the
+ * phase gate an operator decides and the merge gate CI and review decide are
+ * different failures with different remedies (glossary, "Gate"). `-` renders
+ * a null rate for the same reason `formatMetric` renders one — nothing
+ * decided yet is not a 0% rejection rate, it is nothing to report.
+ */
+function formatGateRates(rates: RunGateRates): readonly string[] {
+  const pct = (rate: number | null): string =>
+    rate === null ? '-' : `${(rate * 100).toFixed(0)}%`;
+  return [
+    '  rates:',
+    `    phase-gate ${pct(rates.phaseGate.rate)} (${String(rates.phaseGate.rejected)}/${String(rates.phaseGate.decided)} decided rejected)`,
+    `    merge-gate ${pct(rates.mergeGate.rate)} (${String(rates.mergeGate.refusals)}/${String(rates.mergeGate.attempts)} reconstructed from ChecksReported+ChangeReviewed; cannot see ${rates.mergeGate.unobservable.join(', ')})`,
+    `    rework ${pct(rates.rework.rate)} (${String(rates.rework.reworked)}/${String(rates.rework.reviewed)} reviews sent the change back)`,
+  ];
+}
+
+/**
+ * `mpgm status` — folded run state (OBS-3), with per-phase/role/run metrics
+ * on `--metrics` (OBS-2) and gate/rework rates on `--rates` (OBS-4).
+ *
+ * `--rates` is a flag here rather than a verb of its own, for the same
+ * reason `--metrics` is: with no `--run` this already prints one block per
+ * run, in the map's iteration order — which is the order runs first appear
+ * in the log, because that is the order `Projector` folds `RunStarted` into
+ * `state.runs` — so a longitudinal reader already gets each run's rates in
+ * log order without this adding a second way to ask for "every run".
+ */
 export function status(
   context: CliContext,
   runId?: string,
-  options: { readonly metrics?: boolean } = {},
+  options: { readonly metrics?: boolean; readonly rates?: boolean } = {},
 ): CommandResult {
   const { db, log, projector } = open(context);
   try {
@@ -346,6 +377,13 @@ export function status(
         }
         for (const [role, metric] of Object.entries(report.byRole)) {
           context.write(formatMetric(`role ${role}`, metric));
+        }
+      }
+
+      if (options.rates === true) {
+        const rates = computeGateRates(current.runId, log.read({ runId: current.runId }));
+        for (const line of formatGateRates(rates)) {
+          context.write(line);
         }
       }
     }
