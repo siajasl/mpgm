@@ -140,7 +140,7 @@ The walking skeleton (P1) attacks R1–R3 — the assumptions that, if false, in
 **M4.2 — Observability projections**
 | Task | Completion criteria | Traces | Model |
 |---|---|---|---|
-| T4.2.1 Metrics projections: cost/latency/retry/success per phase/role/run | `mpgm status --metrics` + dashboard panels | §4.5, OBS-2 | Sonnet 5 |
+| T4.2.1 Metrics projections: cost/latency/retry/success per phase/role/run | `mpgm status --metrics` reports cost, latency, retries and success rates per phase, role and run | §4.5, OBS-2, NFR-3 | Sonnet 5 |
 | T4.2.2 Quality metrics: gate rejection, rework, escaped-defect rates | longitudinal report over ≥3 runs | §4.5, OBS-4 | Sonnet 5 |
 | T4.2.3 Progress output from a running verb | a long-running verb reports each session as it starts and finishes, before the run ends | §4.4, OBS-3, NFR-2 | Sonnet 5 |
 | T4.2.4 An operator's control of a running task reaches it | a redirection names the task it is aimed at, requeues it, and a planted instruction in the note is demonstrably obeyed by that task's next session (test); pause and kill likewise stop the implement loop, which reads none of the three today | §4.4, HIL-3, HIL-5 | Sonnet 5 |
