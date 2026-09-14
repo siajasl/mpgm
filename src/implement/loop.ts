@@ -514,12 +514,12 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // that fixed a finding and broke the build is not one to merge on the
   // strength of the review it just earned.
   // Deviations the author has already been sent back with, and whether the one
-  // grace round for a late one has been spent. Both live outside the loop
-  // because both are facts about the task, not about a round.
+  // extra round a late declaration can buy has been spent. Both live outside
+  // the loop because both are facts about the task, not about a round.
   // Keyed by convention id so that 'CONV-1' and 'CONV-1 (one logical change per
   // commit)' are one declaration rather than two.
   const declaredSoFar = new Map<string, string>();
-  let graceGranted = false;
+  let extensionSpent = false;
   let attempts = maxReviewAttempts;
 
   for (let round = 1; round <= attempts; round += 1) {
@@ -682,17 +682,32 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     const undeclared = undeclaredDeviations(review.deviations ?? [], declared);
 
     // The reviewer approved and the only thing refusing the change is a
-    // declaration, so ask for the declaration rather than for more work. Once
-    // per task: a second one would be spending a round on a signature the
-    // author has already declined to give.
-    const declarationRound =
-      !graceGranted && earnsDeclarationRound({ decision, approved: review.approved });
+    // declaration, so ask for the declaration rather than for more work.
+    //
+    // Asked on every such review rather than once per task. The author writes
+    // `deviations` before the review that reports one, so a deviation first
+    // reported in round N cannot have been declared in round N — and that is
+    // true of every N, not only of the first. T4.2.4 is what a once-per-task
+    // bound costs: the grace went at round 1 for CONV-6, round 2 was a genuine
+    // rework, and round 3 approved while reporting CONV-3 for the first time,
+    // with no grace left to sign it. Twelve sessions and $29.52 refused over a
+    // signature the author was never in a position to give.
+    const wantsDeclaration = earnsDeclarationRound({
+      decision,
+      approved: review.approved,
+    });
+    // What bounds the loop is the budget, not the count of graces. Below the
+    // cap a declaration round costs the round it replaces, which would
+    // otherwise have been rework on a change the reviewer has passed — it
+    // spends nothing that was not already going to be spent. At the cap there
+    // is no round left to declare in, so one is added rather than taken, and
+    // that addition is once per task: without it a reviewer reporting a fresh
+    // deviation every round extends the budget forever, which is the
+    // elasticity the grace is deliberately not.
+    const declarationRound = wantsDeclaration && (round < attempts || !extensionSpent);
     if (declarationRound) {
-      graceGranted = true;
-      // At the cap there is no round left to declare in, so this one is added
-      // rather than taken. Below the cap it costs the round it replaces, which
-      // would otherwise have been rework on a change the reviewer has passed.
       if (round === attempts) {
+        extensionSpent = true;
         attempts += 1;
       }
     } else if (round === attempts) {
