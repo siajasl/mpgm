@@ -481,7 +481,28 @@ export async function serve(
  * bearing elsewhere (§4.8, the PM projector) — a redirect that resurrected a
  * merged task would contradict it, and a fresh plan task is where further
  * work on a merged change belongs.
+ *
+ * Two overloads rather than one signature with `taskId?: string` (CONV-5,
+ * review): the event schema (`operatorIntervened`, T4.2.4) already makes a
+ * redirect naming no task, or a pause/resume/kill naming one, unrepresentable
+ * at `EventLog.append` — a single optional parameter here let a caller build
+ * exactly that state in memory before ever reaching it. `runCli` already only
+ * ever calls this correctly (`main.ts`); the overloads are what stop a caller
+ * from doing otherwise compiling.
  */
+export function intervene(
+  context: CliContext,
+  runId: string,
+  action: 'pause' | 'resume' | 'kill',
+  detail?: string,
+): CommandResult;
+export function intervene(
+  context: CliContext,
+  runId: string,
+  action: 'redirect',
+  detail: string,
+  taskId: string,
+): CommandResult;
 export function intervene(
   context: CliContext,
   runId: string,
