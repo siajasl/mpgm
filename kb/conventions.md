@@ -23,3 +23,8 @@ reviewer judges. If a convention is wrong, say so — do not work around it.
   meaningfully exist without it.
 - **CONV-6** Every test must be able to fail. A test that passes against the
   unmodified code reports coverage that does not exist.
+- **CONV-7** An event payload only grows. Add a field, bump the registered
+  version, and carry older payloads forward with an upcaster (`EventRegistry`,
+  ADR-2). Narrowing, renaming or removing one in place makes every log already
+  written unreadable, and an unreadable log is state that cannot be folded —
+  which is every command the kernel has.
