@@ -13,7 +13,7 @@ import { EventLog } from '../event/store.js';
 import { deployFingerprint } from '../policy/deploy-gate.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
-import { rollback, status, type CliContext } from './commands.js';
+import { intervene, rollback, status, type CliContext } from './commands.js';
 
 /**
  * `rollback` (T4.1.5), against a fake `env.provision` rather than a real
@@ -675,5 +675,82 @@ describe('status --metrics', () => {
     expect(output).toContain(
       '  phase review: tasks 1  cost $0.2500  tokens 15  avg-latency 2000ms  retries 0  success 100% (1/1)',
     );
+  });
+});
+
+describe('intervene redirect — unknown task ids (T4.2.4, CONV-3)', () => {
+  it('refuses a redirect to a task in neither the run nor a Plan that does not exist yet', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-intervene-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      EventLog.attach(db, { registry: kernelRegistry() }).append({
+        runId: 'r1',
+        type: 'RunStarted',
+        payload: { project: root, operator: 'operator' },
+      });
+    } finally {
+      db.close();
+    }
+
+    const result = intervene(
+      newContext(root, writes),
+      'r1',
+      'redirect',
+      'go fix it',
+      'T99',
+    );
+
+    // No Plan artifact was ever written, so falling back to the run's own
+    // dispatched tasks is the right call, and does not claim the Plan was
+    // consulted.
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('unknown task');
+    expect(writes.join('\n')).toContain(
+      "no task 'T99' in run r1 or the gated Plan at artifacts/plan/plan.md",
+    );
+  });
+
+  it('says why a Plan that exists but fails to parse could not be consulted, rather than reporting the task simply unknown', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-intervene-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      EventLog.attach(db, { registry: kernelRegistry() }).append({
+        runId: 'r1',
+        type: 'RunStarted',
+        payload: { project: root, operator: 'operator' },
+      });
+    } finally {
+      db.close();
+    }
+
+    // A Plan artifact exists, but is not readable — malformed frontmatter, the
+    // same shape `ArtifactStore.read` refuses for any artifact (CONV-3: the
+    // refusal below must say this happened, not silently fall back to "no
+    // task" the way it would for a Plan that was never written at all).
+    mkdirSync(join(root, 'artifacts', 'plan'), { recursive: true });
+    writeFileSync(
+      join(root, 'artifacts', 'plan', 'plan.v1.md'),
+      'not frontmatter at all\n',
+    );
+
+    const result = intervene(
+      newContext(root, writes),
+      'r1',
+      'redirect',
+      'go fix it',
+      'T99',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('unknown task');
+    const output = writes.join('\n');
+    // Names the real cause — the Plan could not be read — rather than
+    // reusing the "or the gated Plan at ..." wording that implies it was
+    // checked and simply did not list the task.
+    expect(output).toContain('could not be consulted');
+    expect(output).toContain('has no frontmatter');
+    expect(output).not.toContain('or the gated Plan at artifacts/plan/plan.md. Known');
   });
 });

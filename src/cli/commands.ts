@@ -531,26 +531,41 @@ export function intervene(
     if (taskId !== undefined) {
       const dispatched = Object.keys(projector.project().runs[runId]?.tasks ?? {});
       let planned: string[] = [];
-      try {
-        const artifacts = new ArtifactStore({
-          root: context.root,
-          schemas: context.artifactSchemas,
-        });
-        planned = ingestPlan(artifacts.read(PLAN_ARTIFACT).data as never).tasks.map(
-          (task) => task.id,
-        );
-      } catch {
-        // No gated Plan (yet), or it does not parse. Not refused for that
-        // alone — a redirect can still be aimed at a task this run has
-        // already dispatched with no Plan artifact in sight, the way the
-        // sample-service and phase-playbook tasks always are. `known` below
-        // falls back to `dispatched` alone in that case.
+      const artifacts = new ArtifactStore({
+        root: context.root,
+        schemas: context.artifactSchemas,
+      });
+      // Absent is not refused for that alone — a redirect can still be aimed
+      // at a task this run has already dispatched with no Plan artifact in
+      // sight, the way the sample-service and phase-playbook tasks always
+      // are. `known` below falls back to `dispatched` alone in that case,
+      // silently, because there is genuinely nothing else to consult.
+      //
+      // A Plan that exists but fails to read or parse is a different case
+      // and is not swallowed the same way (CONV-3): silently falling back
+      // here too would leave "unknown task" claiming the gated Plan was
+      // checked when it was not, sending an operator chasing a typo that
+      // was never the cause. `planError` carries the real one through to the
+      // refusal message below instead.
+      let planError: string | undefined;
+      if (artifacts.latestVersion(PLAN_ARTIFACT) > 0) {
+        try {
+          planned = ingestPlan(artifacts.read(PLAN_ARTIFACT).data as never).tasks.map(
+            (task) => task.id,
+          );
+        } catch (error) {
+          planError = error instanceof Error ? error.message : String(error);
+        }
       }
       const known = new Set([...dispatched, ...planned]);
       if (!known.has(taskId)) {
         context.write(
-          `no task '${taskId}' in run ${runId} or the gated Plan at ${PLAN_ARTIFACT}. ` +
-            `Known: ${[...known].sort().join(', ') || '(none)'}`,
+          planError === undefined
+            ? `no task '${taskId}' in run ${runId} or the gated Plan at ${PLAN_ARTIFACT}. ` +
+                `Known: ${[...known].sort().join(', ') || '(none)'}`
+            : `no task '${taskId}' in run ${runId}, and the gated Plan at ${PLAN_ARTIFACT} ` +
+                `could not be consulted: ${planError}. Known (run only): ` +
+                ([...known].sort().join(', ') || '(none)'),
         );
         return { ok: false, detail: 'unknown task' };
       }
