@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fc from 'fast-check';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { kernelRegistry } from './catalog.js';
+import { kernelRegistry, UNTARGETED_REDIRECT } from './catalog.js';
 import { EventValidationError, UnknownEventTypeError } from './errors.js';
 import { defineEvent, EventRegistry, type Upcaster } from './registry.js';
 import type { EventInput, StoredEvent } from './envelope.js';
@@ -313,5 +313,88 @@ describe('EventLog schema evolution', () => {
     } finally {
       second.close();
     }
+  });
+
+  describe('OperatorIntervened v1 -> v2 (T4.2.4, review)', () => {
+    // T1.3.6 shipped `OperatorIntervened` as `{ action, detail }`, with no
+    // `taskId` field at all — v2 (T4.2.4) requires one on `redirect` and
+    // forbids it on the other three. A real event written by that shipped
+    // CLI must still read back through the current registry rather than
+    // throwing `EventValidationError` and taking down `EventLog.read()` for
+    // every consumer (status, replay, serve, further implement) the moment
+    // one such row exists.
+    const v1Registry = new EventRegistry([
+      defineEvent(
+        'OperatorIntervened',
+        z.object({ action: z.string(), detail: z.string() }),
+      ),
+    ]);
+
+    function writeV1(path: string, action: string, detail: string): void {
+      const log = EventLog.open(path, { registry: v1Registry, clock: fixedClock });
+      log.append({
+        runId: 'run-1',
+        type: 'OperatorIntervened',
+        payload: { action, detail },
+      });
+      log.close();
+    }
+
+    it('reads a v1 pause/resume/kill unchanged, with no taskId', () => {
+      for (const action of ['pause', 'resume', 'kill']) {
+        const path = tempDbPath();
+        writeV1(path, action, 'because');
+
+        const log = EventLog.open(path, {
+          registry: kernelRegistry(),
+          clock: fixedClock,
+        });
+        try {
+          const [raw] = log.readRaw();
+          const [migrated] = log.read();
+
+          expect(raw?.schemaVersion).toBe(1);
+          expect(migrated?.schemaVersion).toBe(2);
+          expect(migrated?.payload).toStrictEqual({ action, detail: 'because' });
+        } finally {
+          log.close();
+        }
+      }
+    });
+
+    it('reads a v1 redirect as untargeted rather than throwing (review: dist EventValidationError)', () => {
+      const path = tempDbPath();
+      writeV1(path, 'redirect', 'ticket INT-1');
+
+      const log = EventLog.open(path, { registry: kernelRegistry(), clock: fixedClock });
+      try {
+        // This is the exact failure the review reproduced against dist/: a
+        // real shipped `redirect` row failed validation on read. It must not
+        // throw here either.
+        expect(() => log.read()).not.toThrow();
+
+        const [migrated] = log.read();
+        expect(migrated?.payload).toStrictEqual({
+          action: 'redirect',
+          detail: 'ticket INT-1',
+          taskId: UNTARGETED_REDIRECT,
+        });
+      } finally {
+        log.close();
+      }
+    });
+
+    it('never lets an untargeted legacy redirect land on a real task', () => {
+      const path = tempDbPath();
+      writeV1(path, 'redirect', 'ticket INT-1');
+
+      const log = EventLog.open(path, { registry: kernelRegistry(), clock: fixedClock });
+      try {
+        const [migrated] = log.read();
+        expect((migrated?.payload as { taskId: string }).taskId).not.toBe('T1');
+      } finally {
+        log.close();
+      }
+    });
   });
 });
