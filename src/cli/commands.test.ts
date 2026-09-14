@@ -678,6 +678,89 @@ describe('status --metrics', () => {
   });
 });
 
+/**
+ * `status --rates` (T4.2.2a, OBS-4) — the phase-gate, merge-gate and rework
+ * rates through the real `status` command, the same way `status --metrics`
+ * above is exercised rather than testing `formatGateRates` unexported.
+ */
+describe('status --rates', () => {
+  it('reports phase-gate, merge-gate and rework rates, and says nothing without the flag', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-rates-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'GatePresented',
+          payload: { gateId: 'gate-plan', phase: 'plan', artifactRefs: [] },
+        },
+        {
+          runId: 'r1',
+          type: 'GateRejected',
+          payload: { gateId: 'gate-plan', by: 'operator', reason: 'not ready' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'ChecksReported',
+          payload: {
+            taskId: 'T1',
+            ref: 'abc123',
+            mergeable: true,
+            summary: 'green',
+            blocking: [],
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'ChangeReviewed',
+          payload: {
+            taskId: 'T1',
+            reviewTaskId: 'T1-review',
+            reviewerRole: 'code-reviewer',
+            ref: 'abc123',
+            approved: true,
+            summary: 'looks good',
+            findings: 0,
+            deviations: [],
+            declaredDeviations: [],
+            undeclaredDeviations: [],
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const withoutFlag = status(newContext(root, writes), 'r1', {});
+    expect(withoutFlag.ok).toBe(true);
+    expect(writes.join('\n')).not.toContain('rates:');
+
+    writes.length = 0;
+    const result = status(newContext(root, writes), 'r1', { rates: true });
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain('  rates:');
+    // One rejected of one decided: 100%, and no gate left merely presented.
+    expect(output).toContain('    phase-gate 100% (1/1 decided rejected)');
+    // One clean approval out of one attempt, and one review out of one taken
+    // sent nothing back.
+    expect(output).toContain('    merge-gate 0% (0/2 reconstructed');
+    expect(output).toContain('    rework 0% (0/1 reviews sent the change back)');
+  });
+});
+
 describe('intervene redirect — unknown task ids (T4.2.4, CONV-3)', () => {
   it('refuses a redirect to a task in neither the run nor a Plan that does not exist yet', () => {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-intervene-'));
