@@ -291,7 +291,7 @@ function formatGateRates(rates: RunGateRates): readonly string[] {
   return [
     '  rates:',
     `    phase-gate ${pct(rates.phaseGate.rate)} (${String(rates.phaseGate.rejected)}/${String(rates.phaseGate.decided)} decided rejected)`,
-    `    merge-gate ${pct(rates.mergeGate.rate)} (${String(rates.mergeGate.refusals)}/${String(rates.mergeGate.attempts)} reconstructed from ChecksReported+ChangeReviewed; cannot see ${rates.mergeGate.unobservable.join(', ')})`,
+    `    merge-gate ${pct(rates.mergeGate.rate)} (${String(rates.mergeGate.refusals)}/${String(rates.mergeGate.attempts)} reconstructed from ChecksReported+ChangeReviewed; ${String(rates.mergeGate.budgetExhausted)} out of repair/review rounds (BudgetExceeded); cannot see ${rates.mergeGate.unobservable.join(', ')})`,
     `    rework ${pct(rates.rework.rate)} (${String(rates.rework.reworked)}/${String(rates.rework.reviewed)} reviews sent the change back)`,
   ];
 }
@@ -302,10 +302,18 @@ function formatGateRates(rates: RunGateRates): readonly string[] {
  *
  * `--rates` is a flag here rather than a verb of its own, for the same
  * reason `--metrics` is: with no `--run` this already prints one block per
- * run, in the map's iteration order — which is the order runs first appear
- * in the log, because that is the order `Projector` folds `RunStarted` into
- * `state.runs` — so a longitudinal reader already gets each run's rates in
- * log order without this adding a second way to ask for "every run".
+ * run, so a longitudinal reader already gets each run's rates without this
+ * adding a second way to ask for "every run".
+ *
+ * That per-run order is read from the log's own `RunStarted` events, not
+ * from `Object.values(state.runs)`: run ids are free-form strings an
+ * operator supplies (`--run 2` is as legal as `--run zz`), and JS objects
+ * enumerate integer-like keys in ascending numeric order *before*
+ * insertion-ordered string keys — so a run started third under an
+ * integer-like id would print first, ahead of two runs the log shows
+ * starting before it. Reading `RunStarted` straight from the log has no
+ * such trap: it is a plain array, and `EventLog.read` yields it in the
+ * order it was appended.
  */
 export function status(
   context: CliContext,
@@ -315,7 +323,14 @@ export function status(
   const { db, log, projector } = open(context);
   try {
     const state = projector.project();
-    const runs = runId === undefined ? Object.values(state.runs) : [state.runs[runId]];
+    const runOrder =
+      runId === undefined
+        ? log
+            .read({ type: 'RunStarted' })
+            .map((event) => event.runId)
+            .filter((id) => state.runs[id] !== undefined)
+        : [runId];
+    const runs = runOrder.map((id) => state.runs[id]);
 
     if (runs.length === 0 || runs[0] === undefined) {
       context.write('no runs');
