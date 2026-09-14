@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineEvent, EventRegistry } from './registry.js';
+import { defineEvent, EventRegistry, type Upcaster } from './registry.js';
 
 /**
  * The kernel event catalog (DESIGN §5).
@@ -510,6 +510,36 @@ export const deployConfirmationSpent = defineEvent(
 );
 
 /**
+ * Sentinel `taskId` the v1→v2 upcaster below assigns to a `redirect`
+ * recorded before T4.2.4 added task-scoped redirects. T1.3.6 shipped
+ * `OperatorIntervened` as `{ action, detail }` with no `taskId` field at
+ * all, so every `redirect` written before this task genuinely named no
+ * task — there is nothing to recover, only something to avoid fabricating.
+ * It matches no real task id, so `redirectNoteFor` never finds it: the same
+ * "reaches no session" outcome those events always had, since nothing
+ * folded `OperatorIntervened` into a task's next prompt before this task
+ * did either.
+ */
+export const UNTARGETED_REDIRECT = '(untargeted, pre-T4.2.4 redirect)';
+
+/**
+ * v1 → v2 (T4.2.4): v1 was `{ action, detail }`, with no `taskId` at all.
+ * v2 is the discriminated union below, which requires `taskId` on
+ * `redirect` and forbids it on the other three (CONV-5). A v1
+ * `pause`/`resume`/`kill` already satisfies that shape unchanged; a v1
+ * `redirect` did not name a task and cannot be made to now, so it is
+ * tagged {@link UNTARGETED_REDIRECT} rather than invented. Pure, per the
+ * upcaster contract in `EventRegistry` — no clock, no lookup, so replay
+ * reads the same log to the same result twice.
+ */
+const upcastOperatorIntervenedV1: Upcaster = (payload) => {
+  const { action, detail } = payload as { action: string; detail?: string };
+  return action === 'redirect'
+    ? { action, detail: detail ?? '', taskId: UNTARGETED_REDIRECT }
+    : { action, detail: detail ?? '' };
+};
+
+/**
  * A discriminated union rather than one object with an optional `taskId`
  * (CONV-5, T4.2.4): a redirect with nowhere to reach was representable
  * before this, and `reduce.ts` had to check for it and silently drop the
@@ -518,6 +548,12 @@ export const deployConfirmationSpent = defineEvent(
  * variant and does not exist on the other three, so a redirect naming no
  * task, or a pause/resume/kill carrying one, fails validation at
  * `EventLog.append` instead of reaching the fold at all.
+ *
+ * This is the schema's first version bump (every other event in this
+ * catalog is still v1) — {@link upcastOperatorIntervenedV1} is what keeps a
+ * `redirect` the shipped T1.3.6 CLI already wrote readable: without it,
+ * `EventLog.read()` would throw on a real event this schema narrowed past,
+ * rather than reshaping it forward the way DESIGN's log section requires.
  */
 export const operatorIntervened = defineEvent(
   'OperatorIntervened',
@@ -535,6 +571,7 @@ export const operatorIntervened = defineEvent(
       taskId: nonEmpty,
     }),
   ]),
+  [upcastOperatorIntervenedV1],
 );
 
 /**

@@ -24,6 +24,7 @@ export {
   KERNEL_TASK,
   kernelEvents,
   kernelRegistry,
+  UNTARGETED_REDIRECT,
 } from './event/catalog.js';
 export type { BlobRef, GetOptions } from './blob/store.js';
 export {
