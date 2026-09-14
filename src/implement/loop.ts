@@ -458,6 +458,21 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     };
   };
 
+  // Read here, immediately before `catchUp` below — the first thing this
+  // loop does *to* the repository rather than merely off it (a real merge of
+  // the trunk into the task's branch). `track`'s own read guards every
+  // session dispatch, but nothing stood between acquiring the checkout above
+  // and this merge: a kill or pause already on record before this task's
+  // very first session still let it happen, unlike every other action a
+  // stopped run refuses to take (review, T4.2.4). `stop` already handles "no
+  // session dispatched yet" correctly — it only appends `TaskBlocked` once
+  // this task has a `TaskDispatched` for the fold to attach it to — so it is
+  // safe to call here too, before any session has run.
+  const controlBeforeCatchUp = runControl(fold(options.log.read()), runId);
+  if (controlBeforeCatchUp !== 'running') {
+    return stop(`the run was ${controlBeforeCatchUp} by an operator`);
+  }
+
   // Only now, and deliberately after everything above has been read off the
   // checkout as it was handed over: a branch cut before its own dependencies
   // merged is a branch CI may never be asked about at all, because a provider

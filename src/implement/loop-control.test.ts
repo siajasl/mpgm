@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -196,6 +196,45 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
       expect(result.reason).toContain('paused');
       expect(provider.requests).toHaveLength(0);
       expect(() => fold(log.read())).not.toThrow();
+    } finally {
+      log.close();
+    }
+  });
+
+  it('kill recorded before a reused checkout starts refuses to catch it up to the trunk (review)', async () => {
+    // The first review found this: kill/pause was read inside `track`, which
+    // ran only after `catchUp` had already merged the trunk into the task's
+    // branch — a mutation with no session behind it. A fresh worktree cut
+    // from the trunk's own tip cannot show this (it is already level, so
+    // catchUp is a no-op either way); this needs a checkout cut *before* the
+    // trunk advanced, the way `worktree.test.ts`'s "bringing a checkout up to
+    // the trunk" suite sets one up.
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    await manager.acquire('T1');
+    writeFileSync(join(repo, 'from-the-trunk.txt'), 'landed after the branch was cut\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'a merge the branch was cut before']);
+
+    const provider = new ScriptedProvider([]);
+    const log = openLog();
+    log.append({
+      runId: 'r',
+      type: 'OperatorIntervened',
+      payload: { action: 'kill', detail: '' },
+    });
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('killed');
+      expect(provider.requests).toHaveLength(0);
+      // The mutation the first review found: without the fix, `catchUp`
+      // still runs before `track`'s check is ever reached, and this file
+      // lands in the checkout of a run that was already killed.
+      const worktree = await manager.find('T1');
+      expect(existsSync(join(worktree?.path ?? '', 'from-the-trunk.txt'))).toBe(false);
     } finally {
       log.close();
     }
