@@ -67,6 +67,18 @@ function checksReported(runId: string, taskId: string, mergeable: boolean): Even
   };
 }
 
+function budgetExceeded(
+  runId: string,
+  taskId: string,
+  kind: 'tokens' | 'cost' | 'steps' | 'wallClock' | 'repairs' | 'reviews',
+): EventInput {
+  return {
+    runId,
+    type: 'BudgetExceeded',
+    payload: { taskId, kind, limit: 3, observed: 4 },
+  };
+}
+
 function changeReviewed(
   runId: string,
   taskId: string,
@@ -148,6 +160,26 @@ describe('computeGateRates — merge gate', () => {
 
     expect(rates.mergeGate.attempts).toBe(0);
     expect(rates.mergeGate.rate).toBeNull();
+  });
+
+  it('counts BudgetExceeded{repairs|reviews} as budgetExhausted, without doubling refusals', () => {
+    const events = logWith([
+      runStarted('r1'),
+      checksReported('r1', 'T1', false), // checks-not-green
+      budgetExceeded('r1', 'T1', 'repairs'), // gave up after the refusal above
+      changeReviewed('r1', 'T2', false), // changes-requested
+      budgetExceeded('r1', 'T2', 'reviews'), // gave up after the refusal above
+      // Not counted: a budget kind this reconstruction has no stake in.
+      budgetExceeded('r1', 'T3', 'tokens'),
+    ]);
+
+    const rates = computeGateRates('r1', events);
+
+    // Both refusals already came from ChecksReported/ChangeReviewed above;
+    // the BudgetExceeded events that followed must not add to that count.
+    expect(rates.mergeGate.attempts).toBe(2);
+    expect(rates.mergeGate.refusals).toBe(2);
+    expect(rates.mergeGate.budgetExhausted).toBe(2);
   });
 });
 

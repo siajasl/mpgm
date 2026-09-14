@@ -756,8 +756,165 @@ describe('status --rates', () => {
     expect(output).toContain('    phase-gate 100% (1/1 decided rejected)');
     // One clean approval out of one attempt, and one review out of one taken
     // sent nothing back.
-    expect(output).toContain('    merge-gate 0% (0/2 reconstructed');
+    expect(output).toContain(
+      '    merge-gate 0% (0/2 reconstructed from ChecksReported+ChangeReviewed; 0 out of repair/review rounds (BudgetExceeded); cannot see',
+    );
     expect(output).toContain('    rework 0% (0/1 reviews sent the change back)');
+  });
+
+  it('renders BudgetExceeded{repairs|reviews} on the merge-gate line', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-rates-budget-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        { runId: 'r1', type: 'PhaseEntered', payload: { phase: 'implement' } },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'ChecksReported',
+          payload: {
+            taskId: 'T1',
+            ref: 'abc123',
+            mergeable: false,
+            summary: 'red',
+            blocking: ['test failed'],
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'BudgetExceeded',
+          payload: { taskId: 'T1', kind: 'repairs', limit: 3, observed: 4 },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { rates: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    // Would be silent (dead to the operator) if `budgetExhausted` were
+    // computed and never rendered, which is exactly what the review found.
+    expect(output).toContain('1 out of repair/review rounds (BudgetExceeded)');
+  });
+});
+
+/**
+ * `status --rates` with no `--run` (T4.2.2a, OBS-4, CONV-6): the report must
+ * give each run's rates in the order the log holds them, not in whatever
+ * order `Object.values(state.runs)` happens to enumerate. Run ids are
+ * free-form strings an operator may reuse for anything, including one that
+ * looks like an integer — JS objects put integer-like keys first, in
+ * ascending numeric order, ahead of insertion-ordered string keys, so a run
+ * started last under an integer-like id is exactly the case that would sort
+ * to the front of a naive `Object.values` read and pass unnoticed if this
+ * test only ever used names like `r1`/`r2`/`r3`.
+ */
+describe('status --rates, no --run — longitudinal order (CONV-6)', () => {
+  it('prints three runs with three different phase-gate rates in log order', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-rates-order-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      // Started in this order: 'zz' first, then 'aa', then the integer-like
+      // '2' last. `Object.values(state.runs)` would enumerate '2' first —
+      // ahead of the two runs the log shows starting before it — which is
+      // the defect the review caught.
+      log.appendMany([
+        {
+          runId: 'zz',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'zz',
+          type: 'GatePresented',
+          payload: { gateId: 'g1', phase: 'plan', artifactRefs: [] },
+        },
+        {
+          runId: 'zz',
+          type: 'GateApproved',
+          payload: { gateId: 'g1', by: 'operator' },
+        },
+
+        {
+          runId: 'aa',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'aa',
+          type: 'GatePresented',
+          payload: { gateId: 'g1', phase: 'plan', artifactRefs: [] },
+        },
+        {
+          runId: 'aa',
+          type: 'GateApproved',
+          payload: { gateId: 'g1', by: 'operator' },
+        },
+        {
+          runId: 'aa',
+          type: 'GatePresented',
+          payload: { gateId: 'g2', phase: 'plan', artifactRefs: [] },
+        },
+        {
+          runId: 'aa',
+          type: 'GateRejected',
+          payload: { gateId: 'g2', by: 'operator', reason: 'not ready' },
+        },
+
+        {
+          runId: '2',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: '2',
+          type: 'GatePresented',
+          payload: { gateId: 'g1', phase: 'plan', artifactRefs: [] },
+        },
+        {
+          runId: '2',
+          type: 'GateRejected',
+          payload: { gateId: 'g1', by: 'operator', reason: 'not ready' },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), undefined, { rates: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    const phaseGateLines = output
+      .split('\n')
+      .filter((line) => line.includes('phase-gate'));
+
+    // Three different figures (0%, 50%, 100%) — an implementation that
+    // averaged the runs or emitted a constant would fail this.
+    expect(phaseGateLines).toEqual([
+      '    phase-gate 0% (0/1 decided rejected)',
+      '    phase-gate 50% (1/2 decided rejected)',
+      '    phase-gate 100% (1/1 decided rejected)',
+    ]);
+    // And in log order — 'zz' started first, '2' last — not the order a
+    // plain `Object.values` read of `state.runs` would produce ('2' first).
+    expect(output.indexOf('run zz')).toBeLessThan(output.indexOf('run aa'));
+    expect(output.indexOf('run aa')).toBeLessThan(output.indexOf('run 2'));
   });
 });
 
