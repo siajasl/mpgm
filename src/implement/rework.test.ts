@@ -864,10 +864,11 @@ describe('a review that never approves (NFR-1)', () => {
   });
 
   it('does not grant it twice', async () => {
-    // Once per task is the whole of the bound. A reviewer that keeps reporting
-    // the same deviation the author keeps not declaring gets the budget it was
-    // given, because a second declaration round would be spent asking for a
-    // signature the author has already declined to give.
+    // The extension is what is bounded, and one is the whole of it. A reviewer
+    // that keeps reporting the same deviation the author keeps not declaring
+    // gets the budget it was given plus that one round: a second extension
+    // would be spent asking for a signature the author has already declined to
+    // give, and would let the budget grow a round at a time forever.
     const repo = newRepo();
     const head = git(repo, ['rev-parse', 'HEAD']);
     const change = {
@@ -916,9 +917,11 @@ describe('a review that never approves (NFR-1)', () => {
   });
 
   it('grants the grace once, even when a second deviation is also new', async () => {
-    // The guard that makes this bounded. Without it a reviewer reporting a
-    // fresh deviation each round extends the budget forever — which is the
-    // elasticity the grace is deliberately not.
+    // The guard that makes this bounded, at the cap where it costs a round
+    // rather than replaces one. Without it a reviewer reporting a fresh
+    // deviation each round extends the budget forever — which is the
+    // elasticity the grace is deliberately not. Below the cap a fresh
+    // deviation does earn another declaration round; that is the next test.
     const repo = newRepo();
     const head = git(repo, ['rev-parse', 'HEAD']);
     const change = {
@@ -977,6 +980,79 @@ describe('a review that never approves (NFR-1)', () => {
 
       expect(result.status).toBe('blocked');
       expect(result.rounds).toHaveLength(2);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('grants it again when a later round approves and reports something new', async () => {
+    // T4.2.4, twice. A grace spent early must not leave the last round unable
+    // to sign for a deviation it is seeing for the first time: the author
+    // writes `deviations` before the review that reports one, so a deviation
+    // first reported in the final round is no more declarable there than one
+    // first reported in the first. The real run spent its grace at round one
+    // on CONV-6 and was refused at round three over a CONV-3 nobody had
+    // mentioned yet — twelve sessions and $29.52 over a signature the author
+    // was never in a position to give.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const declaring = (...conventions: string[]) =>
+      scriptedSuccess({
+        ...change,
+        deviations: conventions.map((convention) => ({
+          convention,
+          why: 'declared',
+        })),
+      });
+    const approving = (...conventions: string[]) =>
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: conventions.map((convention) => ({
+          convention,
+          where: 'the branch',
+        })),
+      });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      // Round 1 approves and reports CONV-6, which nothing declared. Below the
+      // cap, so the declaration round costs the round it replaces.
+      approving('CONV-6'),
+      declaring('CONV-6'),
+      // Round 2 is the cap, approves, and reports CONV-3 for the first time.
+      // A once-per-task bound refuses here and the change never merges.
+      approving('CONV-6', 'CONV-3'),
+      declaring('CONV-6', 'CONV-3'),
+      approving('CONV-6', 'CONV-3'),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 2,
+      });
+
+      expect(result.status).toBe('merged');
+      // Two rounds plus the one extension the cap buys.
+      expect(result.rounds).toHaveLength(3);
     } finally {
       log.close();
     }
