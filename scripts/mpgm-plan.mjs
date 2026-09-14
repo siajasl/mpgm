@@ -528,6 +528,50 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['ADR-4', 'TST-2'],
             },
+            {
+              id: 'T4.2.6',
+              title: "The dashboard carries the run's own figures",
+              completionCriteria: [
+                'The run page carries the per-phase and per-role breakdown, ' +
+                  'latency, retries, success rate and the quality rates — the ' +
+                  'figures T3.2.5a and T3.2.5b did not deliver. Run-level ' +
+                  'spend already ' +
+                  'renders (src/dashboard/render.ts) and is not what is ' +
+                  'missing. M4.2 is verified on spend and quality dashboards ' +
+                  'populated from real runs, and computeRunMetrics ' +
+                  '(src/state/metrics.ts) is reached today only from ' +
+                  'src/cli/commands.ts.',
+                "The figures come from the run's events and the artifact " +
+                  'store, not from its folded state. runProjection ' +
+                  '(src/dashboard/projection.ts) takes a RunState, which ' +
+                  'carries run-level spend correctly but folds away which ' +
+                  'phase was current at dispatch and how long a task took.',
+                'The per-task spend the page shows today is wrong, and this ' +
+                  "change corrects it. reduce.ts resets a task's usage to " +
+                  'zero on every TaskDispatched, so the column in ' +
+                  'src/dashboard/render.ts reports a repaired or reworked ' +
+                  "task's last session alone. That column reads the figure " +
+                  'computeRunMetrics computes, or the panel is a second wrong ' +
+                  'answer standing beside a right one.',
+                'A figure with nothing to say renders as having nothing to ' +
+                  'say. computeRunMetrics already returns null rather than 0 ' +
+                  'for successRate and avgLatencyMs, for exactly this reason; ' +
+                  'a panel printing 0% for a run where no task has finished ' +
+                  'reports total failure (test).',
+                'The test asserts the figures the page shows, not the ' +
+                  'headings above them. A panel that renders its labels and ' +
+                  'no data satisfies any test that only looks for the ' +
+                  'section, which is how a promised panel can appear to ' +
+                  'exist (CONV-6).',
+                'DashboardServer (src/dashboard/server.ts) takes a projector ' +
+                  'and a trace index today; the event log and artifact store ' +
+                  'these figures need are plumbed through serve ' +
+                  '(src/cli/commands.ts), which already holds the root and ' +
+                  'the schemas.',
+              ],
+              dependsOn: ['T4.2.2b'],
+              tracesTo: ['OBS-2', 'OBS-3'],
+            },
           ],
         },
       ],
