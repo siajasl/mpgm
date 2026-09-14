@@ -587,6 +587,119 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
     }
   });
 
+  it('kill recorded as the implementing session returns stops the loop before publishing or opening a pull request', async () => {
+    // The second review's major finding: `track`'s guard is checked before a
+    // session is *dispatched*, not after it returns, and nothing stood
+    // between the implementing session returning and `publish`/
+    // `openPullRequest` running. In production those are a real `git push`
+    // and a real GitHub pull request (`cli/commands.ts`) — a kill recorded
+    // while the session was in flight must not let either happen.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const log = openLog();
+    const provider = new KillAsCallReturns(log, 1, [
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+    ]);
+
+    const publishCalls: { branch: string; ref: string }[] = [];
+    let pullRequestsOpened = 0;
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        publish: (branch, ref) => {
+          publishCalls.push({ branch, ref });
+          return Promise.resolve();
+        },
+        openPullRequest: () => {
+          pullRequestsOpened += 1;
+          return Promise.resolve(1);
+        },
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('the run was killed by an operator');
+      // Neither ran: the kill landed the instant the implementing session
+      // returned, strictly before either would otherwise have fired.
+      expect(publishCalls).toHaveLength(0);
+      expect(pullRequestsOpened).toBe(0);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('kill recorded as a rework session returns stops the loop before republishing the revised change', async () => {
+    // The same gap, on the rework path: a kill landing while the rework
+    // session is in flight must not push the change it produced, even though
+    // the change that started the round already published cleanly.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const log = openLog();
+    const provider = new KillAsCallReturns(log, 3, [
+      scriptedSuccess({
+        ref: head,
+        summary: 'first attempt',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'request-changes',
+        summary: 'not yet',
+        findings: [
+          {
+            file: 'README.md',
+            concern: 'not good enough',
+            remedy: 'fix it',
+            severity: 'major',
+          },
+        ],
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        summary: 'reworked',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+    ]);
+
+    const publishedRefs: string[] = [];
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 2,
+        publish: (_branch, ref) => {
+          publishedRefs.push(ref);
+          return Promise.resolve();
+        },
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('the run was killed by an operator');
+      // Published once, from the implementing session before the kill — not
+      // again for the reworked change the kill landed on top of.
+      expect(publishedRefs).toEqual([head]);
+    } finally {
+      log.close();
+    }
+  });
+
   it('kill recorded as the final review session returns stops the merge, not just the sessions before it', async () => {
     // The gap `track`'s dispatch guard cannot reach: once the review session
     // has returned an approval, nothing between `decideMerge` and

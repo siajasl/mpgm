@@ -548,6 +548,25 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // Deviations are the exception, and `declaredDeviations` below is why.
   let latest = change.data;
 
+  // Read again immediately before publishing this change or opening its pull
+  // request — the first things the loop does outside the repository itself,
+  // and a window `track`'s own guard cannot reach: the implementing session
+  // just ran for minutes, and a kill or pause recorded while it was in flight
+  // lands strictly after `track` last checked, before either of these runs.
+  // In production `publish` is a real `git push` and `openPullRequest` a real
+  // pull request (`cli/commands.ts`); without this a killed run still pushed
+  // the branch and opened the PR, which is the same class of gap this task
+  // already closed for `catchUp` and `mergeChange` — check before the first
+  // thing the loop does to something outside the repository, not only before
+  // its last (T4.2.4, HIL-3). `stop` here appends `TaskBlocked` correctly: a
+  // session for this task has already been dispatched by the time this runs.
+  const controlBeforePublish = runControl(fold(options.log.read()), runId);
+  if (controlBeforePublish !== 'running') {
+    return stop(`the run was ${controlBeforePublish} by an operator`, {
+      ref: change.data.ref,
+    });
+  }
+
   await options.publish?.(worktree.branch, change.data.ref);
 
   // The pull request comes before the wait for checks, not after the merge: on
@@ -633,7 +652,17 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
           retry.status === 'completed' ? changeSchema.safeParse(retry.output) : undefined;
         if (fixed?.success === true) {
           latest = fixed.data;
-          await options.publish?.(worktree.branch, fixed.data.ref);
+          // Read again immediately before publishing, for the same reason as
+          // the guard around the first publish above: the repair session just
+          // ran, and a kill or pause recorded while it was in flight lands
+          // after `track` last checked. This does not itself need to stop the
+          // loop — `shouldContinue` above and the next `track` call already
+          // do that — it only keeps the push from happening on the way there
+          // (T4.2.4, HIL-3).
+          const controlBeforeRepairPublish = runControl(fold(options.log.read()), runId);
+          if (controlBeforeRepairPublish === 'running') {
+            await options.publish?.(worktree.branch, fixed.data.ref);
+          }
         }
         // A repair session that produced nothing usable leaves the ref where it
         // was, so the next verdict is the same one and the budget still shrinks
@@ -837,6 +866,21 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     }
 
     latest = revised.data;
+
+    // Read again immediately before publishing the reworked change, for the
+    // same reason as the guard around the first publish above: the rework
+    // session just ran, and a kill or pause recorded while it was in flight
+    // lands strictly after `track` last checked, before this push runs
+    // (T4.2.4, HIL-3).
+    const controlBeforeReworkPublish = runControl(fold(options.log.read()), runId);
+    if (controlBeforeReworkPublish !== 'running') {
+      return stop(`the run was ${controlBeforeReworkPublish} by an operator`, {
+        ref: revised.data.ref,
+        review,
+        repair,
+      });
+    }
+
     await options.publish?.(worktree.branch, revised.data.ref);
   }
 
