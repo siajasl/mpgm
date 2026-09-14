@@ -368,11 +368,104 @@ export const MPGM_PLAN = {
               tracesTo: ['OBS-2', 'NFR-3'],
             },
             {
-              id: 'T4.2.2',
-              title: 'Quality metrics: gate rejection, rework, escaped defects',
-              completionCriteria: ['A longitudinal report over at least three runs.'],
+              id: 'T4.2.2a',
+              title: 'Gate rejection and rework rates, per run and in order',
+              completionCriteria: [
+                'Two rejection rates, not one, because this kernel calls two ' +
+                  'different things a gate: the phase gate an operator ' +
+                  'approves or rejects (GateApproved, GateRejected, HIL-1) ' +
+                  'and the merge gate that refuses a change (decideMerge, ' +
+                  'src/implement/merge.ts, whose MergeRefusal names ' +
+                  'checks-not-green, no-review, undeclared-deviation and the ' +
+                  'rest). They are reported separately rather than summed: an ' +
+                  'operator refusing a phase artifact and CI refusing a merge ' +
+                  'are different failures with different remedies.',
+                'Each rate says what it divides by. The phase-gate rate ' +
+                  'divides GateRejected by the gates that were decided ' +
+                  '(GateApproved plus GateRejected), not by the gates ' +
+                  'presented — a gate still waiting on an operator is not a ' +
+                  'rejection that has yet to happen.',
+                'The merge gate logs no refusal. decideMerge returns a ' +
+                  'MergeDecision and nothing writes it to the log, so this ' +
+                  'rate is reconstructed from what is written: ' +
+                  'ChecksReported, ChangeReviewed, and BudgetExceeded for a ' +
+                  'task out of repair or review rounds. The change says which ' +
+                  'events it reconstructed from and which MergeRefusal cases ' +
+                  'it cannot see, rather than implying the taxonomy is fully ' +
+                  'observable.',
+                'The rework rate is not the retry count T4.2.1 already ' +
+                  'reports. AggregateMetric.retries (src/state/metrics.ts) ' +
+                  'folds validation retries, CI repair rounds and review ' +
+                  'rework rounds into one figure. Rework here counts the ' +
+                  'review rounds that sent a change back to its author: a ' +
+                  'ChangeReviewed with approved false, and one with approved ' +
+                  'true whose undeclaredDeviations is not empty — ' +
+                  'src/implement/loop.ts dispatches a fresh session on both, ' +
+                  'and the second is the round T4.2.4 spent twelve sessions ' +
+                  'and $29.52 on. Two tests: a run holding a task repaired ' +
+                  'for CI and never reworked shows retries and rework differ; ' +
+                  'a run holding an approving review that carries an ' +
+                  'undeclared deviation shows the rework rate counts it, so a ' +
+                  'rate reading approved alone fails.',
+                'Longitudinal means ordered, not merely three. The report ' +
+                  'gives each rate per run in the order the log holds them, ' +
+                  'and a test whose three runs carry deliberately different ' +
+                  'rates reads three different figures — a report that ' +
+                  'averages them into one, or that emits a constant, fails ' +
+                  'that test (CONV-6).',
+                'The surface is stated rather than assumed. mpgm status ' +
+                  '--metrics with no --run already prints a metrics block for ' +
+                  'every run (src/cli/commands.ts), in map-iteration order ' +
+                  'and with no series across them; whatever this adds — a ' +
+                  'flag on status or a verb of its own — says which it is and ' +
+                  'refuses the arguments it cannot honour, the way every ' +
+                  'other verb does.',
+                'The rates are computed from the log as it already stands: ' +
+                  'this task adds no event, and nothing in src/implement ' +
+                  'keeps a tally. OBS-4 is a report over history, and a ' +
+                  'counter kept alongside the loop would be a second source ' +
+                  'of truth for what the log already holds (ADR-2).',
+              ],
               dependsOn: ['T4.2.1'],
               tracesTo: ['OBS-4'],
+            },
+            {
+              id: 'T4.2.2b',
+              title: 'The escaped-defect rate, over defects nothing has filed yet',
+              completionCriteria: [
+                'The rate is read from the Defect artifacts ' +
+                  '(src/test/defect.ts) through the artifact store. The event ' +
+                  'catalog has no defect event and this task adds none.',
+                'A defect is escaped when the ChangeMerged for the task its ' +
+                  'route names precedes the TaskCompleted that filed the ' +
+                  'defect artifact. TaskCompleted.artifactRefs and the ' +
+                  "event's own timestamp are the only dating available, " +
+                  'because a Defect history entry carries none. A defect ' +
+                  'whose route names a task that merged afterwards is the ' +
+                  'fix, not an escape — counting it would make the rate climb ' +
+                  'with every defect closed.',
+                'The rate divides escaped defects by the tasks that merged, ' +
+                  'not by the defects filed. A defect still open carries no ' +
+                  'route and so names no task: it is reported beside the rate ' +
+                  'as a count no rate can attribute, so a run with five ' +
+                  'unrouted defects does not read as a run with none.',
+                'The change says which run a defect belongs to — the run that ' +
+                  'found it (producedBy.runId on the artifact) or the run ' +
+                  'that merged the task its route names — since those differ ' +
+                  'and the report is per run.',
+                'No run has filed a defect. Nothing outside the tests calls ' +
+                  "fileDefect, so the rate over this repository's own log " +
+                  'reads as no defects filed and not as 0%; a report that ' +
+                  'cannot tell those two apart fails (test). The test builds ' +
+                  'its defects through the real transitions — fileDefect, ' +
+                  'routeDefect, recordFix, retestDefect — never by ' +
+                  'hand-writing a Defect literal, which can hold a shape the ' +
+                  'lifecycle never produces.',
+                'The figure joins the report T4.2.2a delivers rather than ' +
+                  'arriving on a surface of its own.',
+              ],
+              dependsOn: ['T4.2.2a'],
+              tracesTo: ['OBS-4', 'TST-5'],
             },
             {
               id: 'T4.2.3',
