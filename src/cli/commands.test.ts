@@ -684,16 +684,21 @@ describe('status --metrics', () => {
     expect(output).toContain(
       '  phase review: tasks 1  cost $0.2500  tokens 15  avg-latency 2000ms  retries 0  success 100% (1/1)',
     );
-    // T2's own SessionUsage records a 1000ms session against an 800ms API
-    // call — 200ms of in-session overhead — over T2's own 2000ms busy span
-    // (T1 never settled, so it contributes no interval): 200/2000 = 10.0%,
-    // exactly NFR-3's threshold, and no ContextAssembled event exists in
-    // this fixture, so that component reads 0ms over 0 calls rather than
-    // being silently omitted.
+    // No `ContextAssembled` event exists in this fixture, so nothing
+    // measures the numerator: the ratio reads unmeasured, not 0%, even
+    // though T2's `SessionUsage` records a 1000ms session against an 800ms
+    // API call. That 200ms gap is agent tool-execution time, not harness
+    // code (`../state/overhead.ts` module doc) — reported as its own
+    // "non-API session time" figure, but excluded from the ratio and from
+    // the 10% comparison. T2 did settle, so `observedMs` (T2's own 2000ms
+    // busy span; T1 never settled, so it contributes no interval) and
+    // `coverage` (0 of 1 settled tasks instrumented) are both still real
+    // numbers, not "-": there is something to report, just not overhead.
     expect(output).toContain(
-      "  overhead 10.0% of NFR-3's 10% threshold (200ms measured / 2000ms busy span; " +
-        'context-assembly 0ms over 0 calls, in-session 200ms over 1 sessions; ' +
-        'cannot see scheduling, validation)',
+      "  overhead - of NFR-3's 10% threshold (- context-assembly / - instrumented task span, " +
+        'coverage 0/1 tasks (0%); run busy span 2000ms; context-assembly 0ms over 0 calls; ' +
+        'non-API session time 200ms over 1 sessions (agent tool execution, not harness — ' +
+        'excluded from the ratio); cannot see scheduling, validation)',
     );
   });
 
@@ -747,9 +752,10 @@ describe('status --metrics', () => {
     expect(result.ok).toBe(true);
     const output = writes.join('\n');
     expect(output).toContain(
-      "  overhead - of NFR-3's 10% threshold (- measured / 0ms busy span; " +
-        'context-assembly 0ms over 0 calls, in-session 0ms over 0 sessions; ' +
-        'cannot see scheduling, validation)',
+      "  overhead - of NFR-3's 10% threshold (- context-assembly / - instrumented task span, " +
+        'coverage 0/1 tasks (0%); run busy span 0ms; context-assembly 0ms over 0 calls; ' +
+        'non-API session time 0ms over 0 sessions (agent tool execution, not harness — ' +
+        'excluded from the ratio); cannot see scheduling, validation)',
     );
   });
 });

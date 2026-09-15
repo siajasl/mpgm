@@ -6,75 +6,100 @@ import type { RunState } from './kernel-state.js';
  * NFR-3, OBS-2).
  *
  * NFR-3 bounds three spans: **scheduling**, **context assembly** and
- * **validation**. This module measures the two of those the log can show a
- * span for, at all, and says plainly that it cannot see the third:
+ * **validation**. This module measures the one of those the log can show a
+ * span for, at all, and says plainly that it cannot see the other two:
  *
- * - **Context assembly** is `ContextAssembled.durationMs`, summed
+ * - **Context assembly** is `ContextAssembled.durationMs`, per task
  *   (`src/event/catalog.ts`) — timed at both its call sites,
  *   `src/phase/runner.ts`'s `runSession` and `src/implement/loop.ts`, both
  *   of which call `assembleContext` before `SessionRunner.runTask` and so
- *   outside the span `SessionUsage.durationMs` covers (T4.2.8).
- * - **In-session harness work** — the `PreToolUse` policy gate, secret
- *   substitution, and the `ToolCallLogged` append made on every tool call —
- *   is `SessionUsage.durationMs - SessionUsage.apiDurationMs`, summed over
- *   every session where both are recorded. This is not one of NFR-3's three
- *   named spans; it is harness work that happens to run *inside* a session
- *   rather than around one, and it is kept as its own component
- *   ({@link HarnessOverheadComponents.sessionOverheadMs}) rather than folded
- *   silently into a total that would read as if it were "validation".
+ *   outside the span `SessionUsage.durationMs` covers (T4.2.8). This is the
+ *   *only* component `overheadMs`/`ratio` below are built from.
  * - **Scheduling** (`runPhase`'s own dispatch loop, `src/orchestrator/
  *   scheduler.ts`) and **validation** (the structured-output retry loop in
  *   `SessionRunner.runTask` — schema `safeParse` plus a caller's own
  *   `validate`) are never bracketed by a start/end pair anywhere in the
- *   catalog. {@link NFR3_UNOBSERVABLE_SPANS} names both, on every result,
- *   so a reader of {@link HarnessOverhead.ratio} sees what it does not cover
- *   rather than inferring NFR-3 is fully measured because a number came
- *   back (CONV-6).
+ *   catalog. {@link NFR3_UNOBSERVABLE_SPANS} names both, on every result, so
+ *   a reader of {@link HarnessOverhead.ratio} sees what it does not cover
+ *   rather than inferring NFR-3 is fully measured because a number came back
+ *   (CONV-6).
  *
- * `overheadMs` is therefore `Σ ContextAssembled.durationMs + Σ
- * max(SessionUsage.durationMs - SessionUsage.apiDurationMs, 0)` — stated as
- * that formula before anything is reported, per the two spans above, and it
- * does not report a single figure that implies scheduling or validation are
- * in it.
+ * `SessionUsage.durationMs - SessionUsage.apiDurationMs` — an earlier
+ * revision of this module summed that difference into the ratio as
+ * "in-session harness work". It is not: those two fields come straight off
+ * the SDK's own result message (`durationsOf`, `src/agent/claude-
+ * provider.ts`), so the difference is *every* non-API second of a session —
+ * every `Bash` command, `npm test` run, `git` operation and file read the
+ * agent performs — which is agent tool-execution time, not harness code
+ * running, and NFR-3 does not bound it. It is still recorded and reported,
+ * as {@link HarnessOverheadComponents.nonApiSessionMs}, because it is real
+ * data a reader may want — but it is named for what it is, kept out of
+ * `overheadMs`, and never compared against the 10% threshold.
  *
- * The denominator is deliberately not the run's own `startedAt`-to-last-
- * event span: `--run` defaults to `run-1` (`src/cli/main.ts`) and every verb
- * appends `RunStarted` only when the run does not already exist, so one run
- * id accumulates across however many separate CLI invocations an operator
- * makes over however many days — this repository's own log, self-hosted,
- * holds a single run spanning weeks, almost all of it the operator away from
- * the keyboard. Dividing overhead by that span would measure operator
- * absence, not the harness.
+ * **The numerator is population-matched to what produced it.** `overheadMs`
+ * is `Σ ContextAssembled.durationMs` over exactly the settled tasks that
+ * have at least one such event — never over tasks this log cannot show a
+ * span for, and never diluted by tasks the numerator says nothing about. An
+ * earlier revision divided that sum by the busy span of *every* settled
+ * task, regardless of how few of them were actually instrumented: over this
+ * repository's own `run-1`, where exactly one of 230 sessions carries a
+ * recorded duration, that produced `ratio: 0.0000617` — a confident NFR-3
+ * pass manufactured by 229 tasks the numerator never measured, while the one
+ * task that *was* measured ran at 4.7% overhead by this same formula. That
+ * is the "unmeasured, not 0%" discipline turned upside down: a mostly-
+ * uninstrumented log must not read as a mostly-lean one. {@link
+ * HarnessOverhead.coverage} — instrumented tasks over settled tasks — is
+ * reported alongside the ratio for exactly this reason: a reader comparing
+ * `ratio` to the 10% threshold can also see how much of the run it actually
+ * rests on.
  *
- * Nor is it the sum of task spans (`TaskDispatched` to `TaskCompleted`/
- * `TaskBlocked`): `runPhase` schedules up to `DEFAULT_CONCURRENCY` (4,
- * `src/phase/runner.ts`) tasks at once, and separate CLI invocations against
- * the same run id can overlap in wall-clock time too, so summing spans
- * double- (or many-times-) counts the same stretch of wall-clock time. Over
- * this repository's own log that sum is more than twice the run's actual
- * span, which would make the reported overhead go negative once real
- * overhead is subtracted from it.
+ * **The denominator is each instrumented task's own span, summed — not
+ * merged.** `runPhase` schedules up to `DEFAULT_CONCURRENCY` (4,
+ * `src/phase/runner.ts`) tasks at once, so an earlier revision that divided
+ * the population-matched numerator by the *merged* busy window of those
+ * same tasks over-counted: four sessions each genuinely running at 10%
+ * overhead, concurrently, merge into one wall-clock window a quarter the
+ * combined span's length, and report ratio 40%. NFR-3's threshold is a
+ * per-session fraction (ADR-1's "I/O-bound around model calls" is a claim
+ * about one session's own time budget, not about how many sessions the
+ * scheduler happens to run at once) — so the denominator paired with the
+ * numerator is `Σ` of each instrumented task's own
+ * `[min(firstDispatch, firstContextAssembled), terminalEvent)` interval,
+ * `{@link HarnessOverhead.instrumentedSpanMs}`. Summing rather than merging
+ * makes the ratio a span-weighted average of each instrumented task's own
+ * overhead fraction, which scales correctly under concurrency: four tasks
+ * each at 10% still average to 10%, not 40%, because both the numerator and
+ * this denominator grow by the same factor together. The span's start is
+ * `min`, not `firstDispatch` alone, because both call sites append
+ * `ContextAssembled` *before* `SessionRunner.runTask`'s own `TaskDispatched`
+ * (`src/state/reduce.ts`) — the context-assembly time this module measures
+ * would otherwise fall outside the very window it is divided by.
  *
- * Instead, the denominator is the union of every settled task's own
- * `[firstDispatch, terminalEvent)` interval — the same interval
- * `computeRunMetrics`'s `avgLatencyMs` uses per task (`./metrics.ts`) — with
- * overlapping or touching intervals merged into one continuous busy window.
- * That merge is the **idle rule**, and it is a parameter
- * ({@link HarnessOverheadOptions.idleGapMs}) rather than an assumption baked
- * into one number: two intervals separated by a gap no larger than
- * `idleGapMs` count as one continuous busy window; a larger gap — the days
- * between one CLI invocation and the next, or the concurrency-driven
- * overlap `runPhase` produces — is idle time and is excluded. The default,
- * `0`, merges only intervals that literally overlap or touch; raising it
- * pulls short between-dispatch gaps into the busy window instead, and the
- * reported ratio moves when it does, because the denominator it divides by
- * changed and the numerator did not.
+ * This is a different span from the run's own busy time, and that is kept
+ * too, as {@link HarnessOverhead.observedMs} — informational, not the
+ * ratio's denominator. It is deliberately not the run's raw `startedAt`-to-
+ * last-event span: `--run` defaults to `run-1` (`src/cli/main.ts`) and every
+ * verb appends `RunStarted` only when the run does not already exist, so one
+ * run id accumulates across however many separate CLI invocations an
+ * operator makes over however many days — this repository's own log, self-
+ * hosted, holds a single run spanning weeks, almost all of it the operator
+ * away from the keyboard. Nor is it the sum of *every* settled task's span:
+ * with concurrency and overlapping CLI invocations against one run id, that
+ * sum is more than twice this repository's own run's actual elapsed time.
+ * Instead it is the union of every settled task's own interval (same start
+ * rule as above), merged by a stated idle rule
+ * ({@link HarnessOverheadOptions.idleGapMs}): two intervals separated by a
+ * gap no larger than `idleGapMs` count as one continuous busy window; a
+ * larger gap is idle time and excluded. The default, `0`, merges only
+ * intervals that literally overlap or touch; raising it pulls short
+ * between-dispatch gaps into the window instead, and `observedMs` moves when
+ * it does, because the window it sums changed and the events did not.
  *
- * `ratio` is null whenever either side has nothing to report — no measured
- * overhead component, or no settled task interval — the same null
+ * `overheadMs`, `instrumentedSpanMs`, `ratio` and `coverage` are each null
+ * whenever their own inputs have nothing to report — the same null
  * discipline `computeRunMetrics`'s `successRate`/`avgLatencyMs` and
- * `computeGateRates`'s gate rates already hold (CONV-6): a run whose
- * sessions carry no recorded duration (a pre-T4.2.8 log, replayed) reads as
+ * `computeGateRates`'s gate rates already hold (CONV-6): a run with no
+ * `ContextAssembled` event anywhere (a pre-T4.2.9 log, replayed) reads as
  * unmeasured, not as 0% overhead, and a run with no settled task reads the
  * same way for the same reason.
  *
@@ -91,26 +116,22 @@ import type { RunState } from './kernel-state.js';
  * DESIGN's only mention of NFR-3 is ADR-1, in service of a different
  * decision (TypeScript over Rust): "the harness is I/O-bound around model
  * calls (NFR-3 is trivially met in any mainstream language)". Run against a
- * copy of this repository's own self-hosted `run-1` (`.mpgm/state.db`, read
- * at 12,749 events, 2026-09-15) this function reports `ratio: null` —
- * unmeasured, not 0%, per the null discipline above — because that log
- * holds zero `ContextAssembled` events and zero `SessionUsage` entries with
- * both durations recorded: the long-running process driving that run
- * started before this task's instrumentation existed, and, for
- * `durationMs`/`apiDurationMs`, before T4.2.8's did too, so nothing yet
- * brackets either overhead component for it. The denominator alone is
+ * copy of this repository's own self-hosted `run-1` this function reports
+ * `ratio: null` — every `ContextAssembled` event in this codebase is new
+ * with this task, and the long-running process behind that log predates it,
+ * so nothing yet brackets context assembly for it. `observedMs` alone is
  * already informative: merging that run's settled-task intervals (idle rule
- * at its default) gives a busy span of about 12.97 days inside a run whose
- * raw `startedAt`-to-last-event span is about 19 days — most of the run,
+ * at its default) gives a busy span of about 13 days inside a run whose raw
+ * `startedAt`-to-last-event span is about 19 days — most of the run,
  * correctly excluded, was exactly the operator-absence gaps this module's
  * doc above says the raw span would wrongly charge to the harness. Because
- * the numerator is null, this real run cannot yet be compared to the 10%
+ * `overheadMs` is null, this real run cannot yet be compared to the 10%
  * threshold, and so neither confirms nor contradicts ADR-1's claim — that
  * comparison becomes possible only once a run proceeds under this task's
- * and T4.2.8's code together. ADR-1 is cited here either way: nothing this
- * module has measured so far is evidence against it, and nothing in this
- * module is exempt from being evidence against it the first time a real
- * ratio comes back over threshold.
+ * code. ADR-1 is cited here either way: nothing this module has measured so
+ * far is evidence against it, and nothing in this module is exempt from
+ * being evidence against it the first time a real ratio comes back over
+ * threshold, with enough coverage to trust.
  */
 
 export const NFR3_OVERHEAD_THRESHOLD = 0.1;
@@ -125,16 +146,25 @@ export const NFR3_UNOBSERVABLE_SPANS: readonly string[] = ['scheduling', 'valida
 const DEFAULT_IDLE_GAP_MS = 0;
 
 export interface HarnessOverheadComponents {
-  /** Σ `ContextAssembled.durationMs`, both call sites, this run. */
+  /**
+   * Σ `ContextAssembled.durationMs` over exactly the settled, instrumented
+   * tasks {@link HarnessOverhead.overheadMs} is built from (module doc) —
+   * not a run-wide total including tasks the ratio never counted.
+   */
   readonly contextAssemblyMs: number;
   readonly contextAssemblyCount: number;
+  /** Settled tasks with at least one `ContextAssembled` event. */
+  readonly instrumentedTaskCount: number;
+  /** Every settled task this run, instrumented or not — coverage's denominator. */
+  readonly settledTaskCount: number;
   /**
    * Σ `max(SessionUsage.durationMs - SessionUsage.apiDurationMs, 0)` over
-   * every session this run where both are recorded. Not one of NFR-3's
-   * three named spans (module doc) — kept apart so it is never mistaken for
-   * "validation".
+   * every session this run where both are recorded. Agent tool-execution
+   * time, not harness code (module doc) — reported for whoever wants it, but
+   * never part of `overheadMs`/`ratio` and never compared against NFR-3's
+   * threshold.
    */
-  readonly sessionOverheadMs: number;
+  readonly nonApiSessionMs: number;
   /** Sessions this run with both `durationMs` and `apiDurationMs` recorded. */
   readonly sessionsWithDuration: number;
 }
@@ -143,10 +173,29 @@ export interface HarnessOverhead {
   readonly runId: string;
   /** The numerator formula's total (module doc). Null when nothing measured it. */
   readonly overheadMs: number | null;
-  /** The merged busy-window denominator (module doc). Null when no task settled. */
-  readonly observedMs: number | null;
-  /** `overheadMs / observedMs`. Null whenever either side is null or zero. */
+  /**
+   * The ratio's own denominator (module doc): Σ of each instrumented task's
+   * own span, summed rather than merged, population-matched to
+   * `overheadMs`. Null when no task was instrumented.
+   */
+  readonly instrumentedSpanMs: number | null;
+  /** `overheadMs / instrumentedSpanMs`. Null whenever either side is null or zero. */
   readonly ratio: number | null;
+  /**
+   * The run's own busy span (module doc) — the merged union of every
+   * settled task's interval under the stated idle rule. Informational: not
+   * the ratio's denominator, because it is not population-matched to
+   * `overheadMs` (see module doc for why an earlier revision that divided by
+   * this was wrong). Null when no task settled.
+   */
+  readonly observedMs: number | null;
+  /**
+   * `components.instrumentedTaskCount / components.settledTaskCount` — how
+   * much of this run's settled work `ratio` actually rests on. Null when no
+   * task settled. Report `ratio` next to this, not alone: a low coverage
+   * figure means a comfortable-looking ratio may rest on very little.
+   */
+  readonly coverage: number | null;
   readonly components: HarnessOverheadComponents;
   /** NFR-3 spans this figure names rather than silently omits (module doc). */
   readonly unmeasured: readonly string[];
@@ -154,10 +203,11 @@ export interface HarnessOverhead {
 
 export interface HarnessOverheadOptions {
   /**
-   * The idle rule (module doc): two busy intervals no more than this far
-   * apart merge into one continuous window; a larger gap is idle and
-   * excluded from the denominator. Defaults to `0` — only literally
-   * overlapping or touching intervals merge.
+   * The idle rule for `observedMs` (module doc): two busy intervals no more
+   * than this far apart merge into one continuous window; a larger gap is
+   * idle and excluded. Defaults to `0` — only literally overlapping or
+   * touching intervals merge. Does not affect `ratio`, which never merges
+   * (module doc).
    */
   readonly idleGapMs?: number;
 }
@@ -199,10 +249,12 @@ function mergeIntervals(
 }
 
 interface ContextAssembledPayload {
+  readonly taskId: string;
   readonly durationMs: number;
 }
 
 interface SessionUsageOverheadPayload {
+  readonly taskId: string;
   readonly durationMs: number | null;
   readonly apiDurationMs: number | null;
 }
@@ -213,8 +265,8 @@ interface TaskIdPayload {
 
 /**
  * Harness overhead for one run (T4.2.9, NFR-3, OBS-2). See the module doc
- * for the numerator formula, the denominator's idle rule, and what this
- * cannot see.
+ * for the numerator formula, why the denominator is population-matched and
+ * summed rather than merged, and what this cannot see.
  *
  * `events` need not already be filtered to `run.runId` — every case below
  * checks it, the same guard `computeRunMetrics` and `computeGateRates`
@@ -228,17 +280,22 @@ export function computeHarnessOverhead(
 ): HarnessOverhead {
   const idleGapMs = options.idleGapMs ?? DEFAULT_IDLE_GAP_MS;
 
-  let contextAssemblyMs = 0;
-  let contextAssemblyCount = 0;
-  let sessionOverheadMs = 0;
-  let sessionsWithDuration = 0;
-
   // First `TaskDispatched` only, mirroring `computeRunMetrics`'s
   // `avgLatencyMs`: a later dispatch of the same `taskId` is a CI repair or
   // review-rework round, not a new busy interval starting from scratch.
   const dispatchedAt = new Map<string, string>();
   const completedAt = new Map<string, string>();
   const blockedAt = new Map<string, string>();
+  // First `ContextAssembled` per task only: both call sites append it before
+  // that task's own `TaskDispatched`, so only the very first one can fall
+  // before `dispatchedAt` — a rework round's context assembly happens well
+  // inside the window a later dispatch already opened (module doc).
+  const contextAssembledFirstAt = new Map<string, string>();
+  const contextAssemblyMsByTask = new Map<string, number>();
+  const contextAssemblyCountByTask = new Map<string, number>();
+
+  let nonApiSessionMs = 0;
+  let sessionsWithDuration = 0;
 
   for (const event of events) {
     if (event.runId !== run.runId) {
@@ -265,14 +322,23 @@ export function computeHarnessOverhead(
       }
       case 'ContextAssembled': {
         const payload = event.payload as ContextAssembledPayload;
-        contextAssemblyMs += payload.durationMs;
-        contextAssemblyCount += 1;
+        if (!contextAssembledFirstAt.has(payload.taskId)) {
+          contextAssembledFirstAt.set(payload.taskId, event.ts);
+        }
+        contextAssemblyMsByTask.set(
+          payload.taskId,
+          (contextAssemblyMsByTask.get(payload.taskId) ?? 0) + payload.durationMs,
+        );
+        contextAssemblyCountByTask.set(
+          payload.taskId,
+          (contextAssemblyCountByTask.get(payload.taskId) ?? 0) + 1,
+        );
         break;
       }
       case 'SessionUsage': {
         const payload = event.payload as SessionUsageOverheadPayload;
         if (payload.durationMs !== null && payload.apiDurationMs !== null) {
-          sessionOverheadMs += Math.max(payload.durationMs - payload.apiDurationMs, 0);
+          nonApiSessionMs += Math.max(payload.durationMs - payload.apiDurationMs, 0);
           sessionsWithDuration += 1;
         }
         break;
@@ -282,46 +348,88 @@ export function computeHarnessOverhead(
     }
   }
 
-  const intervals: Interval[] = [];
+  const settledIntervals: Interval[] = [];
+  const instrumentedIntervals: Interval[] = [];
+  let settledTaskCount = 0;
+  let instrumentedTaskCount = 0;
+  let contextAssemblyMs = 0;
+  let contextAssemblyCount = 0;
+
   for (const task of Object.values(run.tasks)) {
-    const start = dispatchedAt.get(task.taskId);
-    const end =
+    const dispatched = dispatchedAt.get(task.taskId);
+    const terminal =
       task.status === 'completed'
         ? completedAt.get(task.taskId)
         : task.status === 'blocked'
           ? blockedAt.get(task.taskId)
           : undefined;
-    if (start === undefined || end === undefined) {
+    if (dispatched === undefined || terminal === undefined) {
       // Not settled (or attested, with no dispatch at all): no firm end to
       // close a busy interval with, the same reason `avgLatencyMs` skips it.
       continue;
     }
-    intervals.push({ start: Date.parse(start), end: Date.parse(end) });
+
+    const contextFirst = contextAssembledFirstAt.get(task.taskId);
+    const start =
+      contextFirst !== undefined && Date.parse(contextFirst) < Date.parse(dispatched)
+        ? contextFirst
+        : dispatched;
+    const interval: Interval = { start: Date.parse(start), end: Date.parse(terminal) };
+
+    settledTaskCount += 1;
+    settledIntervals.push(interval);
+
+    const taskContextMs = contextAssemblyMsByTask.get(task.taskId);
+    const taskContextCount = contextAssemblyCountByTask.get(task.taskId);
+    if (taskContextMs !== undefined && taskContextCount !== undefined) {
+      instrumentedTaskCount += 1;
+      instrumentedIntervals.push(interval);
+      contextAssemblyMs += taskContextMs;
+      contextAssemblyCount += taskContextCount;
+    }
   }
 
-  const busyWindows = mergeIntervals(intervals, idleGapMs);
+  const observedWindows = mergeIntervals(settledIntervals, idleGapMs);
   const observedMs =
-    busyWindows.length === 0
+    observedWindows.length === 0
       ? null
-      : busyWindows.reduce((sum, window) => sum + (window.end - window.start), 0);
+      : observedWindows.reduce((sum, window) => sum + (window.end - window.start), 0);
 
-  const measuredCount = contextAssemblyCount + sessionsWithDuration;
-  const overheadMs = measuredCount === 0 ? null : contextAssemblyMs + sessionOverheadMs;
+  // Summed, not merged (module doc): population-matched to `overheadMs`, and
+  // a sum here is what makes the ratio a span-weighted average that scales
+  // correctly with concurrency, rather than an over-count from merging
+  // overlapping instrumented windows.
+  const instrumentedSpanMs =
+    instrumentedTaskCount === 0
+      ? null
+      : instrumentedIntervals.reduce(
+          (sum, interval) => sum + Math.max(interval.end - interval.start, 0),
+          0,
+        );
+
+  const overheadMs = instrumentedTaskCount === 0 ? null : contextAssemblyMs;
 
   const ratio =
-    overheadMs === null || observedMs === null || observedMs === 0
+    overheadMs === null || instrumentedSpanMs === null || instrumentedSpanMs === 0
       ? null
-      : overheadMs / observedMs;
+      : overheadMs / instrumentedSpanMs;
+
+  const coverage =
+    settledTaskCount === 0 ? null : instrumentedTaskCount / settledTaskCount;
 
   return {
     runId: run.runId,
     overheadMs,
-    observedMs,
+    instrumentedSpanMs,
     ratio,
+    observedMs,
+    coverage,
     components: {
       contextAssemblyMs,
       contextAssemblyCount,
-      sessionOverheadMs,
+      instrumentedTaskCount,
+      settledTaskCount,
+      nonApiSessionMs,
       sessionsWithDuration,
     },
     unmeasured: NFR3_UNOBSERVABLE_SPANS,

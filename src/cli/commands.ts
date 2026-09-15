@@ -292,21 +292,32 @@ function formatMetric(label: string, metric: AggregateMetric): string {
  * span, not harness overhead — a slow model call inflates it exactly as
  * much as a slow scheduler would — so it does not measure NFR-3 despite
  * that task's `tracesTo` naming it. This line, not that one, is what does
- * (`../state/overhead.ts`'s module doc has the formula and the null
- * discipline this renders).
+ * (`../state/overhead.ts`'s module doc has the formula, why the denominator
+ * is population-matched to it rather than merged, and the null discipline
+ * this renders).
+ *
+ * `coverage` renders next to `ratio` rather than being left for a reader to
+ * infer: a ratio built from one instrumented task out of two hundred looks
+ * exactly like one built from all of them unless the fraction that produced
+ * it is on the same line (module doc's `run-1` example).
  */
 function formatOverhead(overhead: HarnessOverhead): string {
   const pct = overhead.ratio === null ? '-' : `${(overhead.ratio * 100).toFixed(1)}%`;
   const ms = (value: number | null): string =>
     value === null ? '-' : `${String(Math.round(value))}ms`;
+  const coverage =
+    overhead.coverage === null
+      ? '-'
+      : `${String(overhead.components.instrumentedTaskCount)}/${String(overhead.components.settledTaskCount)} tasks (${(overhead.coverage * 100).toFixed(0)}%)`;
   return (
     `  overhead ${pct} of NFR-3's ${String(NFR3_OVERHEAD_THRESHOLD * 100)}% threshold ` +
-    `(${ms(overhead.overheadMs)} measured / ${ms(overhead.observedMs)} busy span; ` +
-    `context-assembly ${ms(overhead.components.contextAssemblyMs)} over ` +
-    `${String(overhead.components.contextAssemblyCount)} calls, in-session ` +
-    `${ms(overhead.components.sessionOverheadMs)} over ` +
-    `${String(overhead.components.sessionsWithDuration)} sessions; ` +
-    `cannot see ${overhead.unmeasured.join(', ')})`
+    `(${ms(overhead.overheadMs)} context-assembly / ${ms(overhead.instrumentedSpanMs)} ` +
+    `instrumented task span, coverage ${coverage}; run busy span ` +
+    `${ms(overhead.observedMs)}; context-assembly ${ms(overhead.components.contextAssemblyMs)} ` +
+    `over ${String(overhead.components.contextAssemblyCount)} calls; non-API session time ` +
+    `${ms(overhead.components.nonApiSessionMs)} over ` +
+    `${String(overhead.components.sessionsWithDuration)} sessions (agent tool execution, ` +
+    `not harness — excluded from the ratio); cannot see ${overhead.unmeasured.join(', ')})`
   );
 }
 
