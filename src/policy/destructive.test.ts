@@ -240,6 +240,8 @@ describe('through the event log', () => {
         turns: 1,
         denials: [],
         errorMessage: '',
+        durationMs: 1000,
+        apiDurationMs: 800,
       };
     }
   }

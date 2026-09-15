@@ -64,6 +64,20 @@ export const taskDispatched = defineEvent(
   }),
 );
 
+/**
+ * v1 → v2 (T4.2.8): v1 predates recording a session's own duration, so a
+ * pre-existing event names neither `durationMs` nor `apiDurationMs`. Both are
+ * nullable on the current schema for exactly this reason — a session whose
+ * length was never recorded must read as *unmeasured*, not as one that took
+ * zero milliseconds, so the upcaster maps the missing fields to `null` rather
+ * than `0`.
+ */
+const upcastSessionUsageV1: Upcaster = (payload) => ({
+  ...(payload as object),
+  durationMs: null,
+  apiDurationMs: null,
+});
+
 export const sessionUsage = defineEvent(
   'SessionUsage',
   z.object({
@@ -71,7 +85,24 @@ export const sessionUsage = defineEvent(
     inputTokens: z.number().int().nonnegative(),
     outputTokens: z.number().int().nonnegative(),
     costUsd: z.number().nonnegative(),
+    /**
+     * Wall-clock length of the whole CLI session, in milliseconds (T4.2.8,
+     * OBS-1). Null means unmeasured — either a pre-T4.2.8 event upcast by
+     * {@link upcastSessionUsageV1}, or a session the harness ended before any
+     * duration was ever known (`src/agent/session.ts`) — and is never used to
+     * mean "took no time".
+     */
+    durationMs: z.number().nonnegative().nullable(),
+    /**
+     * Time actually spent waiting on the model API, in milliseconds. The
+     * narrower of the two SDK durations: `durationMs - apiDurationMs` is the
+     * harness's own overhead for the session — the PreToolUse policy gate,
+     * secret substitution, the `ToolCallLogged` append on every tool call —
+     * which is what NFR-3 bounds and T4.2.9 reports (CONV-7).
+     */
+    apiDurationMs: z.number().nonnegative().nullable(),
   }),
+  [upcastSessionUsageV1],
 );
 
 export const toolCallLogged = defineEvent(

@@ -43,6 +43,8 @@ export function scriptedSuccess(
     turns: 1,
     denials: [],
     errorMessage: '',
+    durationMs: 1000,
+    apiDurationMs: 800,
     ...overrides,
   };
 }

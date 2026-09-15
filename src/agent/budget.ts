@@ -113,6 +113,14 @@ export async function runWithWallClock(
         turns: 0,
         denials: [],
         errorMessage: `session exceeded its wall-clock budget of ${String(seconds)}s`,
+        // The harness's own wait is the one duration this timer actually
+        // knows: it fired after exactly this many milliseconds. What the
+        // aborted session spent talking to the API is not recoverable —
+        // the abort tears the provider down with no result message to read
+        // it off — so that half stays unmeasured rather than a guessed or
+        // fabricated 0 (T4.2.8).
+        durationMs: seconds * 1000,
+        apiDurationMs: null,
       });
     }, seconds * 1000);
   });

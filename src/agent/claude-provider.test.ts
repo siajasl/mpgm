@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { errorDetailOf, gateHooks, terminationFor } from './claude-provider.js';
+import {
+  durationsOf,
+  errorDetailOf,
+  gateHooks,
+  terminationFor,
+} from './claude-provider.js';
 import type { PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import type { ToolDecision, ToolGate } from './session.js';
 
@@ -47,6 +52,21 @@ describe('errorDetailOf', () => {
   it('still says something when the SDK reported no detail', () => {
     expect(errorDetailOf('error_max_turns', [])).toBe('error_max_turns');
     expect(errorDetailOf('error_max_turns', ['', '  '])).toBe('error_max_turns');
+  });
+});
+
+/**
+ * The SDK reports two durations on every result subtype (T4.2.8): the whole
+ * session and the narrower time spent in the model. Both are read off here,
+ * never just the one the retry loop happens to care about, so T4.2.9 can
+ * report the difference as the harness's own overhead instead of guessing.
+ */
+describe('durationsOf', () => {
+  it('reads both durations the SDK reports, not only the wider one', () => {
+    expect(durationsOf({ duration_ms: 5000, duration_api_ms: 3200 })).toStrictEqual({
+      durationMs: 5000,
+      apiDurationMs: 3200,
+    });
   });
 });
 

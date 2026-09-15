@@ -92,6 +92,38 @@ describe('SessionRunner', () => {
     }
   });
 
+  it("records the session's own duration alongside its usage (T4.2.8)", async () => {
+    const result = scriptedSuccess(validOutput, {
+      durationMs: 12_000,
+      apiDurationMs: 9_500,
+    });
+    const { db, log, runner } = harness([result]);
+    try {
+      await runner.runTask(task);
+
+      const usage = log.read().find((event) => event.type === 'SessionUsage');
+      expect(usage?.payload).toMatchObject({ durationMs: 12_000, apiDurationMs: 9_500 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('records a session the harness could not time as unmeasured, not as instant', async () => {
+    const result = scriptedSuccess(validOutput, {
+      durationMs: null,
+      apiDurationMs: null,
+    });
+    const { db, log, runner } = harness([result]);
+    try {
+      await runner.runTask(task);
+
+      const usage = log.read().find((event) => event.type === 'SessionUsage');
+      expect(usage?.payload).toMatchObject({ durationMs: null, apiDurationMs: null });
+    } finally {
+      db.close();
+    }
+  });
+
   it('records the dispatch-time model override, not the role default', async () => {
     const { db, projector, provider, runner } = harness([scriptedSuccess(validOutput)]);
     try {

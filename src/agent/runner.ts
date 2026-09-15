@@ -455,6 +455,11 @@ export class SessionRunner {
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
         costUsd: result.usage.costUsd,
+        // How long this session itself took (T4.2.8) — the whole session and
+        // the narrower time spent in the model, so T4.2.9 can report the
+        // harness's own overhead as the difference rather than assume it.
+        durationMs: result.durationMs,
+        apiDurationMs: result.apiDurationMs,
       },
     });
 

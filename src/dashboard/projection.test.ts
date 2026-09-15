@@ -252,7 +252,14 @@ describe('runProjection / summaryOf', () => {
         {
           runId: RUN,
           type: 'SessionUsage',
-          payload: { taskId: 'T1', inputTokens: 200, outputTokens: 0, costUsd: 1.0 },
+          payload: {
+            taskId: 'T1',
+            inputTokens: 200,
+            outputTokens: 0,
+            costUsd: 1.0,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
         },
         // A CI repair round: `implement/loop.ts` re-dispatches the same
         // taskId, and `reduce.ts` resets `TaskState.usage` to zero here.
@@ -264,7 +271,14 @@ describe('runProjection / summaryOf', () => {
         {
           runId: RUN,
           type: 'SessionUsage',
-          payload: { taskId: 'T1', inputTokens: 20, outputTokens: 0, costUsd: 0.25 },
+          payload: {
+            taskId: 'T1',
+            inputTokens: 20,
+            outputTokens: 0,
+            costUsd: 0.25,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
         },
         {
           runId: RUN,

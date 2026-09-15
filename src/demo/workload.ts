@@ -50,6 +50,10 @@ export function syntheticRun(
         inputTokens: 100 + index,
         outputTokens: 50 + index,
         costUsd: Number((0.01 * (index + 1)).toFixed(4)),
+        // No session actually ran, so there is nothing to measure — null
+        // reads as unmeasured, not as a session that took no time (T4.2.8).
+        durationMs: null,
+        apiDurationMs: null,
       },
     });
 
