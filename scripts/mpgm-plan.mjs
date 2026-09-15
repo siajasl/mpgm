@@ -572,6 +572,87 @@ export const MPGM_PLAN = {
               dependsOn: ['T4.2.2b'],
               tracesTo: ['OBS-2', 'OBS-3'],
             },
+            {
+              id: 'T4.2.7',
+              title: 'A completed task names the artifacts it produced',
+              completionCriteria: [
+                'TaskCompleted carries artifactRefs naming the artifacts the ' +
+                  'task produced, in place of the artifactRefs: [] ' +
+                  'SessionRunner emits unconditionally today ' +
+                  '(src/agent/runner.ts, its one append site). Nothing ' +
+                  'downstream changes to read them: artifactRefSchema is ' +
+                  'already in the catalog (src/event/catalog.ts), reduce.ts ' +
+                  'already folds the field onto task state, and mpgm elicit ' +
+                  '(src/cli/commands.ts) already populates it. ' +
+                  'src/demo/workload.ts emits a populated TaskCompleted too, ' +
+                  'but it is a fixture generator rather than the task path. ' +
+                  'This is a producer gap on the task path alone.',
+                'The change says where the refs come from without breaking ' +
+                  'the implement loop. SessionRunner appends TaskCompleted ' +
+                  'inside runTask and holds no artifact store, and runTask ' +
+                  'has two production callers: src/phase/runner.ts, which ' +
+                  'writes the artifact only after runTask has returned, so ' +
+                  'the artifact does not exist when the event is written ' +
+                  'today; and src/implement/loop.ts, which has no artifact ' +
+                  'store and no declared output at all. Moving the append ' +
+                  'into the phase runner would leave every implement, review ' +
+                  'and rework session with no TaskCompleted — reduce.ts never ' +
+                  'marks those tasks completed and completedTasks ' +
+                  '(src/plan/apply.ts) empties, which stops self-hosting. A ' +
+                  'test covers an implement-loop session as well as a phase ' +
+                  'session and fails if either stops completing.',
+                'The test drives a real phase run and asserts the refs ' +
+                  'against the artifacts the store holds afterwards, by id, ' +
+                  'path and version. A test asserting only that artifactRefs ' +
+                  'is non-empty passes on one hard-coded ref, which is the ' +
+                  'shape of a criterion satisfied by a no-op (CONV-6).',
+                'src/state/escaped-defect-rate.ts is corrected. Its doc says ' +
+                  'TaskCompleted.artifactRefs and the event timestamp are the ' +
+                  'only dating available for when a defect was filed, and ' +
+                  "T4.2.2b's criterion above says the same — that is the " +
+                  'statement being corrected, not a second opinion standing ' +
+                  'beside it. Artifact producedBy.task names the task that ' +
+                  'wrote that version, so the fallback dating is the ' +
+                  'lowest-version Defect record — the version fileDefect ' +
+                  "wrote — and that task's TaskCompleted timestamp. Not the " +
+                  'latest version: the module reduces to latestPerId before ' +
+                  'it counts anything, and for a routed or verified defect ' +
+                  "the latest provenance is routeDefect's or retestDefect's " +
+                  'task, whose completion falls after the merge and would ' +
+                  'flip a fix into an escape — the defect commit 0f5d0cf ' +
+                  'already fixed once from the artifactRefs side.',
+                'That fallback is tested on a defect handed in at all four ' +
+                  'lifecycle versions, not one. A single-version fixture ' +
+                  'cannot tell the lowest-version provenance from the latest, ' +
+                  'so it passes with the misdating live (CONV-6). The test ' +
+                  'asserts that a fix landing — the named task merging after ' +
+                  'the defect was filed — still reads as not escaped when ' +
+                  'artifactRefs is empty and only the fallback is available.',
+                'undated keeps a case some input can still reach, and the ' +
+                  'change names it. A task still running is not it: the phase ' +
+                  'runner writes the artifact only after the session ' +
+                  'completed, so the artifact strictly post-dates the event. ' +
+                  'The production case is the panel tally — src/playbook/' +
+                  'graph.ts gives a tally step the produces of the node it ' +
+                  'closes, src/phase/runner.ts writes that artifact, and a ' +
+                  'tally emits VoteTallied and never TaskCompleted because it ' +
+                  'runs no session. A tally-produced artifact is datable by ' +
+                  'neither route, and that is what undated reports.',
+                'This task files no defect and does not make the rate ' +
+                  'non-zero. phases/ holds definition, scope, design and plan ' +
+                  'playbooks and no test playbook, and fileDefect has no call ' +
+                  'site outside the export list in src/index.ts, so nothing ' +
+                  'yet writes a Defect artifact. Nothing reads ' +
+                  'TaskState.artifactRefs either — every production reader of ' +
+                  'artifactRefs today is on GateState. The refs are for ' +
+                  'OBS-1 run reconstruction; the rate still reads as no ' +
+                  'defects filed rather than 0%, and the change says so ' +
+                  'rather than reporting something it has made measurable in ' +
+                  'principle only.',
+              ],
+              dependsOn: ['T4.2.2b'],
+              tracesTo: ['OBS-1', 'OBS-4'],
+            },
           ],
         },
       ],
