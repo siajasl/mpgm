@@ -15,6 +15,16 @@ import { defectSchema, type Defect } from '../test/defect.js';
  * read off the event's own `ts` (`StoredEvent.ts`), which is the whole of
  * what this module has to work with.
  *
+ * "When was this filed" is dated from the *earliest* `TaskCompleted` that
+ * names the artifact's `id`, at any version — not from whichever
+ * `TaskCompleted` happens to name the version this module reduced the
+ * defect to (`latestPerId`). The lifecycle writes one version per
+ * transition (`filed`'s doc below), so for any defect that has been routed
+ * — the only defects that can escape at all — the current version is never
+ * the one `fileDefect` wrote, and a `TaskCompleted` naming a later version
+ * is some later transition's own completion, not the filing. Filing is
+ * always the earliest mention of the id, whichever version it names.
+ *
  * A defect is **escaped** when the `ChangeMerged` for the task its route
  * names precedes the `TaskCompleted` that filed it: the change had already
  * merged, so whatever the defect found got past every gate before Test caught
@@ -137,9 +147,23 @@ function namedTask(defect: Defect): string | undefined {
   return defect.route.to === 'implement' ? defect.route.taskId : undefined;
 }
 
-/** Whether `ref` — one entry of a `TaskCompleted.artifactRefs` — names `artifact`. */
-function refersTo(ref: ArtifactRefLike, artifact: Artifact): boolean {
-  return ref.id === artifact.id && ref.version === artifact.version;
+/**
+ * Whether `ref` — one entry of a `TaskCompleted.artifactRefs` — names the
+ * defect artifact `id`, at *any* version.
+ *
+ * Filing dates by the earliest `TaskCompleted` that names the artifact at
+ * all, not by the one that happens to name the version this module reduced
+ * the defect to (`latestPerId`). The lifecycle writes one version per
+ * transition — `fileDefect` names v1, `routeDefect` v2, and so on — so a
+ * `TaskCompleted` naming a *later* version is never the filing; it is
+ * whatever transition wrote that version, which for a routed defect can be
+ * the fix task's own completion. Matching on `id` alone, across every
+ * version this artifact ever held, is what lets the earliest of those
+ * events be found regardless of which version happened to be current when
+ * this module looked.
+ */
+function refersTo(ref: ArtifactRefLike, artifactId: string): boolean {
+  return ref.id === artifactId;
 }
 
 /** An artifact schema-validated as a {@link Defect} — the pairing this module
@@ -247,8 +271,13 @@ export function computeEscapedDefectRate(
       continue;
     }
 
-    const filed = taskCompleted.find((event) =>
-      event.payload.artifactRefs.some((ref) => refersTo(ref, artifact)),
+    const filedBy = taskCompleted.filter((event) =>
+      event.payload.artifactRefs.some((ref) => refersTo(ref, artifact.id)),
+    );
+    const filed = filedBy.reduce<StoredEvent<TaskCompletedPayload> | undefined>(
+      (earliest, event) =>
+        earliest === undefined || event.ts < earliest.ts ? event : earliest,
+      undefined,
     );
     if (filed === undefined) {
       // No TaskCompleted names this artifact — the only dating this module
