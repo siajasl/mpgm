@@ -5,6 +5,7 @@ import {
   extractArtifactLinks,
   extractCommitLinks,
   looksLikeId,
+  type CommitLinks,
   type CommitRecord,
   type ExtractedLinks,
   type TraceLink,
@@ -118,8 +119,15 @@ export class TraceIndex {
     this.#replace(relativePath, extractArtifactLinks(artifact, relativePath));
   }
 
-  indexCommit(commit: CommitRecord): void {
-    this.#replace(commit.sha, extractCommitLinks(commit));
+  /**
+   * Returns the commit's trailer reports (unindexed values, unrecognised
+   * keys) alongside indexing it, so a caller walking many commits can collect
+   * them without re-parsing each one to find out what did not go in.
+   */
+  indexCommit(commit: CommitRecord): CommitLinks['reports'] {
+    const extracted = extractCommitLinks(commit);
+    this.#replace(commit.sha, extracted);
+    return extracted.reports;
   }
 
   /** Every source currently represented in the index. */

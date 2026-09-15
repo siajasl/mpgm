@@ -57,15 +57,23 @@ export interface ExtractedLinks {
 }
 
 /**
- * What an id looks like, used only for reporting.
+ * What an id looks like.
  *
- * Graph structure never depends on this: an id is a node because some artifact
- * declared it, not because it matched a regex. The pattern exists so that
- * `danglingReferences` can tell `LOAN-9` — a citation of a requirement that
- * does not exist — apart from `goal: lend books`, which is prose and was never
- * going to resolve.
+ * For an artifact's own citations, this is used only for reporting: a node is
+ * a node because some artifact declared it, not because it matched a regex,
+ * so `danglingReferences` uses this only to tell `LOAN-9` — a citation of a
+ * requirement that does not exist — apart from `goal: lend books`, which is
+ * prose and was never going to resolve.
+ *
+ * A commit trailer has no declared element to check a citation against, so
+ * there `extractCommitLinks` uses this pattern to decide whether a trailer
+ * value becomes a link at all (T4.2.5) — which is why a plan task's lettered
+ * split, `T3.1.2a`, has to match here: `Closes-Task: T3.1.2a` is a real
+ * citation of a real id, and the pattern missing it would silently drop a
+ * link that the graph used to carry.
  */
-export const TRACE_ID_PATTERN = /^(?:[A-Z][A-Z0-9]{0,7}-[0-9]+|T[0-9]+(?:\.[0-9]+)+)$/;
+export const TRACE_ID_PATTERN =
+  /^(?:[A-Z][A-Z0-9]{0,7}-[0-9]+|T[0-9]+(?:\.[0-9]+)+[a-z]?)$/;
 
 export function looksLikeId(value: string): boolean {
   return TRACE_ID_PATTERN.test(value);
@@ -187,11 +195,46 @@ export interface CommitRecord {
 }
 
 /**
- * Trailers this reads, lowercased. `Traces-To:` is the general one; the others
- * are conveniences that mean the same thing with a narrower intent, so that a
- * commit can say what it implements without inventing a vocabulary per repo.
+ * A trailer value the index would not turn into a graph edge: not id-shaped
+ * even once trailing punctuation is stripped. Reported rather than indexed —
+ * a `Traces:` line that says `DESIGN section 4.1` has declared something,
+ * just not something the graph can name a node after.
+ */
+export interface UnindexedTrailerValue {
+  readonly key: string;
+  readonly value: string;
+  readonly sha: string;
+}
+
+/**
+ * A trailer key this module does not read, seen carrying an id-shaped value.
+ * Reported so that the next spelling somebody invents for a trace claim is
+ * visible rather than silently discarded — a key like `Co-Authored-By` whose
+ * values never look like ids is not reported, since it was never a candidate.
+ */
+export interface UnrecognisedTrailer {
+  readonly key: string;
+  readonly sha: string;
+}
+
+export interface CommitLinks extends ExtractedLinks {
+  readonly reports: {
+    readonly unindexed: readonly UnindexedTrailerValue[];
+    readonly unrecognised: readonly UnrecognisedTrailer[];
+  };
+}
+
+/**
+ * Trailers this reads, lowercased. `Traces:` is what the P1 bootstrap commits
+ * spelled their claims with; `Traces-To:` is the same relation under the name
+ * later commits settled on; `Implements` and `Closes-Task` are conveniences
+ * that mean the same thing with a narrower intent, so that a commit can say
+ * what it implements without inventing a vocabulary per repo. This is the
+ * vocabulary; see also CLAUDE.md, which is where a commit author looks for it
+ * before writing a trailer, not just here where it is read.
  */
 const TRAILER_RELATIONS: Readonly<Record<string, TraceRelation>> = {
+  traces: 'traces-to',
   'traces-to': 'traces-to',
   implements: 'traces-to',
   'closes-task': 'traces-to',
@@ -201,38 +244,83 @@ const TRAILER_RELATIONS: Readonly<Record<string, TraceRelation>> = {
 };
 
 /**
+ * Trailing punctuation a sentence puts after a citation but that is never
+ * part of the id itself — `Traces: ADR-3, DESIGN §4.1.` ends the line with a
+ * full stop that belongs to the sentence, not to `§4.1`. Stripped before the
+ * id shape is tested, so the trailing-period case resolves to the same node
+ * as a citation without one, rather than a second one beside it.
+ */
+function stripTrailingPunctuation(value: string): string {
+  return value.replace(/[.,;:]+$/, '');
+}
+
+/**
  * Read the links a commit declares in its trailers.
  *
  * `Traces-To: LOAN-1, NFR-2` — comma-separated, one or more trailer lines.
  * Anything that is not a trailer is ignored: a commit body mentioning LOAN-1
  * in prose has not declared a link, and treating it as one would put entries
  * in the graph that no author could see they had written.
+ *
+ * A value that does not look like an id after trailing punctuation is
+ * stripped is reported rather than turned into a link — the graph gains no
+ * node from it either way, since a link's destination is never itself a node,
+ * but indexing it would leave an unresolvable string sitting in the graph
+ * that nothing declared. Reporting it separately is what lets `DESIGN §4.1`
+ * and `ADR-3` sit in the same trailer without the first being mistaken for a
+ * dangling reference to a node that could exist.
+ *
+ * A trailer key this module does not recognise is reported the same way,
+ * but only when it carries a value that looks like an id — `Co-Authored-By`
+ * and `Signed-off-by` never do, so a commit carrying only those trailers
+ * reports nothing.
  */
-export function extractCommitLinks(commit: CommitRecord): ExtractedLinks {
+export function extractCommitLinks(commit: CommitRecord): CommitLinks {
   const node: TraceNode = {
     id: commit.sha,
     kind: 'commit',
     label: commit.subject,
   };
   const links: TraceLink[] = [];
+  const unindexed: UnindexedTrailerValue[] = [];
+  const unrecognised: UnrecognisedTrailer[] = [];
+  const unrecognisedKeysSeen = new Set<string>();
 
   for (const line of commit.body.split('\n')) {
     // `(\S.*)` rather than `(.+)`: `.` matches a tab, so with `[ \t]*` in
     // front of it the two alternatives overlap and a line like `A:\t\t\t…`
     // backtracks quadratically (CodeQL js/polynomial-redos).
     const match = /^([A-Za-z][A-Za-z-]*):[ \t]*(\S.*)$/.exec(line.trim());
-    const key = match?.[1]?.toLowerCase();
+    const rawKey = match?.[1];
+    const key = rawKey?.toLowerCase();
     const values = match?.[2];
-    const relation = key === undefined ? undefined : TRAILER_RELATIONS[key];
-    if (relation === undefined || values === undefined) {
+    if (rawKey === undefined || key === undefined || values === undefined) {
       continue;
     }
-    for (const cited of values.split(',').map((entry) => entry.trim())) {
-      if (cited !== '') {
-        links.push({ src: commit.sha, dst: cited, relation, source: commit.sha });
+    const relation = TRAILER_RELATIONS[key];
+
+    for (const raw of values.split(',').map((entry) => entry.trim())) {
+      if (raw === '') {
+        continue;
+      }
+      const stripped = stripTrailingPunctuation(raw);
+      const idShaped = looksLikeId(stripped);
+
+      if (relation === undefined) {
+        if (idShaped && !unrecognisedKeysSeen.has(key)) {
+          unrecognisedKeysSeen.add(key);
+          unrecognised.push({ key: rawKey, sha: commit.sha });
+        }
+        continue;
+      }
+
+      if (idShaped) {
+        links.push({ src: commit.sha, dst: stripped, relation, source: commit.sha });
+      } else {
+        unindexed.push({ key: rawKey, value: raw, sha: commit.sha });
       }
     }
   }
 
-  return { nodes: [node], links };
+  return { nodes: [node], links, reports: { unindexed, unrecognised } };
 }

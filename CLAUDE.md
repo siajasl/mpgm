@@ -38,6 +38,7 @@ When changing them:
 - Substantive revisions get an independent subagent critique (severity-ranked findings) folded in before sign-off.
 - "Resolved Decisions" (REQUIREMENTS §8, DESIGN §9) are not reopened silently — only by deliberate operator-approved revision.
 - One logical change per commit, short body explaining why.
+- Trailers the trace index reads (ADR-4, `src/trace/links.ts`), comma-separated ids, one or more per commit: `Traces:` / `Traces-To:` / `Implements:` / `Closes-Task:` all become a traces-to link; `Verifies:` is the only one TST-2 coverage counts, so it is the one to write when the commit is what checks a requirement rather than merely serving it. A value that is not id-shaped (a section number, a milestone's verification prose) is reported, not indexed — write it if it is true, it just will not resolve to a node. Any other trailer key is not read at all.
 
 ## Architecture invariants (full detail in DESIGN.md)
 

@@ -1261,7 +1261,21 @@ export function trace(
       root: context.root,
       schemas: context.artifactSchemas,
     });
-    new TraceIndexer({ repo: context.root, index, artifacts }).update();
+    const report = new TraceIndexer({ repo: context.root, index, artifacts }).update();
+
+    // Surfaced ahead of whatever mode was asked for: a trailer that read as
+    // nothing is not something a coverage figure or a dangling-reference
+    // count would ever reveal on its own.
+    for (const entry of report.unrecognisedTrailers) {
+      context.write(
+        `NOTE: unrecognised trailer '${entry.key}:' with an id-shaped value in ${entry.sha} — not read as a trace claim.`,
+      );
+    }
+    for (const entry of report.unindexedTrailerValues) {
+      context.write(
+        `NOTE: '${entry.key}: ${entry.value}' in ${entry.sha} is not id-shaped — reported, not indexed.`,
+      );
+    }
 
     if (mode === 'dangling') {
       const dangling = index.danglingReferences();
