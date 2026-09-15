@@ -329,12 +329,15 @@ export {
 export type { TargetFacts } from './implement/target.js';
 export { githubSlug, targetRefusal } from './implement/target.js';
 export type {
+  CommitLinks,
   CommitRecord,
   ExtractedLinks,
   TraceLink,
   TraceNode,
   TraceNodeKind,
   TraceRelation,
+  UnindexedTrailerValue,
+  UnrecognisedTrailer,
 } from './trace/links.js';
 export {
   artifactNodeId,

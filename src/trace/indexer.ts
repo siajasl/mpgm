@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { ArtifactStore } from '../artifact/store.js';
 import { changedPaths, headCommit, readCommits } from './git-history.js';
 import type { TraceIndex } from './index-store.js';
+import type { UnindexedTrailerValue, UnrecognisedTrailer } from './links.js';
 
 /**
  * Keeping the trace index in step with the repository (ADR-4).
@@ -34,6 +35,21 @@ export interface IndexReport {
   readonly forgotten: number;
   /** The commit the index now reflects, or null in a repository with none. */
   readonly indexedAt: string | null;
+  /**
+   * Trailer values read from the commits this pass touched that were not
+   * id-shaped, so the graph gained no edge from them. Reported here rather
+   * than stored: a value like `DESIGN section 4.1` is not wrong, it just has
+   * no node to name, and only the commits an incremental `update` actually
+   * re-reads are represented — a full `rebuild` reports every one still
+   * reachable from HEAD.
+   */
+  readonly unindexedTrailerValues: readonly UnindexedTrailerValue[];
+  /**
+   * Trailer keys this pass saw that the index does not read, carrying a
+   * value that looked like an id — the next spelling somebody invents for a
+   * trace claim, made visible rather than silently discarded.
+   */
+  readonly unrecognisedTrailers: readonly UnrecognisedTrailer[];
 }
 
 export class TraceIndexer {
@@ -61,15 +77,26 @@ export class TraceIndexer {
 
     const head = headCommit(this.#repo);
     let commits = 0;
+    const unindexedTrailerValues: UnindexedTrailerValue[] = [];
+    const unrecognisedTrailers: UnrecognisedTrailer[] = [];
     if (head !== null) {
       for (const commit of readCommits(this.#repo)) {
-        this.#index.indexCommit(commit);
+        const reports = this.#index.indexCommit(commit);
+        unindexedTrailerValues.push(...reports.unindexed);
+        unrecognisedTrailers.push(...reports.unrecognised);
         commits += 1;
       }
     }
 
     this.#index.indexedAt = head;
-    return { artifacts, commits, forgotten: 0, indexedAt: head };
+    return {
+      artifacts,
+      commits,
+      forgotten: 0,
+      indexedAt: head,
+      unindexedTrailerValues,
+      unrecognisedTrailers,
+    };
   }
 
   /**
@@ -88,16 +115,27 @@ export class TraceIndexer {
       return this.rebuild();
     }
     if (from === head) {
-      return { artifacts: 0, commits: 0, forgotten: 0, indexedAt: head };
+      return {
+        artifacts: 0,
+        commits: 0,
+        forgotten: 0,
+        indexedAt: head,
+        unindexedTrailerValues: [],
+        unrecognisedTrailers: [],
+      };
     }
 
     let commits = 0;
     let artifacts = 0;
     let forgotten = 0;
+    const unindexedTrailerValues: UnindexedTrailerValue[] = [];
+    const unrecognisedTrailers: UnrecognisedTrailer[] = [];
     let touched: string[];
     try {
       for (const commit of readCommits(this.#repo, `${from}..${head}`)) {
-        this.#index.indexCommit(commit);
+        const reports = this.#index.indexCommit(commit);
+        unindexedTrailerValues.push(...reports.unindexed);
+        unrecognisedTrailers.push(...reports.unrecognised);
         commits += 1;
       }
       touched = changedPaths(this.#repo, from, head);
@@ -133,6 +171,13 @@ export class TraceIndexer {
     }
 
     this.#index.indexedAt = head;
-    return { artifacts, commits, forgotten, indexedAt: head };
+    return {
+      artifacts,
+      commits,
+      forgotten,
+      indexedAt: head,
+      unindexedTrailerValues,
+      unrecognisedTrailers,
+    };
   }
 }

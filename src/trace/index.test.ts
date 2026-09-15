@@ -169,13 +169,118 @@ describe('extracting links from a commit', () => {
   });
 
   it('ignores trailers that are not trace trailers', () => {
-    const { links } = extractCommitLinks({
+    const { links, reports } = extractCommitLinks({
       sha: 'abc123',
       subject: 'Something',
       body: 'Co-Authored-By: Someone <a@b.c>\nSigned-off-by: Someone\n',
     });
 
     expect(links).toStrictEqual([]);
+    // Neither value is id-shaped, so a commit carrying only these trailers
+    // produces no report either — there is nothing here worth a human
+    // noticing.
+    expect(reports.unrecognised).toStrictEqual([]);
+    expect(reports.unindexed).toStrictEqual([]);
+  });
+
+  it('reads Traces: as a traces-to link — the P1 bootstrap spelling', () => {
+    // The P1 bootstrap commits spelled their claims `Traces:`, which is not
+    // one of the keys the index used to read. T4.2.5 closes that gap.
+    const { links } = extractCommitLinks({
+      sha: 'abc123',
+      subject: 'Add phase playbook format and loader',
+      body: 'Traces: DESIGN §2, EXT-3.\n',
+    });
+
+    expect(links).toContainEqual({
+      src: 'abc123',
+      dst: 'EXT-3',
+      relation: 'traces-to',
+      source: 'abc123',
+    });
+  });
+
+  it('never lets Traces: count as verifying — Verifies is the only key TST-2 counts', () => {
+    const { links } = extractCommitLinks({
+      sha: 'abc123',
+      subject: 'Add the ledger',
+      body: 'Traces: LOAN-1\n',
+    });
+
+    expect(links).toStrictEqual([
+      { src: 'abc123', dst: 'LOAN-1', relation: 'traces-to', source: 'abc123' },
+    ]);
+  });
+
+  it('reports a trailer value that is not id-shaped, and indexes no link for it', () => {
+    // This history carries values exactly like these, alongside real ids, in
+    // the same trailer line.
+    const { links, reports } = extractCommitLinks({
+      sha: 'abc123',
+      subject: 'Add M1.3 verification demo and derived gate tags',
+      body: 'Traces: PLAN M1.3 verification, ADR-3, ORC-3, HIL-1, HIL-4.\n',
+    });
+
+    expect(links.map((link) => link.dst)).toStrictEqual([
+      'ADR-3',
+      'ORC-3',
+      'HIL-1',
+      'HIL-4',
+    ]);
+    expect(reports.unindexed).toStrictEqual([
+      { key: 'Traces', value: 'PLAN M1.3 verification', sha: 'abc123' },
+    ]);
+  });
+
+  it('resolves a value that is id-shaped only after trailing punctuation is stripped', () => {
+    // The last citation on a `Traces:` line ends the sentence, so it carries
+    // a full stop that is not part of the id.
+    const { links, reports } = extractCommitLinks({
+      sha: 'abc123',
+      subject: 'Add versioned artifact store with gate immutability',
+      body: 'Traces: ADR-3, ART-1, ART-3.\n',
+    });
+
+    expect(links).toContainEqual({
+      src: 'abc123',
+      dst: 'ART-3',
+      relation: 'traces-to',
+      source: 'abc123',
+    });
+    // Resolved to the same id as a citation without the punctuation, not to
+    // a second node beside it.
+    expect(links.filter((link) => link.dst.startsWith('ART-3'))).toHaveLength(1);
+    expect(reports.unindexed).toStrictEqual([]);
+  });
+
+  it('reads a lettered plan-task split as id-shaped, not as prose', () => {
+    // This history really does cite `Closes-Task: T3.1.2a` — a plan task's
+    // lettered split. Id-shape now decides whether a trailer value is
+    // indexed at all, so the pattern missing this would silently drop a
+    // citation the graph used to carry regardless of shape.
+    const { links, reports } = extractCommitLinks({
+      sha: 'abc123',
+      subject: 'Something',
+      body: 'Closes-Task: T3.1.2a\n',
+    });
+
+    expect(links).toStrictEqual([
+      { src: 'abc123', dst: 'T3.1.2a', relation: 'traces-to', source: 'abc123' },
+    ]);
+    expect(reports.unindexed).toStrictEqual([]);
+  });
+
+  it('reports an unrecognised trailer whose value is id-shaped, by key and commit', () => {
+    const { links, reports } = extractCommitLinks({
+      sha: 'abc123',
+      subject: 'Something',
+      body: 'Refs: LOAN-1\n',
+    });
+
+    // Never read as a claim — the next spelling somebody invents is not
+    // silently added to the graph.
+    expect(links).toStrictEqual([]);
+    expect(reports.unrecognised).toStrictEqual([{ key: 'Refs', sha: 'abc123' }]);
   });
 });
 
@@ -198,6 +303,32 @@ describe('the index', () => {
         'design@1',
       ]);
       expect(index.declarationsOf('ADR-1')[0]?.label).toBe('Use SQLite');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a punctuation-trimmed citation lands on the declared node, not a second one', () => {
+    const { db, index } = indexed();
+    try {
+      index.indexArtifactAs(artifact(), 'artifacts/design/design.v1.md');
+      index.indexCommit({
+        sha: 'commit-1',
+        subject: 'Cite ADR-1 at the end of a sentence',
+        body: 'Traces: ADR-1.\n',
+      });
+
+      // The commit cites `ADR-1.`, with the sentence's full stop; it must
+      // resolve to the same node ADR-1 that the design artifact declared,
+      // not to a second one spelled with the period still attached.
+      expect(
+        index
+          .tracesFrom('commit-1')
+          .map((link) => ({ dst: link.dst, relation: link.relation })),
+      ).toStrictEqual([{ dst: 'ADR-1', relation: 'traces-to' }]);
+      expect(index.tracesTo('ADR-1').map((link) => link.src)).toContain('commit-1');
+      expect(index.declarationsOf('ADR-1.')).toStrictEqual([]);
+      expect(index.declarationsOf('ADR-1')).toHaveLength(1);
     } finally {
       db.close();
     }
@@ -356,6 +487,91 @@ describe('coverage (TST-2)', () => {
         'NFR-1',
       ]);
       expect(index.declaredElements()[0]?.source).toBe('artifacts/design/design.v1.md');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('a Traces: trailer against a repository the test builds (T4.2.5)', () => {
+  // Against this repository's own history the defect this closes is
+  // invisible: CI checks it out at depth one, so a test walking commits here
+  // would find none dropped and pass whether or not `Traces:` was read. Every
+  // assertion below is against a repository the test creates for itself.
+  it('moves a requirement from untraced to traced once Traces: is read', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: {
+          requirements: [{ id: 'LOAN-1', statement: 'Record a loan.', tracesTo: [] }],
+        },
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+
+      let report = new TraceIndexer({ repo: root, index, artifacts: store }).update();
+      // Nothing cites LOAN-1 yet — the T3.2.1 report would have shown it
+      // untraced, same as before this task.
+      expect(index.coverage(['LOAN-1'])[0]).toStrictEqual({
+        id: 'LOAN-1',
+        verifiedBy: [],
+        tracedBy: [],
+        verified: false,
+      });
+
+      commit('Add the loan service\n\nTraces: LOAN-1, DESIGN §4.1.\n');
+      report = new TraceIndexer({ repo: root, index, artifacts: store }).update();
+
+      const row = index.coverage(['LOAN-1'])[0];
+      // Traced now — the commit's `Traces:` claim reached it — but still not
+      // verified: nothing here raised a coverage figure, because Verifies
+      // remains the only key TST-2 counts.
+      expect(row?.tracedBy).toHaveLength(1);
+      expect(row?.verified).toBe(false);
+      // `DESIGN §4.1` is not id-shaped — reported, not turned into a link.
+      expect(report.unindexedTrailerValues).toHaveLength(1);
+      expect(report.unindexedTrailerValues[0]).toMatchObject({
+        key: 'Traces',
+        value: 'DESIGN §4.1.',
+      });
+      expect(report.unindexedTrailerValues[0]?.sha).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reports an invented trailer spelling seen in this history, and stays silent on the ones that are not claims', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: {
+          requirements: [{ id: 'LOAN-1', statement: 'Record a loan.', tracesTo: [] }],
+        },
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      commit('Merge branch\n\nRefs: LOAN-1\n');
+      commit('Add a fix\n\nCo-Authored-By: Someone <a@b.c>\nSigned-off-by: Someone\n');
+
+      const report = new TraceIndexer({ repo: root, index, artifacts: store }).rebuild();
+
+      expect(report.unrecognisedTrailers).toHaveLength(1);
+      expect(report.unrecognisedTrailers[0]).toMatchObject({ key: 'Refs' });
+      // The Co-Authored-By/Signed-off-by-only commit produced no report at
+      // all — its values never looked like ids, so it was never a candidate.
+      expect(report.unindexedTrailerValues).toStrictEqual([]);
     } finally {
       db.close();
     }
