@@ -142,11 +142,14 @@ describe('computeHarnessOverhead — the numerator is context assembly, and noth
 
     const overhead = computeHarnessOverhead(run, events);
 
-    // T1's own span is [contextAssembled@1000ms, last activity@4000ms) =
-    // 3000ms — not the terminal event's own 5000ms.
+    // T1's own span is [contextAssembled@1000ms - 50ms durationMs, last
+    // activity@4000ms) = [950ms, 4000ms) = 3050ms — not the terminal event's
+    // own 5000ms, and not [1000ms, 4000ms) = 3000ms either: the
+    // ContextAssembled event's own timestamp marks when assembly *finished*
+    // (module doc), so its start is backdated by its own durationMs.
     expect(overhead.overheadMs).toBe(50);
-    expect(overhead.instrumentedSpanMs).toBe(3000);
-    expect(overhead.ratio).toBeCloseTo(50 / 3000);
+    expect(overhead.instrumentedSpanMs).toBe(3050);
+    expect(overhead.ratio).toBeCloseTo(50 / 3050);
     expect(overhead.components).toEqual({
       contextAssemblyMs: 50,
       contextAssemblyCount: 1,
@@ -181,15 +184,19 @@ describe('computeHarnessOverhead — the numerator is context assembly, and noth
     expect(overhead.overheadMs).toBeNull();
   });
 
-  it("widens an instrumented task's own span to include context assembly appended before its TaskDispatched", () => {
+  it("widens an instrumented task's own span to include context assembly appended before its TaskDispatched, backdated to before the event's own timestamp", () => {
     // Production order (`src/phase/runner.ts`, `src/implement/loop.ts`):
     // `ContextAssembled` is appended *before* `SessionRunner.runTask`'s own
-    // `TaskDispatched`. Using `dispatched` alone as the span's start would
-    // silently drop that time from the denominator and inflate the ratio.
+    // `TaskDispatched`, but its own timestamp marks when assembly *finished*
+    // (`durationMs: performance.now() - contextStartedAt`) — the 80ms it
+    // measures actually ran in [-80ms, 0ms), before the event's own 0ms
+    // timestamp. Opening the round at `dispatched` alone, or even at
+    // `ContextAssembled`'s own timestamp, would put some or all of that 80ms
+    // outside the very window it is divided by.
     const events = logWithTimestamps(
       [
         runStarted(), // 0ms
-        contextAssembled('T1', 80), // 0ms — before dispatch
+        contextAssembled('T1', 80), // 0ms — before dispatch; real span [-80, 0)
         dispatched('T1'), // 5000ms
         toolCallLogged('T1'), // 6000ms — last recorded activity; closeRound
         // ends the interval here, not at the terminal's own timestamp.
@@ -202,11 +209,17 @@ describe('computeHarnessOverhead — the numerator is context assembly, and noth
 
     const overhead = computeHarnessOverhead(run, events);
 
-    // Span is [0ms, 6000ms) = 6000ms, not [5000ms, 6000ms) = 1000ms.
-    expect(overhead.instrumentedSpanMs).toBe(6000);
-    expect(overhead.ratio).toBeCloseTo(80 / 6000);
-    // The naive (unfixed) span would have reported 80/1000 = 8%, eight
-    // times larger than the correct 1.33%.
+    // Span is [-80ms, 6000ms) = 6080ms — the assembly's own backdated start
+    // to the round's last activity — not [0ms, 6000ms) = 6000ms (the
+    // event's own timestamp, still outside the assembly it names) and not
+    // [5000ms, 6000ms) = 1000ms (dispatch alone).
+    expect(overhead.instrumentedSpanMs).toBe(6080);
+    expect(overhead.ratio).toBeCloseTo(80 / 6080);
+    // The dispatch-only span would have reported a far larger, wrong ratio;
+    // the exact instrumentedSpanMs assertion above is what actually
+    // distinguishes the backdated 6080ms window from the un-backdated
+    // 6000ms one (their ratios are too close together for toBeCloseTo's
+    // default precision to tell apart).
     expect(overhead.ratio).not.toBeCloseTo(80 / 1000);
   });
 });
@@ -222,8 +235,10 @@ describe('computeHarnessOverhead — the ratio is population-matched, not dilute
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        contextAssembled('T1', 100), // 1_000 — precedes its own TaskDispatched
-        dispatched('T1'), // 1_100
+        // 1_100, durationMs 100 -> backdated start 1_000 (the event's own
+        // timestamp marks when assembly finished, module doc).
+        contextAssembled('T1', 100), // 1_100 — precedes its own TaskDispatched
+        dispatched('T1'), // 1_150
         toolCallLogged('T1'), // 2_000 — last activity; closeRound ends the
         // interval here, not at the terminal's own timestamp.
         completed('T1'), // 2_001 -> T1 span [1000, 2000) = 1000ms, overhead 100ms -> 10%
@@ -233,7 +248,7 @@ describe('computeHarnessOverhead — the ratio is population-matched, not dilute
         dispatched('T3'), // 2_000_000
         completed('T3'), // 3_000_000 -> T3 never instrumented, same as T2
       ],
-      [0, 1_000, 1_100, 2_000, 2_001, 3_000, 1_000_000, 2_000_000, 3_000_000],
+      [0, 1_100, 1_150, 2_000, 2_001, 3_000, 1_000_000, 2_000_000, 3_000_000],
     );
     const run = fold(events).runs[RUN];
     if (run === undefined) throw new Error('run not folded');
@@ -277,7 +292,10 @@ describe('computeHarnessOverhead — the ratio is population-matched, not dilute
           completed('T1'),
         ]).flat(),
         // The 12th round is instrumented: 100ms of context assembly inside
-        // a 1000ms round.
+        // a 1000ms round. Offset 22_100 with durationMs 100 backdates the
+        // round's own start to 22_000 (the event's own timestamp marks when
+        // assembly finished, module doc), keeping the round's real span a
+        // clean 1000ms.
         contextAssembled('T1', 100),
         dispatched('T1'),
         toolCallLogged('T1'),
@@ -290,8 +308,8 @@ describe('computeHarnessOverhead — the ratio is population-matched, not dilute
           i * 2_000 + 1_000,
           i * 2_000 + 1_000,
         ]).flat(),
-        22_000,
         22_100,
+        22_150,
         23_000,
         23_000,
       ],
@@ -330,8 +348,10 @@ describe('computeHarnessOverhead — a review session’s own taskId does not di
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        contextAssembled('T1', 100), // 0 — the implementing task, instrumented
-        dispatched('T1'), // 50
+        // 100, durationMs 100 -> backdated start 0 (the event's own
+        // timestamp marks when assembly finished, module doc).
+        contextAssembled('T1', 100), // 100 — the implementing task, instrumented
+        dispatched('T1'), // 150
         toolCallLogged('T1'), // 1000
         completed('T1'), // 1000 -> T1 span [0, 1000) = 1000ms
         dispatched('T1-review'), // 2000 — the review session's own taskId
@@ -341,7 +361,7 @@ describe('computeHarnessOverhead — a review session’s own taskId does not di
         toolCallLogged('T1-review-2'), // 3800
         completed('T1-review-2'), // 3800 -> T1-review-2 span [3500, 3800) = 300ms
       ],
-      [0, 0, 50, 1000, 1000, 2000, 2500, 2500, 3500, 3800, 3800],
+      [0, 100, 150, 1000, 1000, 2000, 2500, 2500, 3500, 3800, 3800],
     );
     const run = fold(events).runs[RUN];
     if (run === undefined) throw new Error('run not folded');
@@ -380,17 +400,21 @@ describe('computeHarnessOverhead — the denominator is merged, not summed, so c
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        contextAssembled('T1', 100), // 0
-        dispatched('T1'), // 50
-        contextAssembled('T2', 100), // 500
-        dispatched('T2'), // 550
+        // Offsets 100/600 with durationMs 100 backdate each round's own
+        // start to 0/500 (the event's own timestamp marks when assembly
+        // finished, module doc), keeping the two rounds' real spans exactly
+        // [0,1000) and [500,1500) as the comment above describes.
+        contextAssembled('T1', 100), // 100
+        dispatched('T1'), // 150
+        contextAssembled('T2', 100), // 600
+        dispatched('T2'), // 650
         toolCallLogged('T1'), // 1000 — T1's own last recorded activity;
         // closeRound ends its interval here, not at its terminal's own ts.
         completed('T1'), // 1000
         toolCallLogged('T2'), // 1500 — T2's own last recorded activity
         completed('T2'), // 1500
       ],
-      [0, 0, 50, 500, 550, 1000, 1000, 1500, 1500],
+      [0, 100, 150, 600, 650, 1000, 1000, 1500, 1500],
     );
     const run = fold(events).runs[RUN];
     if (run === undefined) throw new Error('run not folded');
@@ -416,16 +440,18 @@ describe('computeHarnessOverhead — the denominator is merged, not summed, so c
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        contextAssembled('T1', 100), // 0
-        dispatched('T1'), // 50
+        // Offsets 100/2100 with durationMs 100 backdate each round's own
+        // start to 0/2000, the same discipline as the concurrent test above.
+        contextAssembled('T1', 100), // 100
+        dispatched('T1'), // 150
         toolCallLogged('T1'), // 1000 — T1's own last recorded activity
         completed('T1'), // 1000
-        contextAssembled('T2', 100), // 2000
-        dispatched('T2'), // 2050
+        contextAssembled('T2', 100), // 2100
+        dispatched('T2'), // 2150
         toolCallLogged('T2'), // 3000 — T2's own last recorded activity
         completed('T2'), // 3000
       ],
-      [0, 0, 50, 1000, 1000, 2000, 2050, 3000, 3000],
+      [0, 100, 150, 1000, 1000, 2100, 2150, 3000, 3000],
     );
     const run = fold(events).runs[RUN];
     if (run === undefined) throw new Error('run not folded');
@@ -523,29 +549,33 @@ describe('computeHarnessOverhead — a redispatched task contributes one interva
     // with. Round 1: [0, 1000). Round 2, after a 10-hour gap far past the
     // default idleGapMs of 0: [37_200_000, 37_201_000).
     const GAP_MS = 10 * 60 * 60 * 1000;
+    // Each round's ContextAssembled offset is its own durationMs ahead of
+    // the round's intended start, so backdating (the event's own timestamp
+    // marks when assembly finished, module doc) lands the start exactly at
+    // 0 and 1_000 + GAP_MS respectively, keeping both rounds a clean 1000ms.
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        contextAssembled('T1', 40), // 0 — round 1's own context assembly, before its dispatch
-        dispatched('T1'), // 100
+        contextAssembled('T1', 40), // 40 — round 1's own context assembly, before its dispatch
+        dispatched('T1'), // 140
         toolCallLogged('T1'), // 1_000 — round 1's own last recorded
         // activity; closeRound ends the interval here, not at the terminal
         // event's own timestamp, which shares this same tick below.
         completed('T1'), // 1_000 — round 1 closes cleanly, terminal event first
-        contextAssembled('T1', 60), // 1_000 + GAP_MS — round 2 opens, well past the gap
-        dispatched('T1'), // 1_000 + GAP_MS + 100 — round 2's own dispatch
+        contextAssembled('T1', 60), // 1_000 + GAP_MS + 60 — round 2 opens, well past the gap
+        dispatched('T1'), // 1_000 + GAP_MS + 160 — round 2's own dispatch
         toolCallLogged('T1'), // 1_000 + GAP_MS + 1_000 — round 2's own last
         // recorded activity
         completed('T1'), // 1_000 + GAP_MS + 1_000 — round 2 closes
       ],
       [
         0,
-        0,
-        100,
+        40,
+        140,
         1_000,
         1_000,
-        1_000 + GAP_MS,
-        1_000 + GAP_MS + 100,
+        1_000 + GAP_MS + 60,
+        1_000 + GAP_MS + 160,
         1_000 + GAP_MS + 1_000,
         1_000 + GAP_MS + 1_000,
       ],
@@ -674,16 +704,19 @@ describe('computeHarnessOverhead — a redispatched task contributes one interva
 
     const overhead = computeHarnessOverhead(run, events);
 
-    // Round 1: [0, 0) — 0ms, closed at its own last activity (its own
-    // ContextAssembled, nothing else ever touched it) rather than 3 days
-    // later. Round 2: [REDISPATCH_GAP_MS, REDISPATCH_GAP_MS + 1_100) —
-    // 1_100ms. Both rounds are instrumented, so instrumentedSpanMs is their
-    // sum, 1_100ms — not the 3-day gap the unfixed (dispatched-only) split
-    // rule would have folded into a single round's span.
+    // Round 1: closed at its own last activity (its own ContextAssembled,
+    // nothing else ever touched it) rather than 3 days later — its start is
+    // backdated by its own 40ms durationMs (the event's own timestamp marks
+    // when assembly finished, module doc), so its span is [-40, 0), 40ms,
+    // not folded into a multi-day interval. Round 2 backdates the same way:
+    // [REDISPATCH_GAP_MS - 60, REDISPATCH_GAP_MS + 1_100), 1_160ms. Both
+    // rounds are instrumented, so instrumentedSpanMs is their sum,
+    // 40 + 1_160 = 1_200ms — not the 3-day gap the unfixed (dispatched-only)
+    // split rule would have folded into a single round's span.
     expect(overhead.overheadMs).toBe(100);
-    expect(overhead.instrumentedSpanMs).toBe(1_100);
+    expect(overhead.instrumentedSpanMs).toBe(1_200);
     expect(overhead.instrumentedSpanMs).not.toBe(REDISPATCH_GAP_MS + 1_100);
-    expect(overhead.ratio).toBeCloseTo(100 / 1_100);
+    expect(overhead.ratio).toBeCloseTo(100 / 1_200);
     expect(overhead.ratio).not.toBeCloseTo(100 / (REDISPATCH_GAP_MS + 1_100));
   });
 });
@@ -722,19 +755,28 @@ describe("computeHarnessOverhead — closeRound ends a round at its own last act
 
     const overhead = computeHarnessOverhead(run, events);
 
-    // The round's interval is [0, 200) = 200ms — its own last activity —
-    // not [0, GAP_MS) = four days. A build that closes at the terminal
-    // event's own timestamp instead reports instrumentedSpanMs as GAP_MS
-    // (345_600_000ms) and a ratio near zero (300 / 345_600_000 ≈ 8.68e-7) —
-    // a false NFR-3 pass made of operator absence, reproduced against this
-    // repository's own real log by the review that found this defect.
-    expect(overhead.instrumentedSpanMs).toBe(200);
+    // The round's interval is [-300, 200) = 500ms — its own context-assembly
+    // start (backdated by its 300ms durationMs, module doc) to its own last
+    // activity — not [0, GAP_MS) = four days, and not [0, 200) = 200ms
+    // either, which would put the entire 300ms numerator outside the window
+    // it is divided by and let ratio exceed 1 (300 / 200 = 1.5, a false
+    // NFR-3 *breach* made of arithmetic rather than measurement — the
+    // mirror image of the false pass below). A build that closes at the
+    // terminal event's own timestamp instead reports instrumentedSpanMs as
+    // GAP_MS (345_600_000ms) and a ratio near zero (300 / 345_600_000 ≈
+    // 8.68e-7) — a false NFR-3 pass made of operator absence, reproduced
+    // against this repository's own real log by the review that found this
+    // defect.
+    expect(overhead.instrumentedSpanMs).toBe(500);
     expect(overhead.instrumentedSpanMs).not.toBe(GAP_MS);
+    expect(overhead.instrumentedSpanMs).not.toBe(200);
     expect(overhead.overheadMs).toBe(300);
-    expect(overhead.ratio).toBeCloseTo(300 / 200);
+    expect(overhead.ratio).toBeCloseTo(300 / 500);
+    expect(overhead.ratio).toBeLessThan(1);
     expect(overhead.ratio).not.toBeCloseTo(300 / GAP_MS);
+    expect(overhead.ratio).not.toBeCloseTo(300 / 200);
     // observedMs is the same interval, for the same reason.
-    expect(overhead.observedMs).toBe(200);
+    expect(overhead.observedMs).toBe(500);
     expect(overhead.observedMs).not.toBe(GAP_MS);
   });
 
@@ -764,18 +806,22 @@ describe("computeHarnessOverhead — closeRound ends a round at its own last act
 });
 
 describe('computeHarnessOverhead — overheadMs, instrumentedSpanMs and ratio are null together (CONV-5)', () => {
-  it('does not report a real overheadMs alongside a null ratio when the instrumented span merges to zero', () => {
+  it('does not report a real ratio (NaN or otherwise) alongside a zero-length instrumented span', () => {
     // T1 is instrumented (a real ContextAssembled event) but its own
-    // dispatch-to-terminal interval has zero length — dispatched and
-    // completed at the same timestamp. overheadMs/instrumentedSpanMs/ratio
-    // come from one value that is null for all three together, so this
-    // cannot surface as a real overheadMs number next to a null ratio —
-    // the exact drift three independently-evaluated conditions could let
-    // through (module doc).
+    // durationMs is 0 (assembly measured as instantaneous) and its
+    // dispatch-to-terminal interval also has zero length — dispatched and
+    // completed at the same timestamp. Backdating a round's start by its own
+    // durationMs (module doc) means any *positive*-duration round now always
+    // has a span at least that large — this exact zero-length shape is only
+    // reachable at durationMs 0. overheadMs/instrumentedSpanMs/ratio come
+    // from one value that is null for all three together, so this cannot
+    // surface as `ratio: NaN` (0 / 0) next to a real overheadMs/
+    // instrumentedSpanMs of 0 — the exact drift three independently-
+    // evaluated conditions could let through (module doc).
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        contextAssembled('T1', 50), // 1000 — opens the round
+        contextAssembled('T1', 0), // 1000 — opens the round, instantaneous
         dispatched('T1'), // 1000 — same instant, extends without moving the start
         completed('T1'), // 1000 — same instant again: zero-length interval
       ],
@@ -787,13 +833,14 @@ describe('computeHarnessOverhead — overheadMs, instrumentedSpanMs and ratio ar
     const overhead = computeHarnessOverhead(run, events);
 
     expect(overhead.components.instrumentedTaskCount).toBe(1);
-    expect(overhead.components.contextAssemblyMs).toBe(50);
+    expect(overhead.components.contextAssemblyMs).toBe(0);
     // The instrumented population is non-empty, but its merged span is
-    // zero, so nothing is reported — not a 50ms overheadMs with no
-    // denominator to divide it by.
+    // zero, so nothing is reported — not `ratio: NaN`, and not a 0ms
+    // overheadMs/instrumentedSpanMs pair read as "0% overhead measured".
     expect(overhead.overheadMs).toBeNull();
     expect(overhead.instrumentedSpanMs).toBeNull();
     expect(overhead.ratio).toBeNull();
+    expect(overhead.ratio).not.toBeNaN();
   });
 });
 

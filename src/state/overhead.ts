@@ -85,26 +85,36 @@ import type { RunState } from './kernel-state.js';
  * treating the one overlapping window as if it were two separate ones. So
  * the denominator paired with the numerator is `mergeIntervals` (used for
  * `observedMs` below, and reused here) applied to only the instrumented
- * rounds' own intervals — one `[min(dispatch, contextAssembled), close)`
- * pair per round that carries a `ContextAssembled`, `close` always being the
- * last timestamp any event named that round's `taskId` (see below) — never
- * the terminal event's own timestamp, whether the round reaches one or is
- * abandoned before it does: the gap between a round's real last activity and
- * whatever later event closes it is operator absence, not harness work, and
- * letting it into `close` would put that absence inside the ratio's own
- * denominator — not one
- * interval spanning a task's first dispatch to its last terminal, and not
- * every round of an instrumented task, only the ones the numerator actually
+ * rounds' own intervals — one `[start, close)` pair per round that carries a
+ * `ContextAssembled` (`start` backdated by that event's own `durationMs`,
+ * see below), `close` always being the last timestamp any event named that
+ * round's `taskId` (see below) — never the terminal event's own timestamp,
+ * whether the round reaches one or is abandoned before it does: the gap
+ * between a round's real last activity and whatever later event closes it
+ * is operator absence, not harness work, and letting it into `close` would
+ * put that absence inside the ratio's own denominator — not one interval
+ * spanning a task's first dispatch to its last terminal, and not every
+ * round of an instrumented task, only the ones the numerator actually
  * measured — under the same stated idle rule as `observedMs`: {@link
  * HarnessOverhead.instrumentedSpanMs}. It is smaller than the sum whenever
  * instrumented rounds' intervals overlap — concurrency correctly *shrinks*
  * the wall-clock denominator it divides into, rather than the numerator
  * growing to match it — and equal to the sum whenever they do not overlap
- * at all. Each round's start is `min`, not `dispatch` alone, because both
- * call sites append `ContextAssembled` *before* `SessionRunner.runTask`'s
- * own `TaskDispatched` (`src/state/reduce.ts`) — the context-assembly time
- * this module measures would otherwise fall outside the very window it is
- * divided by.
+ * at all. A round that opens on `ContextAssembled` backdates its own
+ * `start` by that event's `durationMs`, rather than starting at the event's
+ * own timestamp: both call sites append `ContextAssembled` *after*
+ * `assembleContext` returns (`durationMs: performance.now() -
+ * contextStartedAt`, `src/phase/runner.ts` and `src/implement/loop.ts`), so
+ * the event's `ts` marks when assembly *finished*, and the span it measures
+ * actually ran in `[ts - durationMs, ts)` — entirely before that timestamp.
+ * Opening the round there, or at `min(dispatch, contextAssembled.ts)` (an
+ * earlier revision's mistake), would put the whole measured span outside
+ * the very window it is divided by, understating `instrumentedSpanMs` by
+ * exactly the numerator being added to it and letting `ratio` exceed 1 for
+ * a round no longer than its own context assembly. Backdating `start` puts
+ * the real assembly interval inside the window instead (`openOrSplitRound`'s
+ * own comment; `src/state/reduce.ts` still governs event ordering between
+ * `ContextAssembled` and `TaskDispatched`).
  *
  * **Rounds, not tasks, are the unit `mergeIntervals` is given — see the
  * function body's own comment for why.** `implement/loop.ts` redispatches
@@ -207,9 +217,10 @@ import type { RunState } from './kernel-state.js';
  * DESIGN's only mention of NFR-3 is ADR-1, in service of a different
  * decision (TypeScript over Rust): "the harness is I/O-bound around model
  * calls (NFR-3 is trivially met in any mainstream language)". Run against a
- * copy of this repository's own self-hosted `run-1` (13,636 events,
- * 2026-08-27T12:50:35Z to 2026-09-15T22:03:53Z, with `closeRound`'s
- * lastActivityTs fix above in place) this function reports `ratio: null` —
+ * copy of this repository's own self-hosted `run-1` (13,805 events,
+ * 2026-08-27T12:50:35Z to 2026-09-15T22:27:08Z, with both `closeRound`'s
+ * `lastActivityTs` fix and the numerator's own backdated `start` above in
+ * place) this function reports `ratio: null` —
  * every `ContextAssembled` event in this codebase is new with this task, and
  * the long-running process behind that log predates it, so nothing yet
  * brackets context assembly for it. `coverage` reads `0/25`, not `0/90`: 65
@@ -219,7 +230,7 @@ import type { RunState } from './kernel-state.js';
  * informative: merging that run's settled tasks' own *round* intervals
  * (idle rule at its default, mid-round abandonment splits applied, every
  * round ending at its own last recorded activity rather than a possibly-
- * distant terminal event's timestamp) gives a busy span of 102,651,056ms,
+ * distant terminal event's timestamp) gives a busy span of 103,058,695ms,
  * about 1.19 days, inside a run whose raw `startedAt`-to-last-event span is
  * about 19.4 days.
  *
@@ -566,16 +577,31 @@ export function computeHarnessOverhead(
   // already open and already dispatched, this event cannot belong to it
   // (see the ordering argument above) — close the stale round at its own
   // `lastActivityTs` and open a fresh one here.
+  //
+  // `startOffsetMs` only ever applies when a *fresh* round is created by a
+  // `ContextAssembled` event (the caller passes `payload.durationMs`, 0 for
+  // every other event). `ContextAssembled`'s own timestamp is stamped
+  // *after* `assembleContext` returns (`performance.now() - contextStartedAt`,
+  // both call sites) — the durationMs it carries measures the span that
+  // just *ended* at that timestamp, not one starting there. Opening the
+  // round at the event's own `ts` would put the entire measured span
+  // *before* the window it is later divided by, understating
+  // `instrumentedSpanMs` by exactly the numerator being added to it and
+  // letting `ratio` exceed 1 for a round no longer than its own context
+  // assembly. Backdating `start` by `durationMs` puts the real assembly
+  // interval inside the window it is divided by instead.
   const openOrSplitRound = (
     taskId: string,
     ts: string,
     marksDispatch: boolean,
+    startOffsetMs = 0,
   ): OpenRound => {
     const tsMs = Date.parse(ts);
+    const startMs = tsMs - startOffsetMs;
     const open = openRounds.get(taskId);
     if (open === undefined) {
       const fresh: OpenRound = {
-        start: tsMs,
+        start: startMs,
         lastActivityTs: tsMs,
         dispatched: marksDispatch,
         contextMs: 0,
@@ -599,7 +625,7 @@ export function computeHarnessOverhead(
     if (open.dispatched || (!marksDispatch && open.contextCount > 0)) {
       pushRound(taskId, open, open.lastActivityTs);
       const fresh: OpenRound = {
-        start: tsMs,
+        start: startMs,
         lastActivityTs: tsMs,
         dispatched: marksDispatch,
         contextMs: 0,
@@ -680,9 +706,19 @@ export function computeHarnessOverhead(
       case 'ContextAssembled': {
         const payload = event.payload as ContextAssembledPayload;
         // Appended before this round's own `TaskDispatched` at both call
-        // sites (module doc) — opens (or extends) the round here so the
-        // span it measures falls inside the window it is divided by.
-        const round = openOrSplitRound(payload.taskId, event.ts, false);
+        // sites (module doc) — opens (or extends) the round here. A fresh
+        // round backdates its own `start` by `durationMs` (see
+        // `openOrSplitRound`'s own comment): the event's `ts` marks when
+        // assembly *finished*, so the span it measures lies in
+        // `[ts - durationMs, ts)`, and only backdating `start` puts that
+        // span inside the window it is divided by rather than immediately
+        // before it.
+        const round = openOrSplitRound(
+          payload.taskId,
+          event.ts,
+          false,
+          payload.durationMs,
+        );
         round.contextMs += payload.durationMs;
         round.contextCount += 1;
         break;
