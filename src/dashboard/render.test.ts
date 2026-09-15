@@ -349,6 +349,24 @@ describe('runDetailPage metrics (T4.2.6)', () => {
     expect(html).not.toMatch(/>0%</);
     expect(html).not.toMatch(/>0ms</);
     expect(html).toContain('<td>-</td>');
+
+    // The two checks above cannot fail on `successText` alone:
+    // `percent(rate)` never puts `<` directly against the digits it
+    // prints (it always reads `0% (0/0)`, not `>0%<`), and the bare
+    // `<td>-</td>` check is satisfied by the Quality-rates table's null
+    // cells even if the Metrics table's success cell prints something
+    // else entirely. Pin the assertion to the Overall row's own cells:
+    // a regression that drops the null guard and renders
+    // `percent(metric.successRate ?? 0)` prints `0% (0/0)` here, which
+    // this catches even though neither `/>0%</` nor `<td>-</td>` would.
+    expect(html).not.toContain('0% (0/0)');
+    const overallRow = /<tr>\s*<td>run<\/td>[\s\S]*?<\/tr>/.exec(html)?.[0];
+    expect(overallRow).toBeDefined();
+    const overallCells = [...(overallRow ?? '').matchAll(/<td>([^<]*)<\/td>/g)].map(
+      (m) => m[1],
+    );
+    expect(overallCells.at(-1)).toBe('-'); // success
+    expect(overallCells.at(-3)).toBe('-'); // avg latency
   });
 });
 

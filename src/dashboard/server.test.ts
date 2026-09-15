@@ -7,8 +7,10 @@ import { ArtifactSchemaRegistry } from '../artifact/schema-registry.js';
 import { MEMORY, openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
+import { projectArtifactSchemas } from '../schemas.js';
 import { Projector } from '../state/projector.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
+import { fileDefect, routeDefect } from '../test/defect.js';
 import { TraceIndex } from '../trace/index-store.js';
 import { DashboardServer } from './server.js';
 
@@ -182,6 +184,115 @@ describe('DashboardServer', () => {
     expect(body.metrics.byPhase.implement?.completed).toBe(1);
     expect(body.metrics.overall.successRate).toBe(1);
     expect(body.rates.phaseGate).toEqual({ decided: 1, rejected: 1, rate: 1 });
+  });
+
+  it('reads Defect artifacts from the artifact store into the escaped-defect rate (T4.2.6)', async () => {
+    const db = openDatabase(MEMORY);
+    openDbs.push(db);
+    // A fixed clock (`harness()`'s own) would tie the merge and the filing
+    // `TaskCompleted` to the same instant, and `computeEscapedDefectRate`
+    // reads `merge.ts < filed.ts` as "escaped" (`escaped-defect-rate.ts`) —
+    // an incrementing clock is what lets this fixture control which of the
+    // two actually came first.
+    let seconds = 0;
+    const log = EventLog.attach(db, {
+      registry: kernelRegistry(),
+      clock: () => {
+        const ts = new Date(2026_01_01_00_00_00 + seconds * 1000).toISOString();
+        seconds += 1;
+        return ts;
+      },
+    });
+    const projector = new Projector({ log, snapshots: SnapshotStore.attach(db) });
+    const traces = TraceIndex.attach(db);
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-dashboard-'));
+    tempDirs.push(root);
+    const artifacts = new ArtifactStore({ root, schemas: projectArtifactSchemas() });
+
+    // The task merges first, then a `TaskCompleted` names the defect filed
+    // against that already-merged change — the "escaped" shape
+    // `escaped-defect-rate.ts`'s own doc describes: whatever this defect
+    // found got past every gate before Test caught it.
+    log.appendMany([
+      { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+      {
+        runId: RUN,
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+      },
+      {
+        runId: RUN,
+        type: 'ChangeMerged',
+        payload: {
+          taskId: 'T1',
+          branch: 'task/T1',
+          into: 'main',
+          commit: 'deadbeef',
+          reviewTaskId: 'T1-review',
+        },
+      },
+      {
+        runId: RUN,
+        type: 'TaskCompleted',
+        payload: {
+          taskId: 'T1',
+          artifactRefs: [
+            {
+              id: 'defect-1',
+              path: 'artifacts/defect/defect-1.md',
+              commit: null,
+              version: 1,
+            },
+          ],
+        },
+      },
+    ]);
+
+    const filed = fileDefect({
+      title: 'the bug',
+      severity: 'high',
+      description: 'found by a retest',
+      evidence: { kind: 'adversarial', caseId: 'C1', detail: 'it broke' },
+      tracesTo: ['REQ-1'],
+    });
+    const routed = routeDefect(filed, { to: 'implement', taskId: 'T1' }, 'send it back');
+    artifacts.write({
+      id: 'defect-1',
+      basePath: 'artifacts/defect/defect-1.md',
+      schema: 'defect',
+      data: routed,
+      producedBy: {
+        task: 'retest',
+        role: 'tester',
+        model: 'claude-sonnet-5',
+        runId: RUN,
+      },
+    });
+
+    const server = new DashboardServer({ projector, traces, log, artifacts });
+    openServers.push(server);
+    const port = await server.listen(0);
+    const base = `http://127.0.0.1:${String(port)}`;
+
+    // This is the gap the review found: with `server.ts` handing
+    // `runProjection` an empty defects array instead of what `artifacts`
+    // actually holds, `filed`/`escaped`/`rate` below would all read
+    // `0`/`0`/`null` instead — this only passes because the server reads the
+    // artifact store the option requires.
+    const body = (await (await fetch(`${base}/runs/${RUN}`)).json()) as {
+      rates: {
+        escapedDefects: {
+          merged: number;
+          escaped: number;
+          rate: number | null;
+          filed: number;
+        };
+      };
+    };
+    expect(body.rates.escapedDefects.filed).toBe(1);
+    expect(body.rates.escapedDefects.merged).toBe(1);
+    expect(body.rates.escapedDefects.escaped).toBe(1);
+    expect(body.rates.escapedDefects.rate).toBe(1);
   });
 
   it('finds a run whose id needs percent-decoding, the same id `/runs` lists it under', async () => {
