@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { durationsOf, errorDetailOf, gateHooks, terminationFor } from './claude-provider.js';
+import {
+  durationsOf,
+  errorDetailOf,
+  gateHooks,
+  terminationFor,
+} from './claude-provider.js';
 import type { PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import type { ToolDecision, ToolGate } from './session.js';
 

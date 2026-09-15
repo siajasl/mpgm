@@ -252,9 +252,9 @@ function usageOf(
  * an infrastructure error — carries both, so this runs on all three of this
  * file's return sites rather than only the success path.
  */
-export function durationsOf(message: {
-  duration_ms: number;
-  duration_api_ms: number;
-}): { durationMs: number; apiDurationMs: number } {
+export function durationsOf(message: { duration_ms: number; duration_api_ms: number }): {
+  durationMs: number;
+  apiDurationMs: number;
+} {
   return { durationMs: message.duration_ms, apiDurationMs: message.duration_api_ms };
 }
