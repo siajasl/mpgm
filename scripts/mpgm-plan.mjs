@@ -816,6 +816,62 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['NFR-6'],
             },
+            {
+              id: 'T4.2.11',
+              title: 'A sentence that starts with a trailer key is not a trace claim',
+              completionCriteria: [
+                'A Key: value line inside a prose paragraph is not read as a ' +
+                  'trailer. extractCommitLinks (src/trace/links.ts) scans ' +
+                  'every line of a commit body, so the wrapped sentence ' +
+                  '"verifies: tracesTo, which extractArtifactLinks turned ' +
+                  'into verifies" — carried mid-paragraph by two commits in ' +
+                  'this history — is read as a verifies claim with two ' +
+                  "comma-separated values. T4.2.5's id-shape filter refuses " +
+                  'those values, so today the cost is four NOTE lines rather ' +
+                  'than four graph edges; but the key that got through is ' +
+                  'Verifies, the only one TraceIndexStore.coverage counts, ' +
+                  'and a prose line reading "Verifies: ORC-1, because ..." ' +
+                  'would raise a coverage figure.',
+                "Git's own trailer parsing is not the fix and the change does " +
+                  'not reach for it. git log --format=%(trailers) reads only ' +
+                  'the last paragraph of a message, and on this repository it ' +
+                  'returns a trailer for none of the 24 commits carrying ' +
+                  'Traces: — those commits put Traces: in its own paragraph ' +
+                  'above Co-Authored-By:, so git never sees it. Delegating to ' +
+                  'git would silently discard every claim T4.2.5 just made ' +
+                  'readable.',
+                'The rule is measured against this history before it is ' +
+                  'adopted. Over main today, 62 recognised-key trailer lines ' +
+                  'sit in paragraphs whose every line is Key: value shaped, ' +
+                  'and exactly 2 sit inside prose — the two above. A rule ' +
+                  'requiring the containing paragraph to be entirely ' +
+                  'trailer-shaped therefore drops both false positives and ' +
+                  'keeps all 62 real claims. The change reports those two ' +
+                  'counts for whatever rule it picks, and a rule that drops ' +
+                  'any of the 62 is not the rule.',
+                'A test carries a commit whose body has a prose line ' +
+                  'beginning Verifies: and asserts no verifying link is ' +
+                  'created, and a second commit whose trailer paragraph is ' +
+                  'well formed and asserts the link is. Without the second ' +
+                  'half the test passes on a parser that reads no trailers at ' +
+                  'all (CONV-6).',
+                'The test builds its own repository rather than walking this ' +
+                  'one. CI checks this repository out at depth one, so a test ' +
+                  'reading its history finds neither offending commit and ' +
+                  'passes while the defect is live — the same trap T4.2.5 ' +
+                  'named.',
+                'Where a trailer must sit is written where a commit author ' +
+                  'looks. T4.2.5 put the vocabulary in CLAUDE.md; an author ' +
+                  'who knows the keys but not the placement rule can still ' +
+                  'write a claim that is not read, or a sentence that is.',
+                'The two commits are not rewritten. Their messages are the ' +
+                  'history; what changes is that the parser stops misreading ' +
+                  'them, and the four NOTE lines mpgm trace prints for them ' +
+                  'stop appearing.',
+              ],
+              dependsOn: ['T4.2.5'],
+              tracesTo: ['ADR-4', 'TST-2'],
+            },
           ],
         },
         {
