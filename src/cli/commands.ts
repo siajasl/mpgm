@@ -60,6 +60,11 @@ import { WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
 import { computeGateRates, type RunGateRates } from '../state/gate-rates.js';
 import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
+import {
+  computeHarnessOverhead,
+  NFR3_OVERHEAD_THRESHOLD,
+  type HarnessOverhead,
+} from '../state/overhead.js';
 import { Projector } from '../state/projector.js';
 import { fold } from '../state/reduce.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
@@ -277,6 +282,35 @@ function formatMetric(label: string, metric: AggregateMetric): string {
 }
 
 /**
+ * `mpgm status --metrics`'s overhead line (T4.2.9, NFR-3) — one line for the
+ * whole run, not a bucket `formatMetric` renders per phase or role: NFR-3
+ * bounds overhead against the run's own wall-clock time, so a per-phase or
+ * per-role figure would compare against a denominator NFR-3 never asked
+ * about.
+ *
+ * `T4.2.1`'s own `avgLatencyMs` above is a task's dispatch-to-completion
+ * span, not harness overhead — a slow model call inflates it exactly as
+ * much as a slow scheduler would — so it does not measure NFR-3 despite
+ * that task's `tracesTo` naming it. This line, not that one, is what does
+ * (`../state/overhead.ts`'s module doc has the formula and the null
+ * discipline this renders).
+ */
+function formatOverhead(overhead: HarnessOverhead): string {
+  const pct = overhead.ratio === null ? '-' : `${(overhead.ratio * 100).toFixed(1)}%`;
+  const ms = (value: number | null): string =>
+    value === null ? '-' : `${String(Math.round(value))}ms`;
+  return (
+    `  overhead ${pct} of NFR-3's ${String(NFR3_OVERHEAD_THRESHOLD * 100)}% threshold ` +
+    `(${ms(overhead.overheadMs)} measured / ${ms(overhead.observedMs)} busy span; ` +
+    `context-assembly ${ms(overhead.components.contextAssemblyMs)} over ` +
+    `${String(overhead.components.contextAssemblyCount)} calls, in-session ` +
+    `${ms(overhead.components.sessionOverheadMs)} over ` +
+    `${String(overhead.components.sessionsWithDuration)} sessions; ` +
+    `cannot see ${overhead.unmeasured.join(', ')})`
+  );
+}
+
+/**
  * `mpgm status --rates` — gate rejection, rework and escaped-defect rates for
  * a run (OBS-4).
  *
@@ -301,8 +335,9 @@ function formatGateRates(rates: RunGateRates): readonly string[] {
 
 /**
  * `mpgm status` — folded run state (OBS-3), with per-phase/role/run metrics
- * on `--metrics` (OBS-2) and gate/rework/escaped-defect rates on `--rates`
- * (OBS-4). The escaped-defect figure (T4.2.2b) joins this report rather than
+ * and the run's harness-overhead figure (NFR-3, T4.2.9) on `--metrics`
+ * (OBS-2) and gate/rework/escaped-defect rates on `--rates` (OBS-4). The
+ * escaped-defect figure (T4.2.2b) joins this report rather than
  * arriving on a surface of its own — it is one more rate `computeGateRates`
  * folds in, not a second flag or a second command a reader would have to know
  * to ask for.
@@ -391,7 +426,8 @@ export function status(
       }
 
       if (options.metrics === true) {
-        const report = computeRunMetrics(current, log.read({ runId: current.runId }));
+        const runEvents = log.read({ runId: current.runId });
+        const report = computeRunMetrics(current, runEvents);
         context.write('  metrics:');
         context.write(formatMetric('run', report.overall));
         for (const [phase, metric] of Object.entries(report.byPhase)) {
@@ -400,6 +436,7 @@ export function status(
         for (const [role, metric] of Object.entries(report.byRole)) {
           context.write(formatMetric(`role ${role}`, metric));
         }
+        context.write(formatOverhead(computeHarnessOverhead(current, runEvents)));
       }
 
       if (options.rates === true) {

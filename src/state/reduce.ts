@@ -266,6 +266,18 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       return withRun(state, { ...updated, usage: addUsage(run.usage, delta) }, seq);
     }
 
+    case 'ContextAssembled': {
+      // Recorded for `computeHarnessOverhead` (T4.2.9, NFR-3) to re-read
+      // directly, the same way `computeRunMetrics` re-reads `SessionUsage`
+      // rather than trusting a folded total — and deliberately not folded
+      // into `TaskState` here beyond confirming the run exists. Both call
+      // sites (`src/phase/runner.ts`, `src/implement/loop.ts`) append this
+      // *before* `SessionRunner.runTask`'s own `TaskDispatched`, so
+      // `requireTask` would fail on a task the fold has not seen yet.
+      requireRun(state, event.runId, type);
+      return { ...state, lastSeq: seq };
+    }
+
     case 'ToolCallLogged': {
       const payload = event.payload as PayloadOf<typeof toolCallLogged>;
       const run = requireRun(state, event.runId, type);

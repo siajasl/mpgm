@@ -684,6 +684,73 @@ describe('status --metrics', () => {
     expect(output).toContain(
       '  phase review: tasks 1  cost $0.2500  tokens 15  avg-latency 2000ms  retries 0  success 100% (1/1)',
     );
+    // T2's own SessionUsage records a 1000ms session against an 800ms API
+    // call — 200ms of in-session overhead — over T2's own 2000ms busy span
+    // (T1 never settled, so it contributes no interval): 200/2000 = 10.0%,
+    // exactly NFR-3's threshold, and no ContextAssembled event exists in
+    // this fixture, so that component reads 0ms over 0 calls rather than
+    // being silently omitted.
+    expect(output).toContain(
+      "  overhead 10.0% of NFR-3's 10% threshold (200ms measured / 2000ms busy span; " +
+        'context-assembly 0ms over 0 calls, in-session 200ms over 1 sessions; ' +
+        'cannot see scheduling, validation)',
+    );
+  });
+
+  it('reads a run with no recorded session duration as unmeasured, not 0%', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-unmeasured-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      // A session that never produced a duration to report (the same "null,
+      // not zero" case a pre-T4.2.8 log upcasts to), and no `ContextAssembled`
+      // event either.
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 0.01,
+            durationMs: null,
+            apiDurationMs: null,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      "  overhead - of NFR-3's 10% threshold (- measured / 0ms busy span; " +
+        'context-assembly 0ms over 0 calls, in-session 0ms over 0 sessions; ' +
+        'cannot see scheduling, validation)',
+    );
   });
 });
 

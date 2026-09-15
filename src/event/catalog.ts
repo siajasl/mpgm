@@ -105,6 +105,32 @@ export const sessionUsage = defineEvent(
   [upcastSessionUsageV1],
 );
 
+/**
+ * How long assembling one task's context took (T4.2.9, NFR-3).
+ *
+ * `assembleContext` (`../context/assembler.ts`) runs at two call sites —
+ * `src/phase/runner.ts`'s `runSession` and `src/implement/loop.ts`, the
+ * latter being the path every `mpgm implement` uses — and both call it
+ * *before* `SessionRunner.runTask`, so neither call falls inside the span
+ * `SessionUsage.durationMs` covers, above. Without this event, context
+ * assembly would be invisible to any harness-overhead figure: it is real
+ * CPU time NFR-3 names, spent outside every span the log otherwise records.
+ *
+ * `site` keeps the two call sites apart rather than summing them on
+ * arrival: a reader asking how much of a run's overhead came from
+ * assembling context for a phase-playbook session versus an implement-loop
+ * one needs both counted, not folded into one number neither call site
+ * alone produced.
+ */
+export const contextAssembled = defineEvent(
+  'ContextAssembled',
+  z.object({
+    taskId: nonEmpty,
+    site: z.enum(['phase', 'implement']),
+    durationMs: z.number().nonnegative(),
+  }),
+);
+
 export const toolCallLogged = defineEvent(
   'ToolCallLogged',
   z.object({
@@ -702,6 +728,7 @@ export const kernelEvents = [
   changeMerged,
   changeReviewed,
   checksReported,
+  contextAssembled,
   deployConfirmationSpent,
   destructiveOpConfirmed,
   dryRunRecorded,
