@@ -1,3 +1,5 @@
+import type { RunGateRates } from '../state/gate-rates.js';
+import type { AggregateMetric, RunMetrics } from '../state/metrics.js';
 import type {
   DashboardGate,
   DashboardRun,
@@ -7,7 +9,15 @@ import type {
 } from './projection.js';
 
 /**
- * HTML panels over the projection API (DESIGN §4.4, OBS-3, T3.2.5b).
+ * HTML panels over the projection API (DESIGN §4.4, OBS-2/3/4, T3.2.5b,
+ * T4.2.6).
+ *
+ * The run-detail page's Metrics and Quality rates sections render
+ * `DashboardRun.metrics`/`.rates` — `RunMetrics` and `RunGateRates`
+ * (T4.2.1/T4.2.2a/b) folded from the run's own events and the artifact
+ * store, not from `RunState` (`projection.ts`). A null `successRate` or
+ * `avgLatencyMs` renders as `-`, never `0%`/`0ms`: an empty bucket has
+ * nothing to report, and the two must not read alike (OBS-2).
  *
  * Every function here is a pure string transform of a projection value from
  * `projection.ts` — same discipline as that module: nothing here reads a
@@ -96,6 +106,112 @@ function markup(strings: TemplateStringsArray, ...values: readonly unknown[]): S
 
 function money(amount: number): string {
   return `$${amount.toFixed(4)}`;
+}
+
+function percent(rate: number | null): string {
+  return rate === null ? '-' : `${(rate * 100).toFixed(0)}%`;
+}
+
+/**
+ * `successRate`/`avgLatencyMs` render as `-` rather than `0%`/`0ms` when
+ * null — a bucket with no settled task has nothing to report, not a 0%
+ * success rate (`../state/metrics.ts`, OBS-2). Printing 0% for a run where
+ * no task has finished would report total failure (T4.2.6, test).
+ */
+function successText(metric: AggregateMetric): string {
+  return metric.successRate === null
+    ? '-'
+    : `${percent(metric.successRate)} (${String(metric.completed)}/${String(metric.completed + metric.blocked)})`;
+}
+
+function latencyText(metric: AggregateMetric): string {
+  return metric.avgLatencyMs === null
+    ? '-'
+    : `${String(Math.round(metric.avgLatencyMs))}ms`;
+}
+
+function metricRow(scope: string, metric: AggregateMetric): SafeHtml {
+  return markup`<tr>
+<td>${scope}</td>
+<td>${metric.tasks}</td>
+<td>${money(metric.costUsd)}</td>
+<td>${metric.inputTokens + metric.outputTokens}</td>
+<td>${latencyText(metric)}</td>
+<td>${metric.retries}</td>
+<td>${successText(metric)}</td>
+</tr>`;
+}
+
+function metricTable(
+  caption: string,
+  scopeHeader: string,
+  rows: readonly [string, AggregateMetric][],
+): SafeHtml {
+  if (rows.length === 0) {
+    return markup`<h3>${caption}</h3><p class="muted">no tasks yet</p>`;
+  }
+  return markup`<h3>${caption}</h3>
+<table>
+<thead><tr><th>${scopeHeader}</th><th>tasks</th><th>cost</th><th>tokens</th><th>avg latency</th><th>retries</th><th>success</th></tr></thead>
+<tbody>
+${rows.map(([label, metric]) => metricRow(label, metric))}
+</tbody>
+</table>`;
+}
+
+/**
+ * Cost, latency, retries and success — per phase, per role and for the run
+ * overall (OBS-2, T4.2.1/T4.2.6). Read from `RunMetrics`, which folds the
+ * run's own event slice rather than `RunState` (`projection.ts`).
+ */
+function metricsSection(metrics: RunMetrics): SafeHtml {
+  const overall = markup`<h3>Overall</h3>
+<table>
+<thead><tr><th>scope</th><th>tasks</th><th>cost</th><th>tokens</th><th>avg latency</th><th>retries</th><th>success</th></tr></thead>
+<tbody>
+${metricRow('run', metrics.overall)}
+</tbody>
+</table>`;
+  return markup`<h2>Metrics</h2>
+${overall}
+${metricTable('By phase', 'phase', Object.entries(metrics.byPhase))}
+${metricTable('By role', 'role', Object.entries(metrics.byRole))}
+`;
+}
+
+/**
+ * Phase-gate, merge-gate, rework and escaped-defect rates (OBS-4,
+ * T4.2.2a/b/T4.2.6). `-` renders a null rate for the same reason
+ * `successText` renders one — nothing decided (or, for escaped defects,
+ * nothing filed) yet is not a 0% rate.
+ */
+function gateRatesSection(rates: RunGateRates): SafeHtml {
+  return markup`<h2>Quality rates</h2>
+<table>
+<thead><tr><th>rate</th><th>value</th><th>detail</th></tr></thead>
+<tbody>
+<tr>
+<td>phase-gate rejection</td>
+<td>${percent(rates.phaseGate.rate)}</td>
+<td>${rates.phaseGate.rejected}/${rates.phaseGate.decided} decided rejected</td>
+</tr>
+<tr>
+<td>merge-gate refusal</td>
+<td>${percent(rates.mergeGate.rate)}</td>
+<td>${rates.mergeGate.refusals}/${rates.mergeGate.attempts} attempts; ${rates.mergeGate.budgetExhausted} budget-exhausted; cannot see ${rates.mergeGate.unobservable.join(', ')}</td>
+</tr>
+<tr>
+<td>rework</td>
+<td>${percent(rates.rework.rate)}</td>
+<td>${rates.rework.reworked}/${rates.rework.reviewed} reviews sent back</td>
+</tr>
+<tr>
+<td>escaped defects</td>
+<td>${percent(rates.escapedDefects.rate)}</td>
+<td>${rates.escapedDefects.escaped}/${rates.escapedDefects.merged} merged tasks; ${rates.escapedDefects.filed} filed; ${rates.escapedDefects.unrouted} unrouted; ${rates.escapedDefects.undated} undated</td>
+</tr>
+</tbody>
+</table>`;
 }
 
 function page(title: string, body: SafeHtml): SafeHtml {
@@ -223,6 +339,8 @@ ${run.destructiveCalls.map(
   const body = markup`<h1>${run.runId}</h1>
 <p>project ${run.project} &middot; control ${run.control} &middot; phase ${run.currentPhase ?? '-'}</p>
 <p>spend ${money(run.usage.costUsd)} &middot; tokens ${run.usage.inputTokens + run.usage.outputTokens} &middot; interventions ${run.interventions}</p>
+${metricsSection(run.metrics)}
+${gateRatesSection(run.rates)}
 <h2>Tasks</h2>
 ${tasks}
 <h2>Approvals</h2>

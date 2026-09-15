@@ -493,8 +493,21 @@ export async function serve(
     return { ok: false, detail: 'bad port' };
   }
 
-  const { db, projector } = open(context);
-  const server = new DashboardServer({ projector, traces: TraceIndex.attach(db) });
+  const { db, log, projector } = open(context);
+  // The run page's per-phase/per-role/per-task metrics and quality rates
+  // (T4.2.6) are read from the run's own events and the Defect artifacts on
+  // disk, not from folded `RunState` — this is the same log and artifact
+  // store `status --metrics`/`--rates` already read from (above), plumbed
+  // through so the two surfaces never disagree about the same run.
+  const server = new DashboardServer({
+    projector,
+    traces: TraceIndex.attach(db),
+    log,
+    artifacts: new ArtifactStore({
+      root: context.root,
+      schemas: context.artifactSchemas,
+    }),
+  });
   // Tracked, because closing a server that never bound throws
   // ERR_SERVER_NOT_RUNNING — which would replace the reason the operator
   // needs (a port already in use, or one they may not have) with a message

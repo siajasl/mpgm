@@ -1,8 +1,63 @@
 import { describe, expect, it } from 'vitest';
+import type { RunGateRates } from '../state/gate-rates.js';
+import type { AggregateMetric, RunMetrics } from '../state/metrics.js';
 import type { DashboardRun, DashboardSummary } from './projection.js';
 import { errorPage, runDetailPage, runListPage, traceGraphPage } from './render.js';
 
 const ZERO_USAGE = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+
+function emptyMetric(overrides: Partial<AggregateMetric> = {}): AggregateMetric {
+  return {
+    tasks: 0,
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    retries: 0,
+    completed: 0,
+    blocked: 0,
+    attested: 0,
+    dispatched: 0,
+    successRate: null,
+    avgLatencyMs: null,
+    ...overrides,
+  };
+}
+
+function metrics(overrides: Partial<RunMetrics> = {}): RunMetrics {
+  return {
+    runId: 'run-1',
+    overall: emptyMetric(),
+    byPhase: {},
+    byRole: {},
+    byTask: {},
+    ...overrides,
+  };
+}
+
+function rates(overrides: Partial<RunGateRates> = {}): RunGateRates {
+  return {
+    runId: 'run-1',
+    phaseGate: { decided: 0, rejected: 0, rate: null },
+    mergeGate: {
+      attempts: 0,
+      refusals: 0,
+      rate: null,
+      unobservable: [],
+      budgetExhausted: 0,
+    },
+    rework: { reviewed: 0, reworked: 0, rate: null },
+    escapedDefects: {
+      runId: 'run-1',
+      merged: 0,
+      escaped: 0,
+      rate: null,
+      filed: 0,
+      unrouted: 0,
+      undated: 0,
+    },
+    ...overrides,
+  };
+}
 
 function summary(overrides: Partial<DashboardSummary> = {}): DashboardSummary {
   return {
@@ -31,6 +86,8 @@ function run(overrides: Partial<DashboardRun> = {}): DashboardRun {
     effects: [],
     votes: [],
     destructiveCalls: [],
+    metrics: metrics(),
+    rates: rates(),
     ...overrides,
   };
 }
@@ -224,6 +281,133 @@ describe('runDetailPage', () => {
     expect(html).toContain('&lt;script&gt;alert(4)&lt;/script&gt;');
     expect(html).not.toContain('<b>T1</b>');
     expect(html).not.toContain('<i>op</i>');
+  });
+});
+
+describe('runDetailPage metrics (T4.2.6)', () => {
+  it('renders the per-phase and per-role figures, not just the section headings above them', () => {
+    const html = runDetailPage(
+      run({
+        metrics: metrics({
+          overall: emptyMetric({
+            tasks: 3,
+            costUsd: 4.5,
+            inputTokens: 100,
+            outputTokens: 50,
+            retries: 2,
+            completed: 2,
+            blocked: 1,
+            successRate: 2 / 3,
+            avgLatencyMs: 1500,
+          }),
+          byPhase: {
+            implement: emptyMetric({
+              tasks: 2,
+              costUsd: 3,
+              completed: 2,
+              successRate: 1,
+              avgLatencyMs: 1000,
+            }),
+          },
+          byRole: {
+            engineer: emptyMetric({
+              tasks: 2,
+              costUsd: 3,
+              completed: 1,
+              blocked: 1,
+              successRate: 0.5,
+              avgLatencyMs: 2000,
+            }),
+          },
+        }),
+      }),
+    );
+
+    // A panel that renders the "By phase"/"By role" headings and no data
+    // would satisfy a test that only looked for those strings (CONV-6) — so
+    // this asserts the figures themselves: the labels, the money, the
+    // latency and the computed percentages.
+    expect(html).toContain('implement');
+    expect(html).toContain('engineer');
+    expect(html).toContain('$3.0000');
+    expect(html).toContain('1000ms');
+    expect(html).toContain('2000ms');
+    expect(html).toContain('67%'); // overall success: 2 completed / 3 settled
+    expect(html).toContain('50%'); // role success: 1 completed / 2 settled
+  });
+
+  it('renders a null success rate or latency as "-", never as 0%/0ms, when no task has settled', () => {
+    // computeRunMetrics returns null rather than 0 for exactly this reason
+    // (src/state/metrics.ts): an empty bucket has nothing to report, and a
+    // panel printing 0% would report total failure for a run that has not
+    // failed at all.
+    const html = runDetailPage(
+      run({ metrics: metrics({ overall: emptyMetric({ tasks: 1, dispatched: 1 }) }) }),
+    );
+    // A bare `'0%'`/`'0ms'` substring check would also match the page's own
+    // `width: 100%` CSS rule — `>0%<`/`>0ms<` pins it to a rendered cell.
+    expect(html).not.toMatch(/>0%</);
+    expect(html).not.toMatch(/>0ms</);
+    expect(html).toContain('<td>-</td>');
+
+    // The two checks above cannot fail on `successText` alone:
+    // `percent(rate)` never puts `<` directly against the digits it
+    // prints (it always reads `0% (0/0)`, not `>0%<`), and the bare
+    // `<td>-</td>` check is satisfied by the Quality-rates table's null
+    // cells even if the Metrics table's success cell prints something
+    // else entirely. Pin the assertion to the Overall row's own cells:
+    // a regression that drops the null guard and renders
+    // `percent(metric.successRate ?? 0)` prints `0% (0/0)` here, which
+    // this catches even though neither `/>0%</` nor `<td>-</td>` would.
+    expect(html).not.toContain('0% (0/0)');
+    const overallRow = /<tr>\s*<td>run<\/td>[\s\S]*?<\/tr>/.exec(html)?.[0];
+    expect(overallRow).toBeDefined();
+    const overallCells = [...(overallRow ?? '').matchAll(/<td>([^<]*)<\/td>/g)].map(
+      (m) => m[1],
+    );
+    expect(overallCells.at(-1)).toBe('-'); // success
+    expect(overallCells.at(-3)).toBe('-'); // avg latency
+  });
+});
+
+describe('runDetailPage quality rates (T4.2.6)', () => {
+  it('renders the phase-gate, merge-gate, rework and escaped-defect figures', () => {
+    const html = runDetailPage(
+      run({
+        rates: rates({
+          phaseGate: { decided: 4, rejected: 1, rate: 0.25 },
+          mergeGate: {
+            attempts: 10,
+            refusals: 3,
+            rate: 0.3,
+            unobservable: ['no-review'],
+            budgetExhausted: 1,
+          },
+          rework: { reviewed: 5, reworked: 2, rate: 0.4 },
+          escapedDefects: {
+            runId: 'run-1',
+            merged: 8,
+            escaped: 1,
+            rate: 0.125,
+            filed: 2,
+            unrouted: 1,
+            undated: 0,
+          },
+        }),
+      }),
+    );
+
+    expect(html).toContain('25%');
+    expect(html).toContain('30%');
+    expect(html).toContain('40%');
+    expect(html).toContain('13%');
+    expect(html).toContain('no-review');
+  });
+
+  it('renders every rate as "-" rather than 0%, when nothing has been decided, reviewed or filed yet', () => {
+    const html = runDetailPage(run({ rates: rates() }));
+    expect(html).not.toMatch(/>0%</);
+    expect(html.match(/<td>-<\/td>/g)?.length).toBeGreaterThanOrEqual(4);
   });
 });
 

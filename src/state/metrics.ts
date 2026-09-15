@@ -62,6 +62,15 @@ export interface RunMetrics {
    * than silently dropped. */
   readonly byPhase: Readonly<Record<string, AggregateMetric>>;
   readonly byRole: Readonly<Record<string, AggregateMetric>>;
+  /**
+   * One task per bucket, keyed by `taskId` — the run's own event slice is
+   * the only place a repaired or reworked task's *total* spend survives
+   * (see `usageByTask` in `collectFacts`). The dashboard's per-task spend
+   * column reads `costUsd` from here rather than `TaskState.usage`, which
+   * `reduce.ts` resets to zero on every `TaskDispatched` and so holds only
+   * the task's last session.
+   */
+  readonly byTask: Readonly<Record<string, AggregateMetric>>;
 }
 
 const NO_PHASE = '(none)';
@@ -296,5 +305,6 @@ export function computeRunMetrics(
     overall: aggregate(facts),
     byPhase: groupBy(facts, (fact) => fact.phase),
     byRole: groupBy(facts, (fact) => fact.role),
+    byTask: groupBy(facts, (fact) => fact.taskId),
   };
 }
