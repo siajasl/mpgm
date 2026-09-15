@@ -235,14 +235,18 @@ describe('computeHarnessOverhead — the ratio is population-matched, not dilute
   });
 });
 
-describe('computeHarnessOverhead — the denominator is summed, not merged, so concurrency does not multiply the ratio', () => {
-  it('reports the same ratio for two concurrent instrumented sessions as either alone', () => {
-    // T1: [0, 1000)ms, 100ms overhead -> 10%. T2: [500, 1500)ms, overlapping
-    // T1 by 500ms, 100ms overhead -> 10%. Merging their windows (an earlier
-    // revision's mistake) gives [0, 1500) = 1500ms, so 200ms / 1500ms =
-    // 13.3% — inflated by the overlap the scheduler itself created
-    // (`runPhase`'s `DEFAULT_CONCURRENCY`). Summing each task's own span
-    // instead keeps the ratio at each session's real 10%.
+describe('computeHarnessOverhead — the denominator is merged, not summed, so concurrency does not hide it', () => {
+  it('reports a higher ratio for two concurrent instrumented sessions than a summed denominator would', () => {
+    // T1: [0, 1000)ms, 100ms of synchronous context-assembly overhead.
+    // T2: [500, 1500)ms, overlapping T1 by 500ms, 100ms overhead. Both
+    // sessions' context assembly is synchronous (`assembleContext`), so it
+    // cannot itself run concurrently — 200ms of harness CPU sits inside a
+    // 1500ms wall-clock busy window (the merged union of [0,1000) and
+    // [500,1500)), which is 13.3%: an NFR-3 breach at a concurrency of two.
+    // A denominator that summed each task's own span instead (an earlier
+    // revision's mistake) would divide by 1000+1000=2000 and report 10.0%,
+    // a pass manufactured by double-counting the overlapping window as if
+    // it were two separate ones.
     const events = logWithTimestamps(
       [
         runStarted(), // 0
@@ -261,10 +265,42 @@ describe('computeHarnessOverhead — the denominator is summed, not merged, so c
     const overhead = computeHarnessOverhead(run, events);
 
     expect(overhead.overheadMs).toBe(200);
-    expect(overhead.instrumentedSpanMs).toBe(2000); // 1000 + 1000, summed
+    expect(overhead.instrumentedSpanMs).toBe(1500); // merged [0,1500), not 1000+1000
+    expect(overhead.ratio).toBeCloseTo(200 / 1500);
+    // The summed-denominator figure a wrong implementation would report
+    // instead — smaller than the true wall-clock fraction, an NFR-3 breach
+    // read as a pass.
+    expect(overhead.ratio).not.toBeCloseTo(0.1);
+  });
+
+  it('reports proportionally less overhead for the same total when the instrumented tasks do not overlap', () => {
+    // Same total overhead (200ms) and same two-task shape as above, but T1
+    // and T2 now run one after another with a gap between them instead of
+    // concurrently: [0,1000) and [2000,3000). Nothing to merge — the
+    // busy windows stay disjoint — so the denominator is the sum, 2000ms,
+    // and the ratio is each session's own 10%, not the 13.3% the
+    // overlapping case above reports for the identical 200ms of overhead.
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        dispatched('T1'), // 0
+        contextAssembled('T1', 100), // 50
+        completed('T1'), // 1000
+        dispatched('T2'), // 2000
+        contextAssembled('T2', 100), // 2050
+        completed('T2'), // 3000
+      ],
+      [0, 0, 50, 1000, 2000, 2050, 3000],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    expect(overhead.overheadMs).toBe(200);
+    expect(overhead.instrumentedSpanMs).toBe(2000); // disjoint: [0,1000) + [2000,3000)
     expect(overhead.ratio).toBeCloseTo(0.1);
-    // The merged-window figure a wrong implementation would report instead.
-    expect(overhead.ratio).not.toBeCloseTo(200 / 1500);
+    expect(overhead.ratio).toBeLessThan(200 / 1500);
   });
 });
 
@@ -323,6 +359,40 @@ describe('computeHarnessOverhead — observedMs is the run’s own busy span, in
     const lenient = computeHarnessOverhead(run, events, { idleGapMs: 3000 });
     expect(lenient.observedMs).toBe(5000);
     expect(lenient.observedMs).not.toBe(strict.observedMs);
+  });
+});
+
+describe('computeHarnessOverhead — overheadMs, instrumentedSpanMs and ratio are null together (CONV-5)', () => {
+  it('does not report a real overheadMs alongside a null ratio when the instrumented span merges to zero', () => {
+    // T1 is instrumented (a real ContextAssembled event) but its own
+    // dispatch-to-terminal interval has zero length — dispatched and
+    // completed at the same timestamp. overheadMs/instrumentedSpanMs/ratio
+    // come from one value that is null for all three together, so this
+    // cannot surface as a real overheadMs number next to a null ratio —
+    // the exact drift three independently-evaluated conditions could let
+    // through (module doc).
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        dispatched('T1'), // 1000
+        contextAssembled('T1', 50), // 1050 — after dispatch, does not move the start
+        completed('T1'), // 1000 — same instant as dispatch: zero-length interval
+      ],
+      [0, 1000, 1050, 1000],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    expect(overhead.components.instrumentedTaskCount).toBe(1);
+    expect(overhead.components.contextAssemblyMs).toBe(50);
+    // The instrumented population is non-empty, but its merged span is
+    // zero, so nothing is reported — not a 50ms overheadMs with no
+    // denominator to divide it by.
+    expect(overhead.overheadMs).toBeNull();
+    expect(overhead.instrumentedSpanMs).toBeNull();
+    expect(overhead.ratio).toBeNull();
   });
 });
 

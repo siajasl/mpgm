@@ -53,27 +53,49 @@ import type { RunState } from './kernel-state.js';
  * `ratio` to the 10% threshold can also see how much of the run it actually
  * rests on.
  *
- * **The denominator is each instrumented task's own span, summed — not
- * merged.** `runPhase` schedules up to `DEFAULT_CONCURRENCY` (4,
- * `src/phase/runner.ts`) tasks at once, so an earlier revision that divided
- * the population-matched numerator by the *merged* busy window of those
- * same tasks over-counted: four sessions each genuinely running at 10%
- * overhead, concurrently, merge into one wall-clock window a quarter the
- * combined span's length, and report ratio 40%. NFR-3's threshold is a
- * per-session fraction (ADR-1's "I/O-bound around model calls" is a claim
- * about one session's own time budget, not about how many sessions the
- * scheduler happens to run at once) — so the denominator paired with the
- * numerator is `Σ` of each instrumented task's own
+ * **The denominator is the merged union of the instrumented tasks' own
+ * spans — not summed.** A prior revision of this module summed each
+ * instrumented task's own span instead, reasoning that four sessions each
+ * genuinely running at 10% overhead, concurrently, would otherwise merge
+ * into one wall-clock window a quarter the combined span's length and
+ * report ratio 40% — a per-session average, not what NFR-3 names. That
+ * reasoning does not survive contact with `assembleContext`
+ * (`src/context/assembler.ts`): it is synchronous, so two concurrently
+ * scheduled sessions' context assembly cannot itself run at the same time —
+ * it serialises inside the one Node process the harness runs in, however
+ * many *session* spans overlap around it. NFR-3 bounds overhead as a
+ * fraction of the run's own wall-clock time (REQUIREMENTS.md), and summing
+ * rather than merging understates exactly that fraction by up to the
+ * concurrency factor: two sessions each spending 100ms in synchronous
+ * context assembly inside a 1500ms overlapping busy window are 200ms of
+ * harness CPU inside 1500ms of wall clock — 13.3%, an NFR-3 breach reachable
+ * at a concurrency of two, well under `DEFAULT_CONCURRENCY`'s 4 — while a
+ * summed denominator divides by 1000+1000 and reports 10.0%, a pass built by
+ * treating the one overlapping window as if it were two separate ones. So
+ * the denominator paired with the numerator is `mergeIntervals` (used for
+ * `observedMs`
+ * below, and reused here) applied to each instrumented task's own
  * `[min(firstDispatch, firstContextAssembled), terminalEvent)` interval,
- * `{@link HarnessOverhead.instrumentedSpanMs}`. Summing rather than merging
- * makes the ratio a span-weighted average of each instrumented task's own
- * overhead fraction, which scales correctly under concurrency: four tasks
- * each at 10% still average to 10%, not 40%, because both the numerator and
- * this denominator grow by the same factor together. The span's start is
- * `min`, not `firstDispatch` alone, because both call sites append
- * `ContextAssembled` *before* `SessionRunner.runTask`'s own `TaskDispatched`
- * (`src/state/reduce.ts`) — the context-assembly time this module measures
- * would otherwise fall outside the very window it is divided by.
+ * under the same stated idle rule as `observedMs`: `{@link
+ * HarnessOverhead.instrumentedSpanMs}`. It is smaller than the sum whenever
+ * instrumented tasks' intervals overlap — concurrency correctly *shrinks*
+ * the wall-clock denominator it divides into, rather than the numerator
+ * growing to match it — and equal to the sum whenever they do not overlap
+ * at all. The span's start is `min`, not `firstDispatch` alone, because both
+ * call sites append `ContextAssembled` *before* `SessionRunner.runTask`'s
+ * own `TaskDispatched` (`src/state/reduce.ts`) — the context-assembly time
+ * this module measures would otherwise fall outside the very window it is
+ * divided by.
+ *
+ * **The numerator and denominator are computed together, and null
+ * together, not by three independent conditions that have to be kept in
+ * step by hand (CONV-5).** `overheadMs`, `instrumentedSpanMs` and `ratio`
+ * all come from one local value that is either a single populated
+ * measurement or `null` — never a state where one of the three is a real
+ * number and another is not, which three separately-evaluated ternaries
+ * over slightly different conditions could otherwise drift into (the
+ * instrumented-population check alone does not rule out a merged window
+ * summing to zero).
  *
  * This is a different span from the run's own busy time, and that is kept
  * too, as {@link HarnessOverhead.observedMs} — informational, not the
@@ -131,7 +153,11 @@ import type { RunState } from './kernel-state.js';
  * code. ADR-1 is cited here either way: nothing this module has measured so
  * far is evidence against it, and nothing in this module is exempt from
  * being evidence against it the first time a real ratio comes back over
- * threshold, with enough coverage to trust.
+ * threshold, with enough coverage to trust. PLAN.md's own T4.2.9 row says so
+ * explicitly: the 10%-threshold comparison against a self-hosted run is
+ * deferred to the first run this instrumentation actually observes, rather
+ * than left as a criterion this change silently could not meet — starting
+ * that run is an operator action this change does not itself take.
  */
 
 export const NFR3_OVERHEAD_THRESHOLD = 0.1;
@@ -174,19 +200,27 @@ export interface HarnessOverhead {
   /** The numerator formula's total (module doc). Null when nothing measured it. */
   readonly overheadMs: number | null;
   /**
-   * The ratio's own denominator (module doc): Σ of each instrumented task's
-   * own span, summed rather than merged, population-matched to
-   * `overheadMs`. Null when no task was instrumented.
+   * The ratio's own denominator (module doc): the merged union of each
+   * instrumented task's own span, under the same idle rule as `observedMs`,
+   * population-matched to `overheadMs` — never summed (module doc: summing
+   * understates NFR-3's own wall-clock fraction by up to the concurrency
+   * factor, because `assembleContext` is synchronous). Null when no task was
+   * instrumented. Computed together with `overheadMs` and `ratio` from one
+   * value that is null for all three at once (CONV-5, module doc).
    */
   readonly instrumentedSpanMs: number | null;
-  /** `overheadMs / instrumentedSpanMs`. Null whenever either side is null or zero. */
+  /**
+   * `overheadMs / instrumentedSpanMs`. Null whenever either side is null;
+   * computed alongside them from the same value, not by an independent
+   * zero/null check (CONV-5, module doc).
+   */
   readonly ratio: number | null;
   /**
    * The run's own busy span (module doc) — the merged union of every
-   * settled task's interval under the stated idle rule. Informational: not
-   * the ratio's denominator, because it is not population-matched to
-   * `overheadMs` (see module doc for why an earlier revision that divided by
-   * this was wrong). Null when no task settled.
+   * settled task's interval under the stated idle rule, instrumented or
+   * not. Informational: not the ratio's denominator, because it is not
+   * population-matched to `overheadMs` (see module doc for why an earlier
+   * revision that divided by this was wrong). Null when no task settled.
    */
   readonly observedMs: number | null;
   /**
@@ -395,24 +429,33 @@ export function computeHarnessOverhead(
       ? null
       : observedWindows.reduce((sum, window) => sum + (window.end - window.start), 0);
 
-  // Summed, not merged (module doc): population-matched to `overheadMs`, and
-  // a sum here is what makes the ratio a span-weighted average that scales
-  // correctly with concurrency, rather than an over-count from merging
-  // overlapping instrumented windows.
-  const instrumentedSpanMs =
-    instrumentedTaskCount === 0
-      ? null
-      : instrumentedIntervals.reduce(
-          (sum, interval) => sum + Math.max(interval.end - interval.start, 0),
-          0,
-        );
+  // Merged, not summed (module doc): assembleContext is synchronous, so
+  // concurrently scheduled sessions' context assembly cannot itself overlap
+  // in wall clock, and NFR-3 bounds a fraction of wall-clock time. The same
+  // idle rule as observedMs applies, so raising idleGapMs widens both
+  // windows consistently rather than moving one and not the other.
+  const instrumentedWindows = mergeIntervals(instrumentedIntervals, idleGapMs);
+  const instrumentedSpanMsRaw = instrumentedWindows.reduce(
+    (sum, window) => sum + Math.max(window.end - window.start, 0),
+    0,
+  );
 
-  const overheadMs = instrumentedTaskCount === 0 ? null : contextAssemblyMs;
-
-  const ratio =
-    overheadMs === null || instrumentedSpanMs === null || instrumentedSpanMs === 0
+  // overheadMs, instrumentedSpanMs and ratio come from one value that is
+  // null for all three together (CONV-5, module doc) — not three
+  // independent ternaries a later edit could let disagree, e.g. an
+  // instrumented population whose merged window happens to sum to zero.
+  const measured =
+    instrumentedTaskCount === 0 || instrumentedSpanMsRaw === 0
       ? null
-      : overheadMs / instrumentedSpanMs;
+      : {
+          overheadMs: contextAssemblyMs,
+          instrumentedSpanMs: instrumentedSpanMsRaw,
+          ratio: contextAssemblyMs / instrumentedSpanMsRaw,
+        };
+
+  const overheadMs = measured === null ? null : measured.overheadMs;
+  const instrumentedSpanMs = measured === null ? null : measured.instrumentedSpanMs;
+  const ratio = measured === null ? null : measured.ratio;
 
   const coverage =
     settledTaskCount === 0 ? null : instrumentedTaskCount / settledTaskCount;
