@@ -843,13 +843,15 @@ describe('status --rates', () => {
       { to: 'implement', taskId: 'T-old' },
       'implementation bug, not a design assumption',
     );
-    const artifact = new ArtifactStore({ root, schemas: projectArtifactSchemas() }).write({
-      id: 'defect-1',
-      basePath: 'artifacts/defect/defect-1.md',
-      schema: 'defect',
-      data: defect,
-      producedBy: { task: 'retest', role: 'tester', model: 'claude', runId: 'r1' },
-    });
+    const artifact = new ArtifactStore({ root, schemas: projectArtifactSchemas() }).write(
+      {
+        id: 'defect-1',
+        basePath: 'artifacts/defect/defect-1.md',
+        schema: 'defect',
+        data: defect,
+        producedBy: { task: 'retest', role: 'tester', model: 'claude', runId: 'r1' },
+      },
+    );
 
     const db = openDatabase(join(root, '.mpgm', 'state.db'));
     try {
@@ -866,7 +868,11 @@ describe('status --rates', () => {
         },
       });
       log.appendMany([
-        { runId: 'r1', type: 'RunStarted', payload: { project: 'x', operator: 'operator' } },
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
         {
           runId: 'r1',
           type: 'TaskDispatched',
