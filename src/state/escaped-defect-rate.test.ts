@@ -279,7 +279,11 @@ describe('computeEscapedDefectRate — one defect, however many versions its lif
 
   it('counts one escape, not three, when file/route/fix/verify each wrote a version', () => {
     // The reviewer's own repro: drive one defect through the whole round
-    // trip and hand in every version `ArtifactStore.list` would return.
+    // trip and hand in every version `ArtifactStore.list` would return. The
+    // filing `TaskCompleted` names v1 — the version `fileDefect` actually
+    // wrote — because that is the only shape the lifecycle produces; naming
+    // a later version would be dating the filing from some other
+    // transition's completion instead.
     const v1Data = openDefect('zero-split-refused');
     const v2Data = routeDefect(
       v1Data,
@@ -300,7 +304,7 @@ describe('computeEscapedDefectRate — one defect, however many versions its lif
     const events = logWith([
       runStarted('r1'),
       changeMerged('r1', 'T-old'), // T-old already merged...
-      filedBy('r1', 'test-task', v4), // ...before the (latest version of the) defect was filed
+      filedBy('r1', 'test-task', v1), // ...before the defect was filed (v1, the filing version)
     ]);
 
     const rate = computeEscapedDefectRate('r1', events, [v1, v2, v3, v4]);
@@ -309,6 +313,40 @@ describe('computeEscapedDefectRate — one defect, however many versions its lif
     expect(rate.escaped).toBe(1);
     expect(rate.rate).toBe(1);
     expect(rate.unrouted).toBe(0);
+  });
+
+  it('is not escaped when a routed defect is filed before the fix task merges, even though the fix task later completes naming a later version', () => {
+    // The blocker this pins down: a fix-pending defect whose *filing*
+    // TaskCompleted (naming v1) predates the fix task's merge, but whose
+    // fix task later completes naming v3 (recordFix's version) — reading
+    // the filing date off whichever TaskCompleted names the *current*
+    // (highest) version would find that later completion instead of the
+    // filing, put it after the merge, and count the fix landing as an
+    // escape.
+    const v1Data = openDefect('zero-split-refused');
+    const v2Data = routeDefect(
+      v1Data,
+      { to: 'implement', taskId: 'T-fix' },
+      'routed to a fresh task to hold the fix',
+    );
+    const v3Data = recordFix(v2Data, { ref: 'deadbeef', summary: 'refuse a zero split' });
+
+    const v1 = defectArtifact('d11', 'r1', v1Data, 1);
+    const v2 = defectArtifact('d11', 'r1', v2Data, 2);
+    const v3 = defectArtifact('d11', 'r1', v3Data, 3);
+
+    const events = logWith([
+      runStarted('r1'),
+      filedBy('r1', 'test-task', v1), // filed first (v1)...
+      changeMerged('r1', 'T-fix'), // ...T-fix merges next: the fix landing...
+      filedBy('r1', 'T-fix', v3), // ...and only later does T-fix's own completion name v3
+    ]);
+
+    const rate = computeEscapedDefectRate('r1', events, [v1, v2, v3]);
+
+    expect(rate.filed).toBe(1);
+    expect(rate.escaped).toBe(0);
+    expect(rate.rate).toBe(0);
   });
 
   it('does not count an artifact under the defect path whose schema is not defect', () => {
