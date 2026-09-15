@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { Artifact } from '../artifact/store.js';
 import { MEMORY } from '../database.js';
 import type { EventInput, StoredEvent } from '../event/envelope.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
+import { fileDefect } from '../test/defect.js';
 import { computeGateRates, UNOBSERVABLE_MERGE_REFUSALS } from './gate-rates.js';
 import { computeRunMetrics } from './metrics.js';
 import { fold } from './reduce.js';
@@ -269,5 +271,76 @@ describe('computeGateRates — longitudinal, per run and in order (CONV-6)', () 
     // Not merely three entries: three genuinely different figures, so an
     // implementation that averaged them or emitted a constant fails here.
     expect(new Set(inLogOrder.map((rate) => rate.phaseGate.rate)).size).toBe(3);
+  });
+});
+
+/**
+ * T4.2.2b: the escaped-defect rate joins this report rather than arriving on
+ * a surface of its own — it is `computeGateRates`'s own `escapedDefects`
+ * field, folded in the same call the other three rates come from. The
+ * arithmetic itself is `escaped-defect-rate.test.ts`'s job; this only pins
+ * down that `computeGateRates` actually plumbs `defects` through.
+ */
+describe('computeGateRates — the escaped-defect rate joins this report (T4.2.2b)', () => {
+  it('defaults to no defect artifacts, and reads as unmeasured rather than 0%', () => {
+    const events = logWith([
+      runStarted('r1'),
+      {
+        runId: 'r1',
+        type: 'ChangeMerged',
+        payload: {
+          taskId: 'T1',
+          branch: 'task/T1',
+          into: 'main',
+          commit: 'deadbeef',
+          reviewTaskId: 'T1-review',
+        },
+      },
+    ]);
+
+    const rates = computeGateRates('r1', events);
+
+    expect(rates.escapedDefects.merged).toBe(1);
+    expect(rates.escapedDefects.filed).toBe(0);
+    expect(rates.escapedDefects.rate).toBeNull();
+  });
+
+  it('folds defect artifacts handed in through the artifact store into the same report', () => {
+    const defect = fileDefect({
+      title: 'splitEvenly divides by zero instead of refusing an empty split',
+      severity: 'high',
+      description: 'An adversarial case caught splitEvenly accepting a zero amount.',
+      evidence: {
+        kind: 'adversarial',
+        caseId: 'zero-split-refused',
+        detail: 'returned an array instead of refusing',
+      },
+      tracesTo: ['LOAN-3'],
+    });
+    const artifact: Artifact = {
+      id: 'd1',
+      version: 1,
+      schema: 'defect',
+      schemaVersion: 1,
+      tracesTo: [],
+      producedBy: {
+        task: 'retest',
+        role: 'tester',
+        model: 'claude-sonnet-5',
+        runId: 'r1',
+      },
+      supersedes: null,
+      egress: undefined,
+      data: defect,
+      path: 'artifacts/defect/d1.v1.md',
+    };
+    const events = logWith([runStarted('r1')]);
+
+    const rates = computeGateRates('r1', events, [artifact]);
+
+    // Still open (unrouted): named on the rate report's own unrouted count,
+    // not silently absorbed into either side of the division.
+    expect(rates.escapedDefects.filed).toBe(1);
+    expect(rates.escapedDefects.unrouted).toBe(1);
   });
 });

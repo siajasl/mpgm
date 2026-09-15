@@ -277,13 +277,15 @@ function formatMetric(label: string, metric: AggregateMetric): string {
 }
 
 /**
- * `mpgm status --rates` — gate rejection and rework rates for a run (OBS-4).
+ * `mpgm status --rates` — gate rejection, rework and escaped-defect rates for
+ * a run (OBS-4).
  *
- * Two rates, not one, printed on their own lines rather than summed: the
- * phase gate an operator decides and the merge gate CI and review decide are
- * different failures with different remedies (glossary, "Gate"). `-` renders
- * a null rate for the same reason `formatMetric` renders one — nothing
- * decided yet is not a 0% rejection rate, it is nothing to report.
+ * Separate lines rather than summed: the phase gate an operator decides, the
+ * merge gate CI and review decide, and the escaped-defect rate the Test phase
+ * measures against what already merged are different failures with different
+ * remedies (glossary, "Gate"; T4.2.2b). `-` renders a null rate for the same
+ * reason `formatMetric` renders one — nothing decided (or, for escaped
+ * defects, nothing filed) yet is not a 0% rate, it is nothing to report.
  */
 function formatGateRates(rates: RunGateRates): readonly string[] {
   const pct = (rate: number | null): string =>
@@ -293,12 +295,17 @@ function formatGateRates(rates: RunGateRates): readonly string[] {
     `    phase-gate ${pct(rates.phaseGate.rate)} (${String(rates.phaseGate.rejected)}/${String(rates.phaseGate.decided)} decided rejected)`,
     `    merge-gate ${pct(rates.mergeGate.rate)} (${String(rates.mergeGate.refusals)}/${String(rates.mergeGate.attempts)} reconstructed from ChecksReported+ChangeReviewed; ${String(rates.mergeGate.budgetExhausted)} out of repair/review rounds (BudgetExceeded); cannot see ${rates.mergeGate.unobservable.join(', ')})`,
     `    rework ${pct(rates.rework.rate)} (${String(rates.rework.reworked)}/${String(rates.rework.reviewed)} reviews sent the change back)`,
+    `    escaped-defects ${pct(rates.escapedDefects.rate)} (${String(rates.escapedDefects.escaped)}/${String(rates.escapedDefects.merged)} merged tasks; ${String(rates.escapedDefects.filed)} defects filed project-wide; ${String(rates.escapedDefects.unrouted)} filed but not yet routed to a task)`,
   ];
 }
 
 /**
  * `mpgm status` — folded run state (OBS-3), with per-phase/role/run metrics
- * on `--metrics` (OBS-2) and gate/rework rates on `--rates` (OBS-4).
+ * on `--metrics` (OBS-2) and gate/rework/escaped-defect rates on `--rates`
+ * (OBS-4). The escaped-defect figure (T4.2.2b) joins this report rather than
+ * arriving on a surface of its own — it is one more rate `computeGateRates`
+ * folds in, not a second flag or a second command a reader would have to know
+ * to ask for.
  *
  * `--rates` is a flag here rather than a verb of its own, for the same
  * reason `--metrics` is: with no `--run` this already prints one block per
@@ -396,7 +403,18 @@ export function status(
       }
 
       if (options.rates === true) {
-        const rates = computeGateRates(current.runId, log.read({ runId: current.runId }));
+        // The whole log, not this run's slice: the escaped-defect figure
+        // needs to see a `ChangeMerged` that may belong to a different run
+        // than `current.runId` (`./escaped-defect-rate.ts`'s own doc says
+        // why); `computeGateRates`'s other three figures already filter by
+        // `runId` themselves, so this changes nothing for them.
+        const defects = new ArtifactStore({
+          root: context.root,
+          schemas: context.artifactSchemas,
+        })
+          .list('artifacts/defect')
+          .map((entry) => entry.artifact);
+        const rates = computeGateRates(current.runId, log.read(), defects);
         for (const line of formatGateRates(rates)) {
           context.write(line);
         }

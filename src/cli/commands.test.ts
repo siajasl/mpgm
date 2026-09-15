@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AgentSessionProvider } from '../agent/session.js';
+import { ArtifactStore } from '../artifact/store.js';
 import { CapabilityRegistry } from '../contract/capability.js';
 import { openDatabase } from '../database.js';
 import { ComposeProviderError } from '../env/compose-provider.js';
@@ -13,6 +14,7 @@ import { EventLog } from '../event/store.js';
 import { deployFingerprint } from '../policy/deploy-gate.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
+import { fileDefect, routeDefect } from '../test/defect.js';
 import { intervene, rollback, status, type CliContext } from './commands.js';
 
 /**
@@ -760,6 +762,11 @@ describe('status --rates', () => {
       '    merge-gate 0% (0/2 reconstructed from ChecksReported+ChangeReviewed; 0 out of repair/review rounds (BudgetExceeded); cannot see',
     );
     expect(output).toContain('    rework 0% (0/1 reviews sent the change back)');
+    // No task merged in this fixture, so there is nothing to divide by —
+    // `-`, not `0%`.
+    expect(output).toContain(
+      '    escaped-defects - (0/0 merged tasks; 0 defects filed project-wide; 0 filed but not yet routed to a task)',
+    );
   });
 
   it('renders BudgetExceeded{repairs|reviews} on the merge-gate line', () => {
@@ -808,6 +815,107 @@ describe('status --rates', () => {
     // Would be silent (dead to the operator) if `budgetExhausted` were
     // computed and never rendered, which is exactly what the review found.
     expect(output).toContain('1 out of repair/review rounds (BudgetExceeded)');
+  });
+
+  /**
+   * T4.2.2b, end to end: a Defect artifact actually written to git through
+   * `ArtifactStore` (not a fixture handed to `computeGateRates` directly),
+   * read back the same way `mpgm status --rates` reads it in production —
+   * `escaped-defect-rate.test.ts` covers the arithmetic; this covers the
+   * wiring: that `status` actually opens the artifact store and finds it.
+   */
+  it('reads a Defect artifact through the real artifact store and reports it escaped', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-rates-defect-'));
+    const writes: string[] = [];
+
+    const defect = routeDefect(
+      fileDefect({
+        title: 'splitEvenly divides by zero instead of refusing an empty split',
+        severity: 'high',
+        description: 'An adversarial case caught splitEvenly accepting a zero amount.',
+        evidence: {
+          kind: 'adversarial',
+          caseId: 'zero-split-refused',
+          detail: 'returned an array instead of refusing',
+        },
+        tracesTo: ['LOAN-3'],
+      }),
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug, not a design assumption',
+    );
+    const artifact = new ArtifactStore({ root, schemas: projectArtifactSchemas() }).write({
+      id: 'defect-1',
+      basePath: 'artifacts/defect/defect-1.md',
+      schema: 'defect',
+      data: defect,
+      producedBy: { task: 'retest', role: 'tester', model: 'claude', runId: 'r1' },
+    });
+
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      // A clock that advances, so "T-old merged before the defect was
+      // filed" is a real ordering rather than two events racing for the
+      // same wall-clock millisecond.
+      let seconds = 0;
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => {
+          const ts = new Date(2026_01_01_00_00_00 + seconds * 1000).toISOString();
+          seconds += 1;
+          return ts;
+        },
+      });
+      log.appendMany([
+        { runId: 'r1', type: 'RunStarted', payload: { project: 'x', operator: 'operator' } },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T-old', role: 'implementer', model: 'claude' },
+        },
+        // T-old merged before the defect against it was filed: an escape.
+        {
+          runId: 'r1',
+          type: 'ChangeMerged',
+          payload: {
+            taskId: 'T-old',
+            branch: 'task/T-old',
+            into: 'main',
+            commit: 'deadbeef',
+            reviewTaskId: 'T-old-review',
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'test-task', role: 'tester', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: {
+            taskId: 'test-task',
+            artifactRefs: [
+              {
+                id: artifact.id,
+                path: artifact.path,
+                commit: null,
+                version: artifact.version,
+              },
+            ],
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { rates: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      '    escaped-defects 100% (1/1 merged tasks; 1 defects filed project-wide; 0 filed but not yet routed to a task)',
+    );
   });
 });
 
