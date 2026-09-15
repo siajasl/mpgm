@@ -51,7 +51,14 @@ function usage(taskId: string, costUsd: number): EventInput {
   return {
     runId: RUN,
     type: 'SessionUsage',
-    payload: { taskId, inputTokens: 10, outputTokens: 10, costUsd },
+    payload: {
+      taskId,
+      inputTokens: 10,
+      outputTokens: 10,
+      costUsd,
+      durationMs: 1000,
+      apiDurationMs: 800,
+    },
   };
 }
 
@@ -279,13 +286,27 @@ describe('computeRunMetrics', () => {
       {
         runId: RUN,
         type: 'SessionUsage',
-        payload: { taskId: 'T1', inputTokens: 200, outputTokens: 0, costUsd: 1.0 },
+        payload: {
+          taskId: 'T1',
+          inputTokens: 200,
+          outputTokens: 0,
+          costUsd: 1.0,
+          durationMs: 1000,
+          apiDurationMs: 800,
+        },
       },
       dispatched('T1', 'implementer'), // a review-rework round, same taskId
       {
         runId: RUN,
         type: 'SessionUsage',
-        payload: { taskId: 'T1', inputTokens: 20, outputTokens: 0, costUsd: 0.25 },
+        payload: {
+          taskId: 'T1',
+          inputTokens: 20,
+          outputTokens: 0,
+          costUsd: 0.25,
+          durationMs: 1000,
+          apiDurationMs: 800,
+        },
       },
       completed('T1'),
     ]);
@@ -315,13 +336,27 @@ describe('computeRunMetrics', () => {
       {
         runId: RUN,
         type: 'SessionUsage',
-        payload: { taskId: 'T1', inputTokens: 200, outputTokens: 0, costUsd: 1.0 },
+        payload: {
+          taskId: 'T1',
+          inputTokens: 200,
+          outputTokens: 0,
+          costUsd: 1.0,
+          durationMs: 1000,
+          apiDurationMs: 800,
+        },
       },
       dispatched('T1', 'implementer'), // a review-rework round, same taskId
       {
         runId: RUN,
         type: 'SessionUsage',
-        payload: { taskId: 'T1', inputTokens: 20, outputTokens: 0, costUsd: 0.25 },
+        payload: {
+          taskId: 'T1',
+          inputTokens: 20,
+          outputTokens: 0,
+          costUsd: 0.25,
+          durationMs: 1000,
+          apiDurationMs: 800,
+        },
       },
       completed('T1'),
     ]);

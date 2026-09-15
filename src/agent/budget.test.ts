@@ -132,6 +132,12 @@ describe('runWithWallClock', () => {
 
     expect(result.termination).toBe('wall_clock');
     expect(result.errorMessage).toMatch(/wall-clock budget/);
+    // The timer's own wait is the one duration this path actually knows
+    // (T4.2.8): it fired after exactly this many milliseconds. What the
+    // aborted session spent in the API is not recoverable, so it reads as
+    // unmeasured rather than a fabricated 0.
+    expect(result.durationMs).toBe(50);
+    expect(result.apiDurationMs).toBeNull();
   });
 
   it('signals abort to a session that is willing to listen', async () => {

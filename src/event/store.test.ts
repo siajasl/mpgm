@@ -397,4 +397,102 @@ describe('EventLog schema evolution', () => {
       }
     });
   });
+
+  describe('SessionUsage v1 -> v2 (T4.2.8)', () => {
+    // v1 predates recording a session's own duration at all: every real event
+    // any pre-T4.2.8 run wrote names neither `durationMs` nor
+    // `apiDurationMs`. A run started before this task must still replay
+    // rather than throw `EventValidationError` on the first such row.
+    const v1Registry = new EventRegistry([
+      defineEvent(
+        'SessionUsage',
+        z.object({
+          taskId: z.string().min(1),
+          inputTokens: z.number().int().nonnegative(),
+          outputTokens: z.number().int().nonnegative(),
+          costUsd: z.number().nonnegative(),
+        }),
+      ),
+    ]);
+
+    function writeV1(path: string): void {
+      const log = EventLog.open(path, { registry: v1Registry, clock: fixedClock });
+      log.append({
+        runId: 'run-1',
+        type: 'SessionUsage',
+        payload: { taskId: 'T1', inputTokens: 10, outputTokens: 5, costUsd: 0.25 },
+      });
+      log.close();
+    }
+
+    it('reads a pre-T4.2.8 event as unmeasured, not as a session that took no time', () => {
+      const path = tempDbPath();
+      writeV1(path);
+
+      const log = EventLog.open(path, { registry: kernelRegistry(), clock: fixedClock });
+      try {
+        const [raw] = log.readRaw();
+        const [migrated] = log.read();
+
+        // Stored bytes are untouched.
+        expect(raw?.schemaVersion).toBe(1);
+        expect(raw?.payload).toStrictEqual({
+          taskId: 'T1',
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0.25,
+        });
+
+        // Readers see the current shape, with the new fields `null` — the
+        // reading this task requires: unmeasured, never fabricated as `0`.
+        expect(migrated?.schemaVersion).toBe(2);
+        expect(migrated?.payload).toStrictEqual({
+          taskId: 'T1',
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0.25,
+          durationMs: null,
+          apiDurationMs: null,
+        });
+      } finally {
+        log.close();
+      }
+    });
+
+    it('folds a post-T4.2.8 event with its real durations unchanged', () => {
+      const path = tempDbPath();
+      const log = EventLog.open(path, { registry: kernelRegistry(), clock: fixedClock });
+      log.append({
+        runId: 'run-1',
+        type: 'SessionUsage',
+        payload: {
+          taskId: 'T1',
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0.25,
+          durationMs: 4200,
+          apiDurationMs: 3100,
+        },
+      });
+      log.close();
+
+      const reopened = EventLog.open(path, {
+        registry: kernelRegistry(),
+        clock: fixedClock,
+      });
+      try {
+        const [migrated] = reopened.read();
+
+        // The two logs fold to different readings: one unmeasured, one with
+        // the real numbers a live session actually reported.
+        expect(migrated?.schemaVersion).toBe(2);
+        expect(migrated?.payload).toMatchObject({
+          durationMs: 4200,
+          apiDurationMs: 3100,
+        });
+      } finally {
+        reopened.close();
+      }
+    });
+  });
 });

@@ -84,6 +84,7 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
           turns: message.num_turns,
           denials,
           errorMessage: message.result,
+          ...durationsOf(message),
         };
       }
 
@@ -95,6 +96,7 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
           turns: message.num_turns,
           denials,
           errorMessage: errorDetailOf(message.subtype, message.errors),
+          ...durationsOf(message),
         };
       }
 
@@ -105,9 +107,12 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
         turns: message.num_turns,
         denials,
         errorMessage: '',
+        ...durationsOf(message),
       };
     }
 
+    // No result message ever arrived, so neither duration is known — read as
+    // unmeasured (T4.2.8), not as a session that took no time.
     return {
       termination: 'error',
       structuredOutput: undefined,
@@ -115,6 +120,8 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
       turns: 0,
       denials: [],
       errorMessage: 'session ended without a result message',
+      durationMs: null,
+      apiDurationMs: null,
     };
   }
 }
@@ -236,4 +243,18 @@ function usageOf(
     outputTokens: usage.output_tokens ?? 0,
     costUsd,
   };
+}
+
+/**
+ * Both durations the SDK's result message reports (T4.2.8): `duration_ms` is
+ * the whole CLI session, `duration_api_ms` the narrower time spent waiting on
+ * the model. Every result subtype — success, a validation-retry exhaustion,
+ * an infrastructure error — carries both, so this runs on all three of this
+ * file's return sites rather than only the success path.
+ */
+export function durationsOf(message: {
+  duration_ms: number;
+  duration_api_ms: number;
+}): { durationMs: number; apiDurationMs: number } {
+  return { durationMs: message.duration_ms, apiDurationMs: message.duration_api_ms };
 }

@@ -652,7 +652,14 @@ describe('status --metrics', () => {
         {
           runId: 'r1',
           type: 'SessionUsage',
-          payload: { taskId: 'T2', inputTokens: 10, outputTokens: 5, costUsd: 0.25 },
+          payload: {
+            taskId: 'T2',
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 0.25,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
         },
         {
           runId: 'r1',

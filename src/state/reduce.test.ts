@@ -63,7 +63,14 @@ describe('reduce', () => {
       {
         runId: RUN,
         type: 'SessionUsage',
-        payload: { taskId: 'T1', inputTokens: 1, outputTokens: 1, costUsd: 0.01 },
+        payload: {
+          taskId: 'T1',
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsd: 0.01,
+          durationMs: 1000,
+          apiDurationMs: 800,
+        },
       },
       {
         runId: RUN,
@@ -420,7 +427,14 @@ describe('reduce', () => {
         {
           runId: RUN,
           type: 'SessionUsage',
-          payload: { taskId: 'T1.1.3', inputTokens: 100, outputTokens: 50, costUsd: 0.5 },
+          payload: {
+            taskId: 'T1.1.3',
+            inputTokens: 100,
+            outputTokens: 50,
+            costUsd: 0.5,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
         },
         {
           runId: RUN,

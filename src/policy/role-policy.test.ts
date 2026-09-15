@@ -221,6 +221,8 @@ class ToolAttemptingProvider implements AgentSessionProvider {
       turns: 1,
       denials,
       errorMessage: '',
+      durationMs: 1000,
+      apiDurationMs: 800,
     };
   }
 }

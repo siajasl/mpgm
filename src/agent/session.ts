@@ -100,6 +100,29 @@ export interface SessionResult {
   readonly turns: number;
   readonly denials: readonly ToolDenial[];
   readonly errorMessage: string;
+  /**
+   * Wall-clock length of the whole CLI session, in milliseconds — the SDK's
+   * own `duration_ms`. This is the wider of the two readings: it includes
+   * everything the harness itself does inside the session (the PreToolUse
+   * policy gate, secret substitution, the `ToolCallLogged` append on every
+   * tool call), not only the time the model spent working. Null means the
+   * session ended in a way that never produced a number to report — a
+   * pre-T4.2.8 log being replayed, or a session torn down before any result
+   * message arrived — and is deliberately distinct from `0`: an unmeasured
+   * session must not read as one that took no time (T4.2.8).
+   */
+  readonly durationMs: number | null;
+  /**
+   * Time actually spent waiting on the model API, in milliseconds — the
+   * SDK's own `duration_api_ms`. The narrower reading: `durationMs -
+   * apiDurationMs` is the harness's own overhead for the session (T4.2.9,
+   * NFR-3), and charging the whole session as model time would understate
+   * exactly the figure that bounds. Null for the same "unmeasured, not
+   * zero" reasons as {@link durationMs}, and also whenever the harness force-
+   * ended a session before it could say how much of its time was spent in
+   * the API (`runWithWallClock`'s timeout, `src/agent/budget.ts`).
+   */
+  readonly apiDurationMs: number | null;
 }
 
 export interface AgentSessionProvider {
