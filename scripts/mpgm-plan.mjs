@@ -872,6 +872,56 @@ export const MPGM_PLAN = {
               dependsOn: ['T4.2.5'],
               tracesTo: ['ADR-4', 'TST-2'],
             },
+            {
+              id: 'T4.2.12',
+              title: 'ChangeMerged names a commit no clone can resolve',
+              completionCriteria: [
+                'The sha ChangeMerged carries exists where a reader will ' +
+                  'look for it. mergeBranch (src/implement/merge.ts) merges ' +
+                  'the task branch into the local trunk --no-ff and records ' +
+                  'git rev-parse HEAD, and the kernel pushes the task branch ' +
+                  'alone (src/cli/commands.ts) and never the trunk — so the ' +
+                  'recorded commit stays on the operator machine while the ' +
+                  "pull request's own merge commit, the one every clone has, " +
+                  'is recorded nowhere. Four events already name a commit ' +
+                  'absent from origin/main: T4.2.2b 24d396e, T4.2.5 d3a0e6b, ' +
+                  'T4.2.6 887610f and T4.2.7 6f0affd.',
+                'The change picks between pushing the trunk after the local ' +
+                  "merge and recording the sha the pull request's merge " +
+                  'produced, and says which and why. The two are different ' +
+                  "claims about where truth lives: pushing makes the kernel's " +
+                  'merge the fact and the pull request closing a consequence; ' +
+                  'reading back makes GitHub the fact and the local merge a ' +
+                  'rehearsal. A change recording both says which one a ' +
+                  'consumer is to believe.',
+                'The resume path still answers. gitMergeContract.check ' +
+                  'resolves by merge-base --is-ancestor tip into against the ' +
+                  'local repository (src/implement/merge.ts), so a merge that ' +
+                  'comes to depend on a push says what check answers when the ' +
+                  'merge landed and the push did not, and fails closed toward ' +
+                  'a merge redone rather than a merge lost.',
+                'What the existing four events cost is reported rather than ' +
+                  'assumed. They are not rewritten — the log is append-only ' +
+                  '(DESIGN section 6). The escaped-defect rate reads a ' +
+                  "ChangeMerged's ts and taskId and never its commit " +
+                  '(src/state/escaped-defect-rate.ts), so no figure is wrong ' +
+                  'today; what is lost is reconstruction from a fresh clone ' +
+                  '(OBS-1), and the change names every consumer that reads ' +
+                  'the field at all.',
+                'The operator ritual this removes is named. Local main ' +
+                  'diverges from origin/main after every pull request merge, ' +
+                  'because the loop merged locally too, and is reset to ' +
+                  'origin/main by hand — three times in this history ' +
+                  '(T4.2.5, T4.2.6, T4.2.7). A fix that leaves the reset in ' +
+                  'place has not finished.',
+                'The test builds a repository with a remote and asserts the ' +
+                  "recorded sha is reachable from that remote's trunk. A test " +
+                  'asserting only that some sha was recorded passes against ' +
+                  'the defect (CONV-6), which is why it is not the test.',
+              ],
+              dependsOn: [],
+              tracesTo: ['OBS-1', 'IMP-1'],
+            },
           ],
         },
         {
