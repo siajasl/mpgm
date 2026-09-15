@@ -14,6 +14,7 @@ import type {
 } from '../agent/session.js';
 import { SessionRunner } from '../agent/runner.js';
 import { ScriptedProvider, scriptedSuccess } from '../agent/scripted-provider.js';
+import { completedTasks } from '../plan/apply.js';
 import { RoleRegistry } from '../role/loader.js';
 import { projectOutputSchemas } from '../schemas.js';
 import { fold } from '../state/reduce.js';
@@ -738,6 +739,68 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
       // The irreversible act itself did not happen: the trunk is exactly
       // where it was before this task ever ran.
       expect(git(repo, ['rev-parse', 'main'])).toBe(trunkBefore);
+    } finally {
+      log.close();
+    }
+  });
+});
+
+describe('an implement-loop session still completes with TaskCompleted (T4.2.7)', () => {
+  it('names no artifact — the loop holds no ArtifactStore — but still marks the task completed', async () => {
+    // The regression this guards: TaskCompleted is appended inside
+    // `SessionRunner.runTask` itself, and `implementTask` passes no
+    // `onCompleted` (it has no `ArtifactStore` to write into). Moving the
+    // append out of `runTask` and into whichever caller holds a store would
+    // leave every implement, review and rework session here with no
+    // `TaskCompleted` at all — `reduce.ts` never marks the task completed,
+    // and `completedTasks` (`src/plan/apply.ts`) would empty, which stops
+    // self-hosting.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = openLog();
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('merged');
+
+      const events = log.read();
+      const state = fold(events);
+      // The plan task itself reads completed, which is what
+      // `completedTasks` (`src/plan/apply.ts`) reads to keep self-hosting
+      // moving: an empty set here is the regression this test exists to
+      // catch.
+      expect(completedTasks(state, 'r').has('T1')).toBe(true);
+
+      const taskCompletedEvents = events.filter(
+        (event) => event.type === 'TaskCompleted',
+      );
+      expect(taskCompletedEvents.length).toBeGreaterThan(0);
+      for (const event of taskCompletedEvents) {
+        // No artifact store to name one from — the fixture SessionRunner
+        // default, same as before this task.
+        expect((event.payload as { artifactRefs: unknown[] }).artifactRefs).toStrictEqual(
+          [],
+        );
+      }
     } finally {
       log.close();
     }
