@@ -36,6 +36,20 @@ import { defectSchema, type Defect } from '../test/defect.js';
  * the merge this module compares it against, which would flip a fix landing
  * into a false escape.
  *
+ * The task id the fallback matches is a phase *step* id (`src/phase/runner.ts`
+ * stamps `producedBy.task: step.id`), which is not unique across a whole log:
+ * the same step id completes once per invocation of that phase, and one run
+ * id can cover many invocations over the run's lifetime (T4.2.9). So the
+ * fallback also requires the match to sit in the same run as the artifact's
+ * `producedBy.runId` — the run that actually wrote this version — not merely
+ * the same task id wherever in the log it turns up; a `TaskCompleted` for the
+ * same step id under a different run is a different invocation entirely, and
+ * can predate the artifact by weeks. And within that one run, the step id is
+ * still only unique if it completed once: if it completed more than once,
+ * nothing here says *which* of those completions wrote this version, so the
+ * fallback finds none rather than guessing — the same `undated` reading as no
+ * match at all (`filedAt`'s own doc).
+ *
  * A defect is **escaped** when the `ChangeMerged` for the task its route
  * names precedes the `TaskCompleted` that filed it: the change had already
  * merged, so whatever the defect found got past every gate before Test caught
@@ -273,12 +287,26 @@ function earliestPerId(
  *
  * The primary route matches `artifactRefs` against `artifact.id` at *any*
  * version (`refersTo`'s own doc). The fallback fires only when that finds
- * nothing: `filedVersion`'s own `producedBy.task` — the task that wrote the
- * lowest version on record for this id — read directly against
- * `TaskCompleted.taskId`, no `artifactRefs` involved at all. Reached exactly
- * when the emitter recorded no refs (T4.2.7's own gap before this task, and
- * still true of any caller that declares no artifact for a task that writes
- * one some other way).
+ * nothing: `filedVersion`'s own `producedBy` — the task *and run* that wrote
+ * the lowest version on record for this id — read directly against
+ * `TaskCompleted.taskId` and the event's own `runId`, no `artifactRefs`
+ * involved at all. Reached exactly when the emitter recorded no refs
+ * (T4.2.7's own gap before this task, and still true of any caller that
+ * declares no artifact for a task that writes one some other way).
+ *
+ * Both `producedBy.task` and `producedBy.runId` must match, not `task`
+ * alone: `task` is a phase step id, which repeats every time that phase runs
+ * — under the same run id across many invocations, and in principle under a
+ * different run id entirely (module doc). A `TaskCompleted` for the same
+ * step id under a *different* run is a different invocation's completion,
+ * not this one, and matching on the id alone can find one that predates the
+ * artifact by an arbitrary margin. Scoping to `producedBy.runId` as well
+ * still leaves one case unresolved: the same step id completing more than
+ * once *within* that run. Nothing here says which of those completions wrote
+ * this version, so rather than pick one by read order — the same mistake
+ * scoped to a narrower set of candidates — the fallback reports none, which
+ * `computeEscapedDefectRate` reads the same way it reads no match at all:
+ * `undated`, not a guess.
  */
 function filedAt(
   taskCompleted: readonly StoredEvent<TaskCompletedPayload>[],
@@ -298,9 +326,15 @@ function filedAt(
   }
 
   const filedTaskId = filedVersion?.artifact.producedBy.task;
-  return filedTaskId === undefined
-    ? undefined
-    : taskCompleted.find((event) => event.payload.taskId === filedTaskId);
+  const filedRunId = filedVersion?.artifact.producedBy.runId;
+  if (filedTaskId === undefined || filedRunId === undefined) {
+    return undefined;
+  }
+
+  const candidates = taskCompleted.filter(
+    (event) => event.runId === filedRunId && event.payload.taskId === filedTaskId,
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 /**

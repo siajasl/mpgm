@@ -524,4 +524,65 @@ describe('computeEscapedDefectRate — filing fallback when artifactRefs is empt
     expect(rate.rate).toBe(1);
     expect(rate.undated).toBe(0);
   });
+
+  it('does not date the fallback from a same-named step completing under a different run (review finding)', () => {
+    // Reproduces the review finding directly: `producedBy.task` is a phase
+    // *step* id (`test-file`), which repeats across every run that invokes
+    // the phase. Run r1 completes `test-file` first — an unrelated,
+    // wrong-run completion of the same step id — long before the run that
+    // actually wrote this artifact even starts. Matching on `taskId` alone
+    // would find r1's completion (first in the log) and date the filing off
+    // it, well before r2's own merge, and misread a real escape as a fix.
+    const routed = routeDefect(
+      openDefect('zero-split-refused'),
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug',
+    );
+    const artifact = defectArtifactBy('d14', 'r2', routed, 1, 'test-file');
+
+    const events = logWith([
+      runStarted('r1'),
+      completedWithNoRefs('r1', 'test-file'), // unrelated: a different run's own step
+      runStarted('r2'),
+      changeMerged('r2', 'T-old'), // T-old already merged in r2...
+      completedWithNoRefs('r2', 'test-file'), // ...before r2's own filing completes
+    ]);
+
+    const rate = computeEscapedDefectRate('r2', events, [artifact]);
+
+    expect(rate.filed).toBe(1);
+    // The true reading: r2's merge preceded r2's own filing, so this
+    // escaped. Dated off r1's wrong-run completion instead, the buggy
+    // fallback reads `escaped: 0` here.
+    expect(rate.escaped).toBe(1);
+    expect(rate.rate).toBe(1);
+    expect(rate.undated).toBe(0);
+  });
+
+  it('reports undated, not an arbitrary pick, when the filing task completed more than once in its own run', () => {
+    // The step id completed twice within the *same* run — run-scoping alone
+    // cannot tell which of the two completions wrote this version, so rather
+    // than guess by read order the fallback finds none, and the defect
+    // reports as undated instead of being dated off whichever completion
+    // happened to come first.
+    const routed = routeDefect(
+      openDefect('zero-split-refused'),
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug',
+    );
+    const artifact = defectArtifactBy('d15', 'r1', routed, 1, 'test-file');
+
+    const events = logWith([
+      runStarted('r1'),
+      changeMerged('r1', 'T-old'),
+      completedWithNoRefs('r1', 'test-file'), // the step id completes...
+      completedWithNoRefs('r1', 'test-file'), // ...twice, in the same run
+    ]);
+
+    const rate = computeEscapedDefectRate('r1', events, [artifact]);
+
+    expect(rate.filed).toBe(1);
+    expect(rate.undated).toBe(1);
+    expect(rate.escaped).toBe(0);
+  });
 });
