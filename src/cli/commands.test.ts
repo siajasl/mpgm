@@ -765,7 +765,7 @@ describe('status --rates', () => {
     // No task merged in this fixture, so there is nothing to divide by —
     // `-`, not `0%`.
     expect(output).toContain(
-      '    escaped-defects - (0/0 merged tasks; 0 defects filed project-wide; 0 filed but not yet routed to a task)',
+      '    escaped-defects - (0/0 merged tasks; 0 defects filed project-wide; 0 filed but not yet routed to a task; 0 routed but not datable from TaskCompleted)',
     );
   });
 
@@ -920,7 +920,7 @@ describe('status --rates', () => {
     expect(result.ok).toBe(true);
     const output = writes.join('\n');
     expect(output).toContain(
-      '    escaped-defects 100% (1/1 merged tasks; 1 defects filed project-wide; 0 filed but not yet routed to a task)',
+      '    escaped-defects 100% (1/1 merged tasks; 1 defects filed project-wide; 0 filed but not yet routed to a task; 0 routed but not datable from TaskCompleted)',
     );
   });
 });

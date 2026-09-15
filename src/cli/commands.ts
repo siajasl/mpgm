@@ -295,7 +295,7 @@ function formatGateRates(rates: RunGateRates): readonly string[] {
     `    phase-gate ${pct(rates.phaseGate.rate)} (${String(rates.phaseGate.rejected)}/${String(rates.phaseGate.decided)} decided rejected)`,
     `    merge-gate ${pct(rates.mergeGate.rate)} (${String(rates.mergeGate.refusals)}/${String(rates.mergeGate.attempts)} reconstructed from ChecksReported+ChangeReviewed; ${String(rates.mergeGate.budgetExhausted)} out of repair/review rounds (BudgetExceeded); cannot see ${rates.mergeGate.unobservable.join(', ')})`,
     `    rework ${pct(rates.rework.rate)} (${String(rates.rework.reworked)}/${String(rates.rework.reviewed)} reviews sent the change back)`,
-    `    escaped-defects ${pct(rates.escapedDefects.rate)} (${String(rates.escapedDefects.escaped)}/${String(rates.escapedDefects.merged)} merged tasks; ${String(rates.escapedDefects.filed)} defects filed project-wide; ${String(rates.escapedDefects.unrouted)} filed but not yet routed to a task)`,
+    `    escaped-defects ${pct(rates.escapedDefects.rate)} (${String(rates.escapedDefects.escaped)}/${String(rates.escapedDefects.merged)} merged tasks; ${String(rates.escapedDefects.filed)} defects filed project-wide; ${String(rates.escapedDefects.unrouted)} filed but not yet routed to a task; ${String(rates.escapedDefects.undated)} routed but not datable from TaskCompleted)`,
   ];
 }
 
