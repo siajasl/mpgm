@@ -353,9 +353,10 @@ export const MPGM_PLAN = {
           verification:
             'Spend and quality dashboards populated from real self-hosted runs; kernel ' +
             'overhead measured under 10% of run wall-clock; a clean-machine install ' +
-            'reaches a gated Definition artifact within one hour, timed; a coverage run ' +
-            "over this repository's own history names every commit whose trace " +
-            'claim it could not read, and names none.',
+            'reaches a gated Definition artifact within one hour, timed; a redirection ' +
+            'issued while a task is in flight changes what its next session is told; a ' +
+            "coverage run over this repository's own history names every commit whose " +
+            'trace claim it could not read, and names none.',
           validatesRisk: null,
           tasks: [
             {
@@ -652,6 +653,168 @@ export const MPGM_PLAN = {
               ],
               dependsOn: ['T4.2.2b'],
               tracesTo: ['OBS-1', 'OBS-4'],
+            },
+            {
+              id: 'T4.2.8',
+              title: "A session's own duration is recorded",
+              completionCriteria: [
+                'The log records how long a session took. Nothing does ' +
+                  'today: SessionResult (src/agent/session.ts) carries ' +
+                  'termination, structured output, usage, turns, denials and ' +
+                  'an error message and no duration, and ' +
+                  'src/agent/claude-provider.ts maps only total_cost_usd, ' +
+                  'usage, num_turns and permission_denials off the SDK ' +
+                  'result. Without this there is no overhead figure to ' +
+                  'compute (T4.2.9), only task span, which is what ' +
+                  'metrics.ts already reports as latency.',
+                'The SDK reports more than one duration and the change says ' +
+                  'which it took and why. duration_ms is the whole CLI ' +
+                  "session, and this harness's own work runs inside it — the " +
+                  'PreToolUse policy gate, secret substitution, and the ' +
+                  'ToolCallLogged append the gate makes on every tool call, ' +
+                  "which is most of the events in this repository's log. " +
+                  'Subtracting the whole session as model time would charge ' +
+                  "the harness's in-session cost to the model and understate " +
+                  'exactly the figure NFR-3 bounds. The API time is the ' +
+                  'narrower reading; recording both is the option that lets ' +
+                  'T4.2.9 report the difference rather than pick blind.',
+                'CONV-7 is followed as written, not paraphrased: add a field, ' +
+                  'bump the registered version, and carry older payloads ' +
+                  'forward with an upcaster (kb/conventions.md). ' +
+                  'EventRegistry.validate throws when a required field is ' +
+                  'absent at v1, so an added required field without the bump ' +
+                  'breaks replay of every run already on disk. The precedent ' +
+                  'in this repository is operatorIntervened v1 to v2 with ' +
+                  'upcastOperatorIntervenedV1 (src/event/catalog.ts). A run ' +
+                  'from before this task must replay, and must read as ' +
+                  'unmeasured rather than as a session that took no time.',
+                'Every construction site of a SessionResult is covered, not ' +
+                  'just the live provider. runWithWallClock (src/agent/' +
+                  'budget.ts) builds a synthetic result when a wall-clock ' +
+                  'budget trips, and the scripted provider builds them for ' +
+                  'tests; a duration that is present on one path and absent ' +
+                  'on the others produces a figure that silently changes ' +
+                  'meaning with how the session ended.',
+                'A test replays a log written before the field existed and ' +
+                  'one written after, and the two fold without error to ' +
+                  'different readings. A test that only checks the new field ' +
+                  'round-trips passes while the upcaster is missing (CONV-6).',
+              ],
+              dependsOn: [],
+              tracesTo: ['OBS-1', 'NFR-3'],
+            },
+            {
+              id: 'T4.2.9',
+              title: 'Harness overhead, against a denominator that means something',
+              completionCriteria: [
+                'The numerator is stated as a formula before anything is ' +
+                  'reported. NFR-3 bounds scheduling, context assembly and ' +
+                  'validation; the change says which spans it subtracts from ' +
+                  'which, names any of the three it cannot see, and does not ' +
+                  'report a single figure that implies all three. Context ' +
+                  'assembly is measurable at both its call sites — ' +
+                  'assembleContext in src/phase/runner.ts and again in ' +
+                  'src/implement/loop.ts, which is the path every mpgm ' +
+                  'implement uses — and both are outside runTask, so neither ' +
+                  'falls inside the span a session duration covers.',
+                'The denominator is not the raw span of a run, and the change ' +
+                  'says what it used instead. A run id defaults to run-1 ' +
+                  '(src/cli/main.ts) and every verb appends RunStarted only ' +
+                  'if the run does not already exist, so one run accumulates ' +
+                  'across weeks of separate CLI invocations: this ' +
+                  "repository's own log holds a single run of 11,735 events " +
+                  'spanning 27 August to 15 September 2026, almost all of ' +
+                  'which is the operator not being at the keyboard. ' +
+                  'RunState.startedAt to the last event would put nineteen ' +
+                  'days under the division and report overhead near 100%, ' +
+                  'which measures operator absence and not the harness.',
+                'Summing task spans is not the alternative. Over that same ' +
+                  'log the first TaskDispatched to TaskCompleted spans sum to ' +
+                  'more than twice the run span, because runPhase schedules ' +
+                  'to a concurrency of four and because separate CLI ' +
+                  'invocations overlap within one run id. A numerator built ' +
+                  'that way goes negative. The change states its idle rule ' +
+                  'and shows the figure moving when that rule changes.',
+                'T4.2.1 already claims NFR-3 and does not measure it. Its ' +
+                  'tracesTo carries NFR-3 while its criterion reads that mpgm ' +
+                  'status --metrics reports cost, latency, retries and ' +
+                  'success rates — latency is task span, not overhead. The ' +
+                  'change says so, so the trace index does not show NFR-3 ' +
+                  'covered twice with one of them false.',
+                'Two runs at deliberately different ratios read different ' +
+                  'figures, and a run whose sessions carry no recorded ' +
+                  'duration reads as unmeasured rather than 0% — the null ' +
+                  'discipline computeRunMetrics holds for successRate and ' +
+                  'avgLatencyMs and computeGateRates holds for a gate nobody ' +
+                  'decided. A constant, or a figure whose two sides come from ' +
+                  'the same span, passes a test that only checks a number ' +
+                  'came back (CONV-6).',
+                'The measured figure is reported against the 10% threshold ' +
+                  'over a real self-hosted run, and DESIGN ADR-1 is cited ' +
+                  'either way. That is the only place DESIGN mentions NFR-3, ' +
+                  'and it asserts the harness is I/O-bound around model calls ' +
+                  'and that NFR-3 is trivially met — a measurement over the ' +
+                  'threshold would contradict a stated ADR rationale, which ' +
+                  'is a finding and not an implementation detail.',
+              ],
+              dependsOn: ['T4.2.8', 'T4.2.6'],
+              tracesTo: ['NFR-3', 'OBS-2'],
+            },
+            {
+              id: 'T4.2.10',
+              title: 'A first gated Definition artifact, from a clean install and timed',
+              completionCriteria: [
+                'The elapsed time from a fresh clone to an approved ' +
+                  'Definition gate is measured and reported. NFR-6 is a ' +
+                  'threshold — within one hour — so improving the path ' +
+                  'without timing a real walk of it verifies nothing, and an ' +
+                  'estimate is not a measurement.',
+                'The walk includes the step that makes the phase runnable at ' +
+                  'all. phases/definition.yaml declares ' +
+                  'definition-elicitation at optional false, produced by mpgm ' +
+                  'chat definition before the phase runs, and src/phase/' +
+                  'runner.ts returns blocked with a missing required input ' +
+                  'before dispatching anything without it. That interactive ' +
+                  'dialogue is the unbounded term inside the hour NFR-6 ' +
+                  'bounds, and a quick start that omits it documents a second ' +
+                  'command that blocks.',
+                'The path is written where a newcomer looks. README.md is 36 ' +
+                  'lines, its quick start is npm install and npm run check, ' +
+                  'and it names no mpgm verb, no credentials and no phase; ' +
+                  'its status line still says the kernel begins at T1.1.2, ' +
+                  'wrong since self-hosting began at T3.1.8; and its account ' +
+                  'of npm run check omits the secret scan and the milestone ' +
+                  'demos, four of which need Docker. DESIGN section 4.4 does ' +
+                  'enumerate the verbs, so they are not undocumented — but a ' +
+                  'design document is not a quick start, and mpgm is not on ' +
+                  'PATH: package.json is private and the invocation is node ' +
+                  './bin/mpgm.mjs.',
+                'What is new here is the timing and the documentation, and ' +
+                  'the change says so rather than rebuilding M1.3. ' +
+                  'scripts/demo/definition-phase.mjs already creates a clean ' +
+                  'workspace, runs chat definition then run definition, ' +
+                  'asserts the gate was presented and not auto-approved, ' +
+                  'approves it and replays. Its operator answers are ' +
+                  'scripted, so timing it measures a scripted operator rather ' +
+                  'than the competent engineer NFR-6 describes; the change ' +
+                  'says which of the two it timed.',
+                'The measurement is taken from a clean environment and the ' +
+                  'change says how it got one. A node_modules, a dist or a ' +
+                  '.mpgm directory carried over from a machine that has ' +
+                  'already built this repository hides exactly the setup cost ' +
+                  'NFR-6 is about, and the build is required: bin/mpgm.mjs ' +
+                  'imports from dist.',
+                'It is operator-run rather than in CI, with the other demos ' +
+                  'that make real model calls. A timing taken without ' +
+                  'credentials would be measuring the failure path.',
+                'The measured time is the finding, whatever it is. If the ' +
+                  'walk takes longer than an hour, or cannot be completed ' +
+                  'without opening a source file, that is reported rather ' +
+                  'than worked around by moving where the walk starts or ' +
+                  'stops.',
+              ],
+              dependsOn: [],
+              tracesTo: ['NFR-6'],
             },
           ],
         },
