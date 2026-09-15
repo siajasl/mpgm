@@ -469,13 +469,16 @@ export function computeHarnessOverhead(
   // 31 seconds, and the 20.1-hour gap to the next `TaskDispatched` falls
   // *between* two intervals, where `idleGapMs` can act on it, rather than
   // inside one that was never split to begin with. A gap-size threshold was
-  // deliberately not used for this decision: this same log has a normal
-  // round where `ContextAssembled` precedes its own `TaskDispatched` by five
-  // real seconds (T4.2.8's own instrumentation timing this call before
-  // `SessionRunner.runTask`), and a threshold at or below `idleGapMs`'s
-  // default of `0` would have split that round in two as well, which would
-  // be wrong — the ordering rule tells the difference where a gap size
-  // cannot.
+  // deliberately not used for this decision: with `idleGapMs` at its default
+  // of `0`, any gap-size threshold would split every round at every event
+  // boundary, including the legitimate handful of milliseconds between a
+  // round's own `ContextAssembled` and its own `TaskDispatched` — the
+  // ordering rule tells the difference where a gap size alone cannot. (No
+  // `ContextAssembled` event exists anywhere in this repository's own log
+  // yet — T4.2.8 recorded `SessionUsage` durations, not context-assembly
+  // timing — so this argument is checked structurally, against the catalog
+  // and both call sites, not against a real example the log does not yet
+  // contain.)
   interface OpenRound {
     readonly start: number;
     lastActivityTs: number;
