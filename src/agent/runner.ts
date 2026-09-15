@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { ArtifactRef } from '../event/catalog.js';
 import type { EventLog } from '../event/store.js';
 import type { Role } from '../role/definition.js';
 import { RolePolicy } from '../policy/role-policy.js';
@@ -50,6 +51,22 @@ export interface RunTaskRequest {
    * exactly as a schema failure is.
    */
   readonly validate?: (output: unknown) => readonly string[];
+  /**
+   * Names the artifacts this session's output produced, for `TaskCompleted`
+   * (T4.2.7, OBS-1). Called once, with the validated output, after `validate`
+   * has passed and before `TaskCompleted` is appended — so a caller that
+   * writes an artifact from that output writes it in time to be referenced,
+   * rather than after the event has already claimed nothing.
+   *
+   * `SessionRunner` holds no artifact store of its own, so it cannot write
+   * one or know what it would be named; this is how the caller that can says
+   * so. Omitted by a caller with no artifact store to write into —
+   * `src/implement/loop.ts` dispatches implement, review and rework sessions
+   * against a worktree, not an `ArtifactStore`, and declares no artifact for
+   * any of them — and the task then completes with `artifactRefs: []`, the
+   * same as if nothing were produced.
+   */
+  readonly onCompleted?: (output: unknown) => readonly ArtifactRef[];
   readonly signal?: AbortSignal;
 }
 
@@ -375,7 +392,7 @@ export class SessionRunner {
           this.#log.append({
             runId,
             type: 'TaskCompleted',
-            payload: { taskId, artifactRefs: [] },
+            payload: { taskId, artifactRefs: request.onCompleted?.(parsed.data) ?? [] },
           });
           return { status: 'completed', output: parsed.data, attempts: attempt };
         }

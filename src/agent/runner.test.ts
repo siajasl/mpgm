@@ -125,6 +125,65 @@ describe('SessionRunner', () => {
   });
 });
 
+describe('TaskCompleted names the artifacts it produced (T4.2.7)', () => {
+  it('names the refs onCompleted returns, called with the validated output', async () => {
+    const { db, log, runner } = harness([scriptedSuccess(validOutput)]);
+    try {
+      const seen: unknown[] = [];
+      const outcome = await runner.runTask({
+        ...task,
+        onCompleted: (output) => {
+          seen.push(output);
+          return [
+            {
+              id: 'brief',
+              path: 'artifacts/definition/brief.v1.md',
+              commit: null,
+              version: 1,
+            },
+          ];
+        },
+      });
+
+      expect(outcome.status).toBe('completed');
+      // Called with the same output the caller gets back, not the raw
+      // session result — a caller that writes an artifact from `output`
+      // needs exactly what `TaskOutcome.output` carries.
+      expect(seen).toStrictEqual([validOutput]);
+
+      const completed = log.read().find((event) => event.type === 'TaskCompleted');
+      expect(completed?.payload).toStrictEqual({
+        taskId: 'T1',
+        artifactRefs: [
+          {
+            id: 'brief',
+            path: 'artifacts/definition/brief.v1.md',
+            commit: null,
+            version: 1,
+          },
+        ],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('defaults to artifactRefs: [] when the caller declares no artifact (the implement loop shape)', async () => {
+    // `src/implement/loop.ts` has no artifact store and passes no
+    // `onCompleted` — this is the shape its sessions complete with.
+    const { db, log, runner } = harness([scriptedSuccess(validOutput)]);
+    try {
+      const outcome = await runner.runTask(task);
+
+      expect(outcome.status).toBe('completed');
+      const completed = log.read().find((event) => event.type === 'TaskCompleted');
+      expect(completed?.payload).toStrictEqual({ taskId: 'T1', artifactRefs: [] });
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('validation and bounded retry', () => {
   it('retries after a schema violation and feeds the errors back', async () => {
     const { db, log, provider, runner } = harness([

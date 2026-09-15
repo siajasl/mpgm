@@ -8,22 +8,33 @@ import { defectSchema, type Defect } from '../test/defect.js';
  * Read from the Defect artifacts themselves (`src/test/defect.ts`), through
  * the artifact store — the event catalog has no defect event and this module
  * adds none (TST-5's artifacts are the record; the log only ever points at
- * them). A Defect history entry carries no date of its own, so the only
- * dating available for "when was this filed" is the `TaskCompleted` event
- * whose `artifactRefs` names the artifact, and the only dating for "when did
- * the task its route names merge" is that task's own `ChangeMerged` — both
- * read off the event's own `ts` (`StoredEvent.ts`), which is the whole of
- * what this module has to work with.
+ * them). A Defect history entry carries no date of its own, so "when did the
+ * task its route names merge" is dated from that task's own `ChangeMerged`,
+ * and "when was this filed" is dated primarily from the `TaskCompleted`
+ * event whose `artifactRefs` names the artifact — both read off the event's
+ * own `ts` (`StoredEvent.ts`).
  *
  * "When was this filed" is dated from the *earliest* `TaskCompleted` that
- * names the artifact's `id`, at any version — not from whichever
- * `TaskCompleted` happens to name the version this module reduced the
- * defect to (`latestPerId`). The lifecycle writes one version per
+ * names the artifact's `id` in `artifactRefs`, at any version — not from
+ * whichever `TaskCompleted` happens to name the version this module reduced
+ * the defect to (`latestPerId`). The lifecycle writes one version per
  * transition (`filed`'s doc below), so for any defect that has been routed
  * — the only defects that can escape at all — the current version is never
  * the one `fileDefect` wrote, and a `TaskCompleted` naming a later version
  * is some later transition's own completion, not the filing. Filing is
  * always the earliest mention of the id, whichever version it names.
+ *
+ * When no `TaskCompleted` names the artifact that way at all, a fallback
+ * takes over: the *lowest*-version Defect record for that id names, in its
+ * own `producedBy.task`, the task that wrote it — `fileDefect`'s task, since
+ * filing is always the first transition (immediately above) — and that
+ * task's own `TaskCompleted` dates the filing just as well, `artifactRefs`
+ * or no. Not the *latest* version's provenance: after `latestPerId` reduces
+ * to one record per id, the surviving version's `producedBy.task` is
+ * whichever transition wrote it last — `routeDefect`'s or `retestDefect`'s
+ * task, for a routed or verified defect — and that task completes *after*
+ * the merge this module compares it against, which would flip a fix landing
+ * into a false escape.
  *
  * A defect is **escaped** when the `ChangeMerged` for the task its route
  * names precedes the `TaskCompleted` that filed it: the change had already
@@ -83,18 +94,34 @@ import { defectSchema, type Defect } from '../test/defect.js';
  * excluded from `escaped` and `unrouted`, rather than inflating `filed` while
  * every other figure skips it.
  *
- * A routed defect whose named task has merged but for which no
- * `TaskCompleted` names the artifact cannot be dated at all — neither
- * escaped nor a fix, because "precedes" has nothing to compare. Dropping it
- * silently would let it vanish into a confident-looking rate; instead it is
- * reported as {@link EscapedDefectRate.undated}, on the run that merged the
- * task, the same way `unrouted` surfaces defects this module can place on
- * neither side of the division rather than absorbing them into it. In this
- * repository's own log `undated` reads as "every routed defect" today:
- * `SessionRunner` (`src/agent/runner.ts`), the only production emitter of
- * `TaskCompleted` on the task path, emits `artifactRefs: []`, so nothing
- * currently populates the one field this dating depends on — the
- * escaped-defect rate is measurable only once something does.
+ * A routed defect whose named task has merged but which neither `filed by
+ * artifactRefs` nor the `producedBy.task` fallback above can date cannot be
+ * dated at all — neither escaped nor a fix, because "precedes" has nothing to
+ * compare. Dropping it silently would let it vanish into a confident-looking
+ * rate; instead it is reported as {@link EscapedDefectRate.undated}, on the
+ * run that merged the task, the same way `unrouted` surfaces defects this
+ * module can place on neither side of the division rather than absorbing
+ * them into it.
+ *
+ * A task still running is not what reaches this: a step's artifact is
+ * written before that step's own `TaskCompleted` is appended (`SessionRunner`
+ * calls back into the artifact store at the point its output validates,
+ * `src/agent/runner.ts`, T4.2.7), so the artifact never post-dates the event
+ * that names it. What does reach it is a step that writes an artifact but
+ * runs no session at all — a panel's tally, the one place `src/playbook/graph.ts`
+ * gives a step a `produces` outside a session step, written by
+ * `src/phase/runner.ts` and followed by `VoteTallied`, never `TaskCompleted`.
+ * A Defect artifact a tally produced would be datable by neither route: no
+ * `TaskCompleted.artifactRefs` names it, and `producedBy.task` names a task id
+ * no `TaskCompleted` was ever appended for either. That is `undated`'s live
+ * case, not a hypothetical one.
+ *
+ * This module's own rate stays unmeasured rather than reading `0%`, whatever
+ * the fix above does: `phases/` has no test playbook yet, and `fileDefect`
+ * (`src/test/defect.ts`) has no call site outside the export list in
+ * `src/index.ts`, so nothing yet writes a Defect artifact in this
+ * repository's own log. T4.2.7 makes `TaskCompleted.artifactRefs` and this
+ * fallback both *measurable*; it does not, by itself, make anything measured.
  */
 export interface EscapedDefectRate {
   readonly runId: string;
@@ -220,6 +247,63 @@ function latestPerId(records: readonly DefectRecord[]): readonly DefectRecord[] 
 }
 
 /**
+ * One `DefectRecord` per artifact `id`, the *lowest* `version` — the version
+ * {@link fileDefect} wrote, whoever's task that was — for the filing-date
+ * fallback (module doc's correction). Only ever read from, never counted:
+ * `records` (the caller's own `latestPerId` reduction) stays what everything
+ * else in this module counts over, so a defect still reads once regardless of
+ * how many versions it holds.
+ */
+function earliestPerId(
+  records: readonly DefectRecord[],
+): ReadonlyMap<string, DefectRecord> {
+  const earliest = new Map<string, DefectRecord>();
+  for (const record of records) {
+    const current = earliest.get(record.artifact.id);
+    if (current === undefined || record.artifact.version < current.artifact.version) {
+      earliest.set(record.artifact.id, record);
+    }
+  }
+  return earliest;
+}
+
+/**
+ * The `TaskCompleted` that dates `artifact`'s filing, primary route or
+ * fallback (module doc's correction) — whichever finds one.
+ *
+ * The primary route matches `artifactRefs` against `artifact.id` at *any*
+ * version (`refersTo`'s own doc). The fallback fires only when that finds
+ * nothing: `filedVersion`'s own `producedBy.task` — the task that wrote the
+ * lowest version on record for this id — read directly against
+ * `TaskCompleted.taskId`, no `artifactRefs` involved at all. Reached exactly
+ * when the emitter recorded no refs (T4.2.7's own gap before this task, and
+ * still true of any caller that declares no artifact for a task that writes
+ * one some other way).
+ */
+function filedAt(
+  taskCompleted: readonly StoredEvent<TaskCompletedPayload>[],
+  artifactId: string,
+  filedVersion: DefectRecord | undefined,
+): StoredEvent<TaskCompletedPayload> | undefined {
+  const byRef = taskCompleted.filter((event) =>
+    event.payload.artifactRefs.some((ref) => refersTo(ref, artifactId)),
+  );
+  const earliestByRef = byRef.reduce<StoredEvent<TaskCompletedPayload> | undefined>(
+    (earliest, event) =>
+      earliest === undefined || event.ts < earliest.ts ? event : earliest,
+    undefined,
+  );
+  if (earliestByRef !== undefined) {
+    return earliestByRef;
+  }
+
+  const filedTaskId = filedVersion?.artifact.producedBy.task;
+  return filedTaskId === undefined
+    ? undefined
+    : taskCompleted.find((event) => event.payload.taskId === filedTaskId);
+}
+
+/**
  * The escaped-defect rate for `runId` (OBS-4, T4.2.2b).
  *
  * `events` should cover every run, not just `runId`'s own — the task a
@@ -248,7 +332,11 @@ export function computeEscapedDefectRate(
 
   const merged = changeMerged.filter((event) => event.runId === runId).length;
 
-  const records = latestPerId(parseDefects(defects));
+  const parsed = parseDefects(defects);
+  const records = latestPerId(parsed);
+  // Read from only: the fallback's dating source, never counted itself (see
+  // `earliestPerId`'s own doc).
+  const filedVersions = earliestPerId(parsed);
 
   let escaped = 0;
   let unrouted = 0;
@@ -271,18 +359,12 @@ export function computeEscapedDefectRate(
       continue;
     }
 
-    const filedBy = taskCompleted.filter((event) =>
-      event.payload.artifactRefs.some((ref) => refersTo(ref, artifact.id)),
-    );
-    const filed = filedBy.reduce<StoredEvent<TaskCompletedPayload> | undefined>(
-      (earliest, event) =>
-        earliest === undefined || event.ts < earliest.ts ? event : earliest,
-      undefined,
-    );
+    const filed = filedAt(taskCompleted, artifact.id, filedVersions.get(artifact.id));
     if (filed === undefined) {
-      // No TaskCompleted names this artifact — the only dating this module
-      // has (module doc) — so neither side of "precedes" is known. Reported
-      // rather than dropped: see `undated` on the interface.
+      // Neither `artifactRefs` nor the `producedBy.task` fallback dates
+      // this — the only dating this module has (module doc) — so neither
+      // side of "precedes" is known. Reported rather than dropped: see
+      // `undated` on the interface.
       if (merge.runId === runId) {
         undated += 1;
       }

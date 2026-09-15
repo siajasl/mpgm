@@ -20,6 +20,7 @@ import { TraceIndex } from '../trace/index-store.js';
 import { DEFAULT_EGRESS_POLICY } from '../context/egress.js';
 import { MEMORY, openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
+import type { StoredEvent } from '../event/envelope.js';
 import { EventLog } from '../event/store.js';
 import { GateManager } from '../gate/manager.js';
 import { parsePlaybook } from '../playbook/loader.js';
@@ -263,6 +264,60 @@ describe('runPhase over a fan-out', () => {
       );
       expect(provider.seen.some((prompt) => prompt.includes('MARK-COLLECT'))).toBe(false);
       expect(result.produced.survey).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+interface TaskCompletedPayload {
+  readonly taskId: string;
+  readonly artifactRefs: readonly {
+    readonly id?: string;
+    readonly path: string;
+    readonly commit: string | null;
+    readonly version?: number;
+  }[];
+}
+
+function taskCompletedFor(
+  events: readonly StoredEvent[],
+  taskId: string,
+): TaskCompletedPayload | undefined {
+  const event = events.find(
+    (candidate) =>
+      candidate.type === 'TaskCompleted' &&
+      (candidate.payload as TaskCompletedPayload).taskId === taskId,
+  );
+  return event === undefined ? undefined : (event.payload as TaskCompletedPayload);
+}
+
+describe('runPhase names TaskCompleted.artifactRefs (T4.2.7)', () => {
+  it('names the artifact the collector produced, by id, path and version, matching the store', async () => {
+    const provider = new ProbeProvider(() => ({ note: 'ok' }), 1);
+    const { db, log, common } = harness(provider);
+    try {
+      await runPhase({
+        ...common,
+        playbook: parsePlaybook('scope.yaml', FAN_OUT),
+        concurrency: 2,
+      });
+
+      // Read back from the store, independently of the code under test, so
+      // this asserts against what was actually written rather than against a
+      // hard-coded ref a no-op could also satisfy (CONV-6).
+      const artifact = common.artifacts.read('artifacts/survey.md');
+      const events = log.read();
+
+      const completed = taskCompletedFor(events, 'explore-collect');
+      expect(completed?.artifactRefs).toStrictEqual([
+        { id: artifact.id, path: artifact.path, commit: null, version: artifact.version },
+      ]);
+
+      // A worker step produces no artifact of its own, so its TaskCompleted
+      // names none — not the collector's artifact by mistake.
+      const worker = taskCompletedFor(events, 'explore-worker-1');
+      expect(worker?.artifactRefs).toStrictEqual([]);
     } finally {
       db.close();
     }

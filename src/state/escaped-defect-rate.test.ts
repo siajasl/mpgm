@@ -74,8 +74,8 @@ function filedBy(runId: string, taskId: string, artifact: Artifact): EventInput 
   };
 }
 
-const provenance = (runId: string) => ({
-  task: 'retest',
+const provenance = (runId: string, task = 'retest') => ({
+  task,
   role: 'tester',
   model: 'claude-sonnet-5',
   runId,
@@ -99,6 +99,33 @@ function defectArtifact(
     data,
     path: `artifacts/defect/${id}.v${String(version)}.md`,
   };
+}
+
+/**
+ * Like {@link defectArtifact}, but with `producedBy.task` set to whichever
+ * task actually wrote this version — the field the filing fallback reads
+ * (T4.2.7). `defectArtifact` hardcodes `'retest'` for every version, which is
+ * fine where the fallback never fires; the fallback tests below need each
+ * lifecycle transition's own task distinguishable from the others.
+ */
+function defectArtifactBy(
+  id: string,
+  foundByRunId: string,
+  data: unknown,
+  version: number,
+  task: string,
+): Artifact {
+  return {
+    ...defectArtifact(id, foundByRunId, data, version),
+    producedBy: provenance(foundByRunId, task),
+  };
+}
+
+/** A `TaskCompleted` with no `artifactRefs` — the shape `SessionRunner` wrote
+ * for every task on the task path before T4.2.7, and still writes for a
+ * caller that declares no artifact. */
+function completedWithNoRefs(runId: string, taskId: string): EventInput {
+  return { runId, type: 'TaskCompleted', payload: { taskId, artifactRefs: [] } };
 }
 
 function openDefect(caseId: string) {
@@ -414,5 +441,87 @@ describe('computeEscapedDefectRate — a routed defect that cannot be dated', ()
 
     expect(oldRun.undated).toBe(1);
     expect(foundRun.undated).toBe(0);
+  });
+});
+
+describe('computeEscapedDefectRate — filing fallback when artifactRefs is empty (T4.2.7)', () => {
+  it('dates filing from the lowest-version record — the version fileDefect wrote — not the latest', () => {
+    // Handed in at all four lifecycle versions, each written by a distinct
+    // task, and every TaskCompleted carries no artifactRefs — the shape
+    // `SessionRunner` wrote for every task on the task path before T4.2.7.
+    // Only the fallback (`producedBy.task` on the *lowest* version) can date
+    // this at all.
+    const v1Data = openDefect('zero-split-refused');
+    const v2Data = routeDefect(
+      v1Data,
+      { to: 'implement', taskId: 'T-fix' },
+      'routed to a fresh task to hold the fix',
+    );
+    const v3Data = recordFix(v2Data, { ref: 'deadbeef', summary: 'refuse a zero split' });
+    const v4Data = retestDefect(v3Data, {
+      passed: true,
+      detail: 're-ran the adversarial case',
+    });
+
+    const v1 = defectArtifactBy('d12', 'r1', v1Data, 1, 'file-task');
+    const v2 = defectArtifactBy('d12', 'r1', v2Data, 2, 'route-task');
+    const v3 = defectArtifactBy('d12', 'r1', v3Data, 3, 'fix-task');
+    const v4 = defectArtifactBy('d12', 'r1', v4Data, 4, 'retest-task');
+
+    const events = logWith([
+      runStarted('r1'),
+      completedWithNoRefs('r1', 'file-task'), // filing task completes first...
+      changeMerged('r1', 'T-fix'), // ...T-fix merges next: the fix landing...
+      completedWithNoRefs('r1', 'route-task'),
+      completedWithNoRefs('r1', 'fix-task'),
+      completedWithNoRefs('r1', 'retest-task'), // ...and retest completes last, long after the merge
+    ]);
+
+    const rate = computeEscapedDefectRate('r1', events, [v1, v2, v3, v4]);
+
+    expect(rate.filed).toBe(1);
+    // Dated correctly (off `file-task`, before the merge), this reads as the
+    // fix landing, not an escape. Dated off the *latest* version's task
+    // (`retest-task`, whose completion falls long after the merge) it would
+    // flip to `escaped: 1` — precisely the regression this pins down.
+    expect(rate.escaped).toBe(0);
+    expect(rate.rate).toBe(0);
+    // Not "cannot be dated" either: the fallback did find something.
+    expect(rate.undated).toBe(0);
+  });
+
+  it('still reads escaped when the fallback dates the filing after the named task had already merged', () => {
+    const v1Data = openDefect('zero-split-refused');
+    const v2Data = routeDefect(
+      v1Data,
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug, not a design assumption',
+    );
+    const v3Data = recordFix(v2Data, { ref: 'deadbeef', summary: 'refuse a zero split' });
+    const v4Data = retestDefect(v3Data, {
+      passed: true,
+      detail: 're-ran the adversarial case',
+    });
+
+    const v1 = defectArtifactBy('d13', 'r1', v1Data, 1, 'file-task');
+    const v2 = defectArtifactBy('d13', 'r1', v2Data, 2, 'route-task');
+    const v3 = defectArtifactBy('d13', 'r1', v3Data, 3, 'fix-task');
+    const v4 = defectArtifactBy('d13', 'r1', v4Data, 4, 'retest-task');
+
+    const events = logWith([
+      runStarted('r1'),
+      changeMerged('r1', 'T-old'), // T-old already merged...
+      completedWithNoRefs('r1', 'file-task'), // ...before this defect was filed against it
+      completedWithNoRefs('r1', 'route-task'),
+      completedWithNoRefs('r1', 'fix-task'),
+      completedWithNoRefs('r1', 'retest-task'),
+    ]);
+
+    const rate = computeEscapedDefectRate('r1', events, [v1, v2, v3, v4]);
+
+    expect(rate.filed).toBe(1);
+    expect(rate.escaped).toBe(1);
+    expect(rate.rate).toBe(1);
+    expect(rate.undated).toBe(0);
   });
 });

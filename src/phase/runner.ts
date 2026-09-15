@@ -7,6 +7,7 @@ import { collectDecisions, relevantDecisions } from '../context/decisions.js';
 import { kbUpdatesOf, writeKbDocument } from '../context/kb-writer.js';
 import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
+import type { ArtifactRef } from '../event/catalog.js';
 import type { EventLog } from '../event/store.js';
 import type { ApprovalPacket, GateEvidence, GateManager } from '../gate/manager.js';
 import { isApproved } from '../gate/manager.js';
@@ -237,9 +238,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     role: string,
     model: string,
     data: unknown,
-  ): void => {
+  ): Artifact | undefined => {
     if (step.produces === undefined) {
-      return;
+      return undefined;
     }
     const template = playbook.artifacts[step.produces];
     if (template === undefined) {
@@ -261,7 +262,16 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       artifact,
       relative(options.artifacts.root, artifact.path),
     );
+    return artifact;
   };
+
+  /** `TaskCompleted.artifactRefs` naming one written artifact (T4.2.7). */
+  const refFor = (artifact: Artifact): ArtifactRef => ({
+    id: artifact.id,
+    path: artifact.path,
+    commit: null,
+    version: artifact.version,
+  });
 
   const record = (step: GraphStep, value: unknown): void => {
     outputs[step.id] = value;
@@ -313,6 +323,12 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       policy: options.policy,
     });
 
+    // Written inside `onCompleted`, before `TaskCompleted` is appended,
+    // rather than after `runTask` returns: written afterwards, the artifact
+    // does not exist yet when the event that is supposed to name it is
+    // written (T4.2.7). `SessionRunner` holds no artifact store of its own,
+    // so it calls back into this one at the point its own output has
+    // validated.
     const outcome = await options.sessions.runTask({
       runId,
       taskId: step.id,
@@ -323,6 +339,10 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       // is the only id-shaped field most artifacts have, so it is where an id
       // goes when an agent has one and nowhere to put it (IMP-4, DSG-4).
       validate: (output) => conventionTraceIssues(output, context.conventions),
+      onCompleted: (output) => {
+        const artifact = writeArtifact(step, role.name, role.model, output);
+        return artifact === undefined ? [] : [refFor(artifact)];
+      },
     });
 
     if (outcome.status !== 'completed') {
@@ -330,7 +350,6 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     }
 
     record(step, outcome.output);
-    writeArtifact(step, role.name, role.model, outcome.output);
 
     if (step.updatesKb === true) {
       const provenance: Provenance = {
