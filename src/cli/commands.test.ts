@@ -619,15 +619,23 @@ describe('status --metrics', () => {
     const writes: string[] = [];
     const db = openDatabase(join(root, '.mpgm', 'state.db'));
     try {
-      // A fixed clock, one second per event: real numbers below (`0ms`) must
-      // be exact, not merely non-null, and a wall clock would make this test
+      // A fixed clock, explicit offsets: real numbers below (`0ms`) must be
+      // exact, not merely non-null, and a wall clock would make this test
       // flaky by however long the write to sqlite happens to take.
-      let seconds = 0;
+      // `ToolCallLogged` and `TaskCompleted` below deliberately share an
+      // offset — `closeRound` (T4.2.9) ends a round's busy interval at its
+      // own last recorded activity, not the terminal event's own timestamp,
+      // so T2's last real activity has to land at the same instant its
+      // terminal event does for T2's busy span to read as a clean [4s, 6s).
+      const offsetsSeconds = [0, 1, 2, 3, 4, 5, 6, 6];
+      let i = 0;
       const log = EventLog.attach(db, {
         registry: kernelRegistry(),
         clock: () => {
-          const ts = new Date(2026_01_01_00_00_00 + seconds * 1000).toISOString();
-          seconds += 1;
+          const offset = offsetsSeconds[i];
+          if (offset === undefined) throw new Error('offsetsSeconds shorter than inputs');
+          const ts = new Date(2026_01_01_00_00_00 + offset * 1000).toISOString();
+          i += 1;
           return ts;
         },
       });
@@ -661,6 +669,21 @@ describe('status --metrics', () => {
             apiDurationMs: 800,
           },
         },
+        // T2's own last recorded activity before it completes:
+        // `computeHarnessOverhead`'s `closeRound` ends a round's busy
+        // interval there, not at the terminal event's own timestamp (T4.2.9),
+        // so this is what puts T2's span at [4s, 6s) rather than [4s, 5s).
+        {
+          runId: 'r1',
+          type: 'ToolCallLogged',
+          payload: {
+            taskId: 'T2',
+            tool: 'Bash',
+            decision: 'allowed',
+            detail: '',
+            outputBlob: null,
+          },
+        },
         {
           runId: 'r1',
           type: 'TaskCompleted',
@@ -683,6 +706,79 @@ describe('status --metrics', () => {
     // T2 completed, so its bucket reports real numbers rather than "-".
     expect(output).toContain(
       '  phase review: tasks 1  cost $0.2500  tokens 15  avg-latency 2000ms  retries 0  success 100% (1/1)',
+    );
+    // No `ContextAssembled` event exists in this fixture, so nothing
+    // measures the numerator: the ratio reads unmeasured, not 0%, even
+    // though T2's `SessionUsage` records a 1000ms session against an 800ms
+    // API call. That 200ms gap is agent tool-execution time, not harness
+    // code (`../state/overhead.ts` module doc) — reported as its own
+    // "non-API session time" figure, but excluded from the ratio and from
+    // the 10% comparison. T2 did settle, so `observedMs` (T2's own 2000ms
+    // busy span; T1 never settled, so it contributes no interval) and
+    // `coverage` (0 of 1 settled tasks instrumented) are both still real
+    // numbers, not "-": there is something to report, just not overhead.
+    expect(output).toContain(
+      "  overhead - of NFR-3's 10% threshold (- context-assembly / - instrumented task span, " +
+        'coverage 0/1 tasks (0%); run busy span 2000ms; context-assembly 0ms over 0 calls; ' +
+        'non-API session time 200ms over 1 sessions (agent tool execution, not harness — ' +
+        'excluded from the ratio); cannot see scheduling, validation)',
+    );
+  });
+
+  it('reads a run with no recorded session duration as unmeasured, not 0%', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-unmeasured-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      // A session that never produced a duration to report (the same "null,
+      // not zero" case a pre-T4.2.8 log upcasts to), and no `ContextAssembled`
+      // event either.
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 0.01,
+            durationMs: null,
+            apiDurationMs: null,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      "  overhead - of NFR-3's 10% threshold (- context-assembly / - instrumented task span, " +
+        'coverage 0/1 tasks (0%); run busy span 0ms; context-assembly 0ms over 0 calls; ' +
+        'non-API session time 0ms over 0 sessions (agent tool execution, not harness — ' +
+        'excluded from the ratio); cannot see scheduling, validation)',
     );
   });
 });

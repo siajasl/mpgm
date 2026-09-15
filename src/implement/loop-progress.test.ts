@@ -158,6 +158,72 @@ describe('progress reported as sessions start and finish (OBS-3, NFR-2)', () => 
     }
   });
 
+  it("appends ContextAssembled for the implement session, before that task's own TaskDispatched (T4.2.9, NFR-3)", async () => {
+    // `src/state/overhead.ts` divides by this event's timestamp to bracket
+    // context assembly on the harness-overhead ratio's numerator and
+    // denominator both, and `implementTask` (not `runPhase`) is the call
+    // site `mpgm implement` actually goes through. A call site that
+    // silently stopped appending it would report every task dispatched
+    // through here as never instrumented rather than failing loudly, so
+    // this is asserted directly rather than only inferred from
+    // `computeHarnessOverhead`'s own fixtures.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+      expect(result.status).toBe('merged');
+
+      const events = log.read();
+      const contextAssembled = events.filter(
+        (event) => event.type === 'ContextAssembled',
+      );
+      expect(contextAssembled).toHaveLength(1);
+      expect(contextAssembled[0]?.payload).toMatchObject({
+        taskId: 'T1',
+        site: 'implement',
+      });
+
+      // Appended before T1's own TaskDispatched, not after — the span
+      // `computeHarnessOverhead` measures would otherwise fall outside the
+      // window it is divided by (module doc, `src/state/overhead.ts`).
+      const dispatched = events.find(
+        (event) =>
+          event.type === 'TaskDispatched' &&
+          (event.payload as { readonly taskId: string }).taskId === 'T1',
+      );
+      if (dispatched === undefined) throw new Error('expected T1 TaskDispatched');
+      expect(contextAssembled[0]?.seq).toBeLessThan(dispatched.seq);
+    } finally {
+      log.close();
+    }
+  });
+
   it('reports the finish of a session before the loop moves on to the next one', async () => {
     // The criterion this task exists for: reported *as it happens*, not only
     // recoverable from the final result. Asserted by having the reporter
