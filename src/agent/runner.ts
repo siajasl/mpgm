@@ -456,8 +456,13 @@ export class SessionRunner {
         outputTokens: result.usage.outputTokens,
         costUsd: result.usage.costUsd,
         // How long this session itself took (T4.2.8) — the whole session and
-        // the narrower time spent in the model, so T4.2.9 can report the
-        // harness's own overhead as the difference rather than assume it.
+        // the narrower time spent in the model. The difference between them
+        // is *not* harness overhead as NFR-3 means it (T4.2.9's own module
+        // doc, `src/state/overhead.ts`): it is agent tool-execution time —
+        // every `Bash` call, `npm test` run and `git` operation the agent
+        // runs — not harness code. `computeHarnessOverhead` records it as
+        // `nonApiSessionMs` but reports NFR-3 against `ContextAssembled`'s
+        // own span instead.
         durationMs: result.durationMs,
         apiDurationMs: result.apiDurationMs,
       },

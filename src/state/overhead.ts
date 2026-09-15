@@ -146,21 +146,57 @@ import type { RunState } from './kernel-state.js';
  * threshold to detect this: within one round, `ContextAssembled` always
  * precedes that round's own `TaskDispatched` (never the reverse, both call
  * sites), and a round carries at most one of each, so once a round has
- * recorded its own `TaskDispatched` *or* its own `ContextAssembled`, any
- * further occurrence of *either* for that `taskId` cannot belong to it — it
- * can only open the next round. The rule is symmetric on purpose: a round
- * opened by `ContextAssembled` that never reaches its own `TaskDispatched`
- * (the process dies first, or `track` returns blocked without dispatching)
- * would otherwise stay open across a later invocation's `ContextAssembled`
- * for the same `taskId`, landing that gap inside `instrumentedSpanMs` — the
- * ratio's own denominator — rather than in `observedMs`. That round is
- * closed right there, at the last timestamp *any* event actually named this
- * `taskId` (not only the ones this module otherwise switches on —
- * `ToolCallLogged` included), so `T3.2.1`'s stale round closes at
+ * recorded its own `TaskDispatched`, or its own `ContextAssembled` followed
+ * by a *second* `ContextAssembled`, any further occurrence for that `taskId`
+ * cannot belong to it — it can only open the next round. `T3.2.1`'s own case
+ * is exactly the dispatched half: the stale round is closed at the last
+ * timestamp *any* event actually named this `taskId` (not only the ones this
+ * module otherwise switches on — `ToolCallLogged` included), so it closes at
  * 14:32:49.793Z, 31 seconds long, and the 20.1-hour gap falls between two
- * intervals, where `idleGapMs` can act on it. See the function body's own
- * comment for the full argument, including why a gap-size threshold was
- * deliberately not used instead.
+ * intervals, where `idleGapMs` can act on it.
+ *
+ * **The rule is not symmetric, and that is a deliberate reliance on the call
+ * sites rather than an oversight.** A round opened by `ContextAssembled` that
+ * has *not yet* recorded its own `TaskDispatched` always extends — never
+ * splits — on the next `TaskDispatched` for that `taskId`, however far away
+ * it is: this module's own test fixture pairs a `ContextAssembled` at 0ms
+ * with its `TaskDispatched` 5 seconds later and expects them merged into one
+ * round (below). Splitting on that transition instead — treating any
+ * `TaskDispatched` after an undispatched `ContextAssembled` as a fresh
+ * round's opening event, the same way a second `ContextAssembled` is treated
+ * — would break every real round: the `ContextAssembled`-only remainder would
+ * carry no `TaskDispatched` of its own and so never close on a terminal
+ * event, and the `TaskDispatched`-opened remainder would carry no
+ * `ContextAssembled` of its own and so never enter the numerator at all,
+ * which is worse than the contamination either split is meant to prevent. A
+ * gap-size threshold could tell a genuine pair from a stale one apart, but
+ * this module already rejects gap thresholds for this decision (a fixed
+ * cutoff would either split the legitimate 5-second pair above or fail to
+ * split a real multi-day one, depending which side of the cutoff each
+ * lands). What actually keeps this transition safe is not in this module at
+ * all: `SessionRunner.runTask` (`src/agent/runner.ts`), the only appender of
+ * `TaskDispatched` for a context-assembling task, is called synchronously
+ * immediately after the `ContextAssembled` append at both call sites
+ * (`src/phase/runner.ts`, `src/implement/loop.ts`), with no other event for
+ * that `taskId` possible in between — so a `ContextAssembled`-opened,
+ * undispatched round can only ever receive *its own* `TaskDispatched` next,
+ * never a stranger's. A round abandoned before it ever reaches its own
+ * `TaskDispatched` (the process dies in that same narrow window) is instead
+ * rescued the way `T3.2.1`'s own case shows above and in the function body's
+ * own comment: `implement/loop.ts`'s pre-`catchUp` `stop()` appends
+ * `TaskBlocked` for a paused-or-killed run *before* this invocation's own
+ * `ContextAssembled`, closing the stale round via `closeRound` rather than
+ * ever reaching `openOrSplitRound` for it again; and a run left `running`
+ * instead re-runs `assembleContext` on its next attempt, appending a *second*
+ * `ContextAssembled` that the already-covered CA→CA split path catches. Both
+ * paths close the stale round before any bare `TaskDispatched` could reach
+ * it. There is today no call site that appends `TaskDispatched` for a
+ * context-assembling task any other way; if one is ever added without also
+ * appending that round's own `ContextAssembled` immediately before it, this
+ * assumption breaks silently, and the regression test below pins the shape
+ * that would break (the four-day span it currently produces on a fabricated
+ * log — not reachable through any call site today, but not guarded against
+ * either).
  *
  * **The numerator and denominator are computed together, and null
  * together, not by three independent conditions that have to be kept in
@@ -493,41 +529,40 @@ export function computeHarnessOverhead(
   // out, just moved one level down from task to round.
   //
   // The fix does not use a gap threshold to decide this, because ordering
-  // alone already gives an unambiguous signal: within one round,
-  // `ContextAssembled` always precedes that round's own `TaskDispatched`
-  // (module doc), never the reverse, and a round carries at most one of each
-  // — one `TaskDispatched` and one `ContextAssembled` per call-site
-  // invocation. So once an open round has recorded its own `TaskDispatched`
-  // *or* its own `ContextAssembled`, any further occurrence of *either* for
-  // that same `taskId` cannot belong to it — it can only be the opening
-  // event of the next round. This has to hold for both halves of the pair,
-  // not just the dispatched half: a round opened by `ContextAssembled` that
-  // never reaches its own `TaskDispatched` (the process dies before
-  // `SessionRunner.runTask` is ever called, or `track` returns blocked
-  // without dispatching because the run is paused or killed) would otherwise
-  // stay open indefinitely, and a later invocation's `ContextAssembled` for
-  // the same `taskId` would merely extend it — landing the entire gap
-  // between the two invocations inside `instrumentedSpanMs`, the numerator's
-  // own denominator, rather than in `observedMs` where the dispatched-side
-  // split already keeps it out. The stale round is closed right there, not
-  // at the new event's own timestamp but at the last timestamp any event
-  // actually named this `taskId` (`lastActivityTs`, updated by every event
-  // carrying this `taskId`, not only the ones this module otherwise switches
-  // on — `ToolCallLogged` included, which is what T3.2.1's real gap is
-  // bounded by) — so the interval that closes is `[start, 14:32:49.793Z)`,
-  // 31 seconds, and the 20.1-hour gap to the next `TaskDispatched` falls
-  // *between* two intervals, where `idleGapMs` can act on it, rather than
-  // inside one that was never split to begin with. A gap-size threshold was
-  // deliberately not used for this decision: with `idleGapMs` at its default
-  // of `0`, any gap-size threshold would split every round at every event
-  // boundary, including the legitimate handful of milliseconds between a
-  // round's own `ContextAssembled` and its own `TaskDispatched` — the
-  // ordering rule tells the difference where a gap size alone cannot. (No
-  // `ContextAssembled` event exists anywhere in this repository's own log
-  // yet — T4.2.8 recorded `SessionUsage` durations, not context-assembly
-  // timing — so this argument is checked structurally, against the catalog
-  // and both call sites, not against a real example the log does not yet
-  // contain.)
+  // alone already gives an unambiguous signal on the dispatched-side (this
+  // case) and the CA-repeat case: within one round, `ContextAssembled`
+  // always precedes that round's own `TaskDispatched` (module doc), never
+  // the reverse, and a round carries at most one of each. So once an open
+  // round has recorded its own `TaskDispatched`, any further occurrence of
+  // either event for that same `taskId` cannot belong to it — it can only be
+  // the opening event of the next round; the same holds for a *second*
+  // `ContextAssembled` arriving before any `TaskDispatched` of its own. The
+  // stale round is closed right there, not at the new event's own timestamp
+  // but at the last timestamp any event actually named this `taskId`
+  // (`lastActivityTs`, updated by every event carrying this `taskId`, not
+  // only the ones this module otherwise switches on — `ToolCallLogged`
+  // included, which is what T3.2.1's real gap is bounded by) — so the
+  // interval that closes is `[start, 14:32:49.793Z)`, 31 seconds, and the
+  // 20.1-hour gap to the next `TaskDispatched` falls *between* two intervals,
+  // where `idleGapMs` can act on it, rather than inside one that was never
+  // split to begin with. A gap-size threshold was deliberately not used for
+  // this decision: with `idleGapMs` at its default of `0`, any gap-size
+  // threshold would split every round at every event boundary, including the
+  // legitimate handful of milliseconds — or, per this module's own test
+  // fixture, seconds — between a round's own `ContextAssembled` and its own
+  // `TaskDispatched` — the ordering rule tells the difference where a gap
+  // size alone cannot. (No `ContextAssembled` event exists anywhere in this
+  // repository's own log yet — T4.2.8 recorded `SessionUsage` durations, not
+  // context-assembly timing — so this argument is checked structurally,
+  // against the catalog and both call sites, not against a real example the
+  // log does not yet contain.)
+  //
+  // This does *not* extend to a `TaskDispatched` arriving for a round that
+  // has recorded a `ContextAssembled` but no `TaskDispatched` of its own yet
+  // — that transition always extends, never splits, however far away the
+  // `TaskDispatched` is (module doc has the full argument, and the reasons a
+  // symmetric split there would break every real round rather than fix a
+  // reachable one).
   interface OpenRound {
     readonly start: number;
     lastActivityTs: number;

@@ -719,6 +719,58 @@ describe('computeHarnessOverhead — a redispatched task contributes one interva
     expect(overhead.ratio).toBeCloseTo(100 / 1_200);
     expect(overhead.ratio).not.toBeCloseTo(100 / (REDISPATCH_GAP_MS + 1_100));
   });
+
+  it('extends, rather than splits, when a TaskDispatched arrives long after an undispatched ContextAssembled for the same taskId — pinning the assumption the extend path rests on', () => {
+    // The mirror image of the previous test's shape, and the one case
+    // `openOrSplitRound` does *not* protect the way it protects a second
+    // `ContextAssembled` or any event after a round's own `TaskDispatched`
+    // (module doc, function body comment): a round opened by
+    // `ContextAssembled` that has not yet recorded its own `TaskDispatched`
+    // always extends on the next `TaskDispatched` for that `taskId`, however
+    // far away it is. That is deliberate, not an oversight — the previous
+    // test in this file already requires the opposite of a gap threshold (a
+    // 5-second gap between a round's own pair must still merge), and
+    // splitting this transition unconditionally would break every real
+    // round: neither remainder would carry both halves of its own pair. What
+    // actually keeps this safe is outside this module — `SessionRunner.
+    // runTask` (`src/agent/runner.ts`) is the only appender of
+    // `TaskDispatched` for a context-assembling task, and both call sites
+    // invoke it synchronously immediately after their own `ContextAssembled`
+    // append, with no other event for that `taskId` possible in between — so
+    // this shape (a `ContextAssembled` with *no* `TaskDispatched` of its own
+    // for four days) is not reachable through either call site today. This
+    // test exists to pin the consequence if that ever changes: `T1`'s
+    // `ContextAssembled` (300ms, backdated start at -300ms) is extended all
+    // the way to a `TaskDispatched` 4 days later, landing the entire gap
+    // inside `instrumentedSpanMs` — the ratio's own denominator — exactly the
+    // operator-absence contamination this module otherwise keeps out. If
+    // `openOrSplitRound` is ever made to split here instead, this assertion
+    // is what will need to change, deliberately, alongside the module doc.
+    const GAP_MS = 4 * 24 * 60 * 60 * 1000;
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        contextAssembled('T1', 300), // 0 — round opens, never dispatches on
+        // its own; real assembly span backdated to [-300, 0)
+        dispatched('T1'), // GAP_MS — extends the same round rather than
+        // opening a new one, because nothing else has named T1 in between
+        toolCallLogged('T1'), // GAP_MS + 100 — round's own last activity
+        completed('T1'), // GAP_MS + 100 — closes at that last activity
+      ],
+      [0, 0, GAP_MS, GAP_MS + 100, GAP_MS + 100],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // [-300, GAP_MS + 100) = GAP_MS + 400 = 345,600,400ms — one round, not
+    // two, and the whole 4-day gap counted as "instrumented" busy time.
+    expect(overhead.overheadMs).toBe(300);
+    expect(overhead.instrumentedSpanMs).toBe(GAP_MS + 400);
+    expect(overhead.ratio).toBeCloseTo(300 / (GAP_MS + 400));
+    expect(overhead.ratio).not.toBeCloseTo(300 / 400);
+  });
 });
 
 describe("computeHarnessOverhead — closeRound ends a round at its own last activity, not a distant terminal event's timestamp", () => {
