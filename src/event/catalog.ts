@@ -95,10 +95,19 @@ export const sessionUsage = defineEvent(
     durationMs: z.number().nonnegative().nullable(),
     /**
      * Time actually spent waiting on the model API, in milliseconds. The
-     * narrower of the two SDK durations: `durationMs - apiDurationMs` is the
-     * harness's own overhead for the session — the PreToolUse policy gate,
-     * secret substitution, the `ToolCallLogged` append on every tool call —
-     * which is what NFR-3 bounds and T4.2.9 reports (CONV-7).
+     * narrower of the two SDK durations. `durationMs - apiDurationMs` is
+     * *not* harness overhead as NFR-3 means it, whatever an earlier revision
+     * of this comment said: it comes straight off the SDK's own result
+     * message (`durationsOf`, `src/agent/claude-provider.ts`), so it is
+     * *every* non-API second of the session — every `Bash` command, `npm
+     * test` run, `git` operation and file read the agent itself performs.
+     * That is agent tool-execution time, not harness code running, and
+     * NFR-3 does not bound it (`src/state/overhead.ts`'s own module doc).
+     * `computeHarnessOverhead` records it as `nonApiSessionMs` for whoever
+     * wants it, but keeps it out of `overheadMs`/`ratio` and never compares
+     * it against NFR-3's threshold. What T4.2.9 actually reports against
+     * that threshold is `ContextAssembled.durationMs`, below — the one span
+     * this catalog can bracket that is harness code and not agent work.
      */
     apiDurationMs: z.number().nonnegative().nullable(),
   }),

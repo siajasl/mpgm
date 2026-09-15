@@ -86,9 +86,13 @@ import type { RunState } from './kernel-state.js';
  * the denominator paired with the numerator is `mergeIntervals` (used for
  * `observedMs` below, and reused here) applied to only the instrumented
  * rounds' own intervals — one `[min(dispatch, contextAssembled), close)`
- * pair per round that carries a `ContextAssembled`, `close` being that
- * round's terminal event or, for a round abandoned before it ever reaches
- * one, the last timestamp any event named its `taskId` (see below) — not one
+ * pair per round that carries a `ContextAssembled`, `close` always being the
+ * last timestamp any event named that round's `taskId` (see below) — never
+ * the terminal event's own timestamp, whether the round reaches one or is
+ * abandoned before it does: the gap between a round's real last activity and
+ * whatever later event closes it is operator absence, not harness work, and
+ * letting it into `close` would put that absence inside the ratio's own
+ * denominator — not one
  * interval spanning a task's first dispatch to its last terminal, and not
  * every round of an instrumented task, only the ones the numerator actually
  * measured — under the same stated idle rule as `observedMs`: {@link
@@ -203,15 +207,21 @@ import type { RunState } from './kernel-state.js';
  * DESIGN's only mention of NFR-3 is ADR-1, in service of a different
  * decision (TypeScript over Rust): "the harness is I/O-bound around model
  * calls (NFR-3 is trivially met in any mainstream language)". Run against a
- * copy of this repository's own self-hosted `run-1` (13,263 events,
- * 2026-08-27T12:50:35Z to 2026-09-15T20:54:05Z) this function reports
- * `ratio: null` — every `ContextAssembled` event in this codebase is new
- * with this task, and the long-running process behind that log predates it,
- * so nothing yet brackets context assembly for it. `observedMs` alone is
- * already informative: merging that run's settled tasks' own *round*
- * intervals (idle rule at its default, mid-round abandonment splits applied)
- * gives a busy span of ~101,519,318ms, about 1.17 days, inside a run whose
- * raw `startedAt`-to-last-event span is about 19.3 days.
+ * copy of this repository's own self-hosted `run-1` (13,636 events,
+ * 2026-08-27T12:50:35Z to 2026-09-15T22:03:53Z, with `closeRound`'s
+ * lastActivityTs fix above in place) this function reports `ratio: null` —
+ * every `ContextAssembled` event in this codebase is new with this task, and
+ * the long-running process behind that log predates it, so nothing yet
+ * brackets context assembly for it. `coverage` reads `0/25`, not `0/90`: 65
+ * of the 90 otherwise-settled task ids in this log are review-session ids
+ * (`isReviewSessionTaskId`), excluded from the population `ratio` could ever
+ * rest on (see that function's own doc). `observedMs` alone is already
+ * informative: merging that run's settled tasks' own *round* intervals
+ * (idle rule at its default, mid-round abandonment splits applied, every
+ * round ending at its own last recorded activity rather than a possibly-
+ * distant terminal event's timestamp) gives a busy span of 102,651,056ms,
+ * about 1.19 days, inside a run whose raw `startedAt`-to-last-event span is
+ * about 19.4 days.
  *
  * Two coarser shapes were checked against the same real log and rejected,
  * in order. One interval per task spanning its first dispatch to its last
@@ -270,7 +280,14 @@ export interface HarnessOverheadComponents {
   readonly contextAssemblyCount: number;
   /** Settled tasks with at least one round that carries a `ContextAssembled` event. */
   readonly instrumentedTaskCount: number;
-  /** Every settled task this run, instrumented or not — coverage's denominator. */
+  /**
+   * Every settled task this run, instrumented or not, excluding review-
+   * session task ids (`isReviewSessionTaskId`) — coverage's denominator. A
+   * review session can never carry a `ContextAssembled` of its own, so
+   * counting one here would understate `coverage` by a fraction `ratio`
+   * could never have measured regardless (this run's own log: 65 such ids
+   * among 90 otherwise-settled ones).
+   */
   readonly settledTaskCount: number;
   /**
    * Σ `max(SessionUsage.durationMs - SessionUsage.apiDurationMs, 0)` over
@@ -296,10 +313,11 @@ export interface HarnessOverhead {
    * idle rule as `observedMs`, population-matched to `overheadMs` at round
    * granularity — never summed (module doc: summing understates NFR-3's own
    * wall-clock fraction by up to the concurrency factor, because
-   * `assembleContext` is synchronous). A round's interval ends at its
-   * terminal event, or, if the round was abandoned before reaching one, at
-   * the last timestamp any event named its `taskId` (module doc, function
-   * body). Null when no round was instrumented. Computed together with
+   * `assembleContext` is synchronous). A round's interval always ends at the
+   * last timestamp any event named its `taskId`, never at a terminal event's
+   * own timestamp — whether the round reaches one or is abandoned before it
+   * does (module doc, function body). Null when no round was instrumented.
+   * Computed together with
    * `overheadMs` and `ratio` from one value that is null for all three at
    * once (CONV-5, module doc).
    */
@@ -395,6 +413,26 @@ interface SessionUsageOverheadPayload {
 
 interface TaskIdPayload {
   readonly taskId: string;
+}
+
+/**
+ * A review session's own `taskId` — `${task.id}-review` for the first round,
+ * `${task.id}-review-${round}` for every rework round after it
+ * (`implement/loop.ts`'s own `reviewTaskId`). Each is dispatched directly
+ * through `track`, never through the `assembleContext` call that precedes
+ * the *implementing* session, so a review-session id can never carry a
+ * `ContextAssembled` of its own — not today, and not by any narrower fix,
+ * only by `implement/loop.ts` growing a second call site. Settled review-
+ * session ids are excluded from `settledTaskCount`/`instrumentedTaskCount`
+ * (coverage's population) for exactly that reason: counting them dilutes
+ * `coverage` by a fraction that says nothing about what `ratio` could ever
+ * measure. This run's own log has 65 such ids among 90 otherwise-settled
+ * ones — coverage of 0/25, not 0/90. They still contribute their own real
+ * busy time to `observedMs` below, which is not population-matched and is
+ * not limited to what `ratio` measures.
+ */
+function isReviewSessionTaskId(taskId: string): boolean {
+  return /-review(-\d+)?$/.test(taskId);
 }
 
 /**
@@ -577,7 +615,7 @@ export function computeHarnessOverhead(
     return open;
   };
 
-  const closeRound = (taskId: string, ts: string): void => {
+  const closeRound = (taskId: string, _ts: string): void => {
     const open = openRounds.get(taskId);
     if (open === undefined) {
       // No round open for this taskId: `BudgetExceeded` fires twice in
@@ -587,7 +625,31 @@ export function computeHarnessOverhead(
       // moment earlier. This is the second case; nothing to close.
       return;
     }
-    pushRound(taskId, open, Date.parse(ts));
+    // At `open.lastActivityTs`, not the terminal event's own timestamp — the
+    // same rule `openOrSplitRound`'s own split path already applies a few
+    // lines above, for the same reason. A round can be abandoned without
+    // ever reaching a terminal event of its own (the process dies mid-
+    // session) and later closed by a `TaskBlocked` a subsequent invocation
+    // appends *before* it does anything else for this task — the pre-
+    // `catchUp` `stop()` in `implement/loop.ts`, appended when that later
+    // invocation finds the run paused or killed, with no `ContextAssembled`
+    // or `TaskDispatched` between the two to trigger the split path above.
+    // Closing at that `TaskBlocked`'s own timestamp would put the entire gap
+    // between the two invocations — hours or days of operator absence —
+    // inside this round's interval, which lands in `instrumentedSpanMs`
+    // whenever the abandoned round happened to carry a `ContextAssembled`:
+    // the ratio's own denominator, not merely `observedMs`. `lastActivityTs`
+    // is exactly the last timestamp any event actually named this `taskId`
+    // (`touch`, above), so closing there keeps the gap between two
+    // intervals, where `idleGapMs` can act on it, the same discipline as the
+    // split path. This does cost a small amount of real time for a round
+    // that closes normally — whatever the harness itself does between a
+    // session's own `SessionUsage` and the terminal event that follows it
+    // (parsing output, merging, running checks) is no longer counted — but
+    // that undercounts the denominator, which only ever makes `ratio`
+    // *larger*, never hides real overhead the way crediting operator
+    // absence to the denominator does.
+    pushRound(taskId, open, open.lastActivityTs);
     openRounds.delete(taskId);
   };
 
@@ -669,8 +731,22 @@ export function computeHarnessOverhead(
       continue;
     }
 
-    settledTaskCount += 1;
+    // Real busy time either way — a review session is the harness doing
+    // real work, and `observedMs` is not population-matched to `ratio` — so
+    // its intervals go into the run's own busy span regardless of what
+    // follows.
     settledIntervals.push(...rounds.map((round) => round.interval));
+
+    if (isReviewSessionTaskId(task.taskId)) {
+      // Excluded from `settledTaskCount`/`instrumentedTaskCount` — and so
+      // from `coverage` — because a review session can never carry a
+      // `ContextAssembled` of its own (see `isReviewSessionTaskId`'s own
+      // doc). Counting it would understate coverage by a fraction that has
+      // nothing to do with what `ratio` measures.
+      continue;
+    }
+
+    settledTaskCount += 1;
 
     // Population-matched at *round* granularity, not just task granularity:
     // only the rounds that themselves carry a `ContextAssembled` go into

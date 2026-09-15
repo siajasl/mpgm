@@ -619,15 +619,23 @@ describe('status --metrics', () => {
     const writes: string[] = [];
     const db = openDatabase(join(root, '.mpgm', 'state.db'));
     try {
-      // A fixed clock, one second per event: real numbers below (`0ms`) must
-      // be exact, not merely non-null, and a wall clock would make this test
+      // A fixed clock, explicit offsets: real numbers below (`0ms`) must be
+      // exact, not merely non-null, and a wall clock would make this test
       // flaky by however long the write to sqlite happens to take.
-      let seconds = 0;
+      // `ToolCallLogged` and `TaskCompleted` below deliberately share an
+      // offset — `closeRound` (T4.2.9) ends a round's busy interval at its
+      // own last recorded activity, not the terminal event's own timestamp,
+      // so T2's last real activity has to land at the same instant its
+      // terminal event does for T2's busy span to read as a clean [4s, 6s).
+      const offsetsSeconds = [0, 1, 2, 3, 4, 5, 6, 6];
+      let i = 0;
       const log = EventLog.attach(db, {
         registry: kernelRegistry(),
         clock: () => {
-          const ts = new Date(2026_01_01_00_00_00 + seconds * 1000).toISOString();
-          seconds += 1;
+          const offset = offsetsSeconds[i];
+          if (offset === undefined) throw new Error('offsetsSeconds shorter than inputs');
+          const ts = new Date(2026_01_01_00_00_00 + offset * 1000).toISOString();
+          i += 1;
           return ts;
         },
       });
@@ -659,6 +667,21 @@ describe('status --metrics', () => {
             costUsd: 0.25,
             durationMs: 1000,
             apiDurationMs: 800,
+          },
+        },
+        // T2's own last recorded activity before it completes:
+        // `computeHarnessOverhead`'s `closeRound` ends a round's busy
+        // interval there, not at the terminal event's own timestamp (T4.2.9),
+        // so this is what puts T2's span at [4s, 6s) rather than [4s, 5s).
+        {
+          runId: 'r1',
+          type: 'ToolCallLogged',
+          payload: {
+            taskId: 'T2',
+            tool: 'Bash',
+            decision: 'allowed',
+            detail: '',
+            outputBlob: null,
           },
         },
         {
