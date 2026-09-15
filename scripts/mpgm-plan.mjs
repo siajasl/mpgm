@@ -655,6 +655,287 @@ export const MPGM_PLAN = {
             },
           ],
         },
+        {
+          id: 'M4.3',
+          title: 'The Test phase runs',
+          verification:
+            'A Test phase run over mpgm itself, which is what M3.2 named and never ' +
+            'performed: a requirement-coverage report over a Scope artifact that ' +
+            'exists, an adversarial suite that catches a planted defect, that defect ' +
+            'filed as a Defect artifact and round-tripped through route, fix and ' +
+            're-test, and a Test gate presented over what was found rather than over ' +
+            'an empty set.',
+          validatesRisk: null,
+          tasks: [
+            {
+              id: 'T4.3.1',
+              title: 'mpgm has no Scope artifact, so its coverage report is empty',
+              completionCriteria: [
+                "mpgm's own requirements exist as a scope artifact. " +
+                  'artifacts/ holds two files today — artifacts/demo/brief.md ' +
+                  'and artifacts/plan/plan.v1.md — and the requirement list a ' +
+                  'coverage report is computed over is assembled from ' +
+                  'artifacts stored under the scope schema ' +
+                  '(src/cli/commands.ts). REQUIREMENTS.md is hand-authored ' +
+                  'from the P1 bootstrap and is not one, so ' +
+                  'requirementCoverageReport (src/test/nfr.ts) returns zero ' +
+                  'rows over this repository.',
+                'The gate consequence is stated, because it is the reason ' +
+                  'this task comes first. The Test gate REQUIREMENTS states ' +
+                  'reads all Must-have requirements verified; over an empty ' +
+                  'requirement set that is vacuously true, so a Test phase ' +
+                  'run today would report 0 of 0 verified and a met gate. ' +
+                  'That is the no-op reading T4.2.2b was written to refuse, ' +
+                  'one milestone later.',
+                'The artifact is derived from REQUIREMENTS.md rather than ' +
+                  'invented beside it, and the change says what it did with ' +
+                  'anything that would not fit. Ids are carried across ' +
+                  'unchanged — ORC-1, TST-5, OBS-4 — because every trace ' +
+                  'claim in three foundation documents, the commit trailers ' +
+                  'and the artifact frontmatter already spells them that way ' +
+                  '(ART-2). An id that changes spelling here silently ' +
+                  'unverifies whatever cited it.',
+                'The quantified thresholds SCP-1 requires are carried or ' +
+                  'their absence is reported per requirement. NfrRequirement ' +
+                  '(src/test/nfr.ts) needs a threshold to judge a run ' +
+                  'against, and nfrCoverage reports not-run and ' +
+                  'below-threshold as different problems; a requirement ' +
+                  'arriving with no threshold must read as one the suite ' +
+                  'cannot judge rather than one it passed.',
+                'A test asserts the coverage report over this artifact names ' +
+                  'both verified and unverified requirements — not that it ' +
+                  'returns rows. A report of n rows all reading unverified is ' +
+                  'as uninformative as zero rows and passes any test that ' +
+                  'counts them (CONV-6).',
+              ],
+              dependsOn: [],
+              tracesTo: ['SCP-1', 'TST-2'],
+            },
+            {
+              id: 'T4.3.2',
+              title: "A phase's work can be code, and the Test phase says which of it is",
+              completionCriteria: [
+                'The Test phase can execute the suites M3.2 delivered. It ' +
+                  'cannot today: every step a playbook expands to is a ' +
+                  'session or a panel tally (GraphStep is SessionStep | ' +
+                  'TallyStep, src/playbook/graph.ts), so nothing a playbook ' +
+                  'declares can call runAdversarialSuite, nodeTestExecutor, ' +
+                  'adversarialVerdict (src/test/adversarial.ts), runNfrSuite, ' +
+                  'nfrCoverage or requirementCoverageReport ' +
+                  '(src/test/nfr.ts). An agent session can emit an ' +
+                  'AdversarialSuite; nothing can then run it.',
+                'The change picks between a step kind that invokes a bound ' +
+                  'capability contract and a verb that drives the phase as ' +
+                  'mpgm implement already does, and says which and why. Both ' +
+                  'exist as precedent in this codebase and they are not ' +
+                  'equivalent: a step kind keeps the phase declarative and ' +
+                  'its evidence inside GateEvidence, a verb keeps the ' +
+                  'playbook mechanism untouched and puts the sequencing in ' +
+                  'code.',
+                'test.nfr is bound to something that runs. runNfrSuite takes ' +
+                  'an injected callback — typically invoke on a bound ' +
+                  'contract — and testNfrContract (src/test/nfr.ts) is a ' +
+                  'ContractSpec with no provider, no binding and no ' +
+                  'invocation anywhere outside the export list in ' +
+                  'src/index.ts. contracts/test.nfr.md is prose. Without a ' +
+                  'provider the NFR half of the phase has no executor at all.',
+                'The test runs a real suite and a real NFR run end to end, ' +
+                  'not a stubbed executor standing in for both. A provider ' +
+                  'that returns a fixed passing result satisfies any test ' +
+                  'asserting the phase completed, and is the shape that let ' +
+                  'a defect round-trip be accepted as an in-process unit test ' +
+                  'in T3.2.4 (CONV-6).',
+                'Where the adversarial suite executes is stated. ' +
+                  'nodeTestExecutor writes agent-authored JavaScript into a ' +
+                  'project directory and runs node --test there, and ' +
+                  'src/test/adversarial.ts says plainly that the subject ' +
+                  'restriction is not a confinement boundary and that a case ' +
+                  'reaches whatever the harness reaches. Running it over this ' +
+                  'repository is a decision, not a default.',
+              ],
+              dependsOn: [],
+              tracesTo: ['TST-1', 'TST-3', 'EXT-3'],
+            },
+            {
+              id: 'T4.3.3',
+              title: 'The Test phase has a playbook, schemas and a gate',
+              completionCriteria: [
+                'phases/test.yaml exists and mpgm run test executes it. The ' +
+                  'phase itself needs no code registration: ' +
+                  'PlaybookRegistry.fromDirectory scans phases/, the run verb ' +
+                  'looks the phase up by name (src/cli/commands.ts), and a ' +
+                  "playbook's phase field is a free identifier — no enum, no " +
+                  'phase-ordering constraint. phases/ holds definition, ' +
+                  'scope, design and plan and nothing else.',
+                'Every artifact the playbook declares is registered as an ' +
+                  'artifact schema, and the change says which were not. ' +
+                  'adversarial-suite is in projectOutputSchemas ' +
+                  '(src/schemas.ts) and not in projectArtifactSchemas, and ' +
+                  'ArtifactStore validates at write while the playbook loader ' +
+                  'never consults the registry — so a playbook declaring it ' +
+                  'today loads and then fails at write. ' +
+                  'RequirementCoverageReport (src/test/nfr.ts) is a ' +
+                  'TypeScript interface and not a zod schema at all, so it is ' +
+                  'in neither registry.',
+                'defect is not among them and no step declares one. ' +
+                  'src/schemas.ts states why it is an artifact schema and ' +
+                  'deliberately not an output schema: a Defect is built by ' +
+                  'the round trip in src/test/defect.ts from evidence and a ' +
+                  'routing decision, not asserted whole by a session. A step ' +
+                  'asking a session to emit a Defect would make TST-5 a ' +
+                  'matter of what an agent chose to say.',
+                'The gate reads the defects the phase filed, or the change ' +
+                  'states that it cannot and what that costs. Two facts ' +
+                  'combine here: none of the four criterion kinds ' +
+                  '(artifact-exists, agent-assertion, vote-carried, ' +
+                  'traces-resolve — src/playbook/definition.ts) reads a ' +
+                  'Defect artifact or a coverage figure, and GateEvidence ' +
+                  '(src/phase/runner.ts) is filled only from step.produces, ' +
+                  'so defects written outside that mechanism (T4.3.4) are ' +
+                  'invisible even to artifact-exists. A criterion kind that ' +
+                  'reads them has TraceIndexStore.coverage ' +
+                  '(src/trace/index-store.ts) already available for the ' +
+                  'coverage half.',
+                'An agent-assertion is not a free fallback, and the change ' +
+                  'does not present it as one. It requires a boolean field on ' +
+                  "a named task's registered output schema (src/gate/" +
+                  'manager.ts treats an absent or non-boolean field as ' +
+                  'unmet), and no Test-phase output schema has one — ' +
+                  'adversarial-suite is subject, summary and cases. Resting ' +
+                  'the gate there means a new output schema and a role to ' +
+                  'emit it, which is a role-freeze edit (see T4.3.4).',
+                'The gate is exercised in both directions. A test presents it ' +
+                  'over a run with an open high-severity defect and over one ' +
+                  'without, and the two decisions differ. A gate asserted ' +
+                  'only on the clean case passes while it is incapable of ' +
+                  'refusing (CONV-6).',
+              ],
+              dependsOn: ['T4.3.2'],
+              tracesTo: ['TST-1', 'TST-2', 'EXT-3'],
+            },
+            {
+              id: 'T4.3.4',
+              title: 'A defect is filed by the phase, not by a test',
+              completionCriteria: [
+                'A failing adversarial case and a below-threshold NFR row ' +
+                  'each become a Defect artifact on disk. src/test/defect.ts ' +
+                  'names these two as the producers already in this codebase, ' +
+                  'and fileDefect has no call site outside the export list in ' +
+                  'src/index.ts today.',
+                'The adversarial producer is completed before it can file ' +
+                  'anything, and the change does that work rather than ' +
+                  'assuming it done. fileDefect requires tracesTo non-empty — ' +
+                  'TST-5 files a defect traced to requirements, and ' +
+                  'src/test/defect.ts explains that a defect naming no ' +
+                  'requirement gives the phase it is routed to nothing to ' +
+                  'check the fix against. No requirement id exists anywhere ' +
+                  'in the adversarial substrate: not on adversarialCaseSchema ' +
+                  '(id, kind, about, defect, body), not on AdversarialSuite, ' +
+                  'not on AdversarialCaseResult, and roles/' +
+                  'adversarial-tester.md never asks for one. The NFR ' +
+                  'producer has it — NfrCoverageRow carries the requirement ' +
+                  'id — and the adversarial one does not.',
+                'Editing that role means editing roles/freeze.json in the ' +
+                  'same commit, with who approved it and why. ' +
+                  'adversarial-tester is carried in that manifest by digest ' +
+                  'and a role that moves without it fails CI. This is stated ' +
+                  'because the work above forces the edit, and because any ' +
+                  'new role this task introduces needs the same.',
+                'severity, title and an evidence detail that is not empty are ' +
+                  'supplied rather than assumed. Neither producer carries a ' +
+                  'severity or a title, and both can hand back an empty ' +
+                  'detail — AdversarialExecution allows it explicitly and ' +
+                  "nfrRunOutput's evidence defaults to the empty string — " +
+                  'while defectEvidenceSchema requires a non-empty one. A ' +
+                  'filing path that passes those through throws instead of ' +
+                  'filing, on exactly the runs that found something.',
+                'The defects are written outside the playbook produces ' +
+                  'mechanism, under artifacts/defect, and the change says ' +
+                  'where that code lives. A step writes exactly one declared ' +
+                  'artifact at one fixed basePath (src/phase/runner.ts) and a ' +
+                  "fan-out's workers get no produces at all — only its " +
+                  'collect step does (src/playbook/graph.ts) — so seven ' +
+                  'failures cannot be seven declared artifacts, and seven ' +
+                  'versions of one would be collapsed to one by latestPerId ' +
+                  '(src/state/escaped-defect-rate.ts). The path is not free ' +
+                  'either: mpgm status --rates lists artifacts/defect, so a ' +
+                  'defect written elsewhere is invisible to the rate.',
+                'The round trip is driven by the phase rather than by a test ' +
+                  'asserting it. routeDefect, recordFix and retestDefect ' +
+                  'already refuse any call that skips an edge, so what is ' +
+                  'missing is a caller: the change says which component ' +
+                  'routes a filed defect and on what evidence — ' +
+                  'src/test/defect.ts leaves that judgement to a person or an ' +
+                  'agent under ORC-1, so the answer is a role or an operator ' +
+                  'prompt and not an inference from the evidence — and a test ' +
+                  'drives a planted failure from filed to verified through ' +
+                  'the real artifact store, reading each version back off ' +
+                  'disk.',
+                'What this does and does not do to the escaped-defect rate is ' +
+                  'stated correctly. Filing a defect during a Test run does ' +
+                  'not make the rate read a figure: it divides by the ' +
+                  "run's own ChangeMerged events, and a Test phase run emits " +
+                  'none, so the rate stays null for that run. The rate ' +
+                  'becomes readable for a run that both merges and files, ' +
+                  'and it needs the artifact dating T4.2.7 delivers. A ' +
+                  'criterion claiming otherwise would be met with a ' +
+                  'hand-built event fixture.',
+              ],
+              dependsOn: ['T4.3.3'],
+              tracesTo: ['TST-5', 'ORC-1', 'TST-4'],
+            },
+            {
+              id: 'T4.3.5',
+              title: "M3.2's verification, run",
+              completionCriteria: [
+                'A demo under scripts/demo/ runs the Test phase over a real ' +
+                  'subject and shows the two legs of M3.2 that never ran: a ' +
+                  'requirement-coverage report, and one adversarially found ' +
+                  'defect round-tripped to a fix. M3.2 has three legs and the ' +
+                  'third — the sample service ready for P4 — did happen; P4 ' +
+                  'was built on it. T3.2.4 was accepted on the criterion that ' +
+                  'a defect round-trips through fix and re-test, which an ' +
+                  'in-process unit test satisfies, and the milestone closed ' +
+                  'on its tasks rather than on the run.',
+                'The demo is operator-run rather than in CI, and the change ' +
+                  'knows what marks it so. Nothing in package.json annotates ' +
+                  'a demo as operator-run: every one is listed identically, ' +
+                  'and the only marker is absence from the check script and ' +
+                  'from the CI workflow. This demo makes real model calls, ' +
+                  'which puts it with demo:agent, demo:definition, ' +
+                  'demo:scope, demo:design and demo:plan — a verification ' +
+                  'that silently skipped itself would be worse than none.',
+                'The defect it round-trips is planted, and the demo fails if ' +
+                  'the adversarial suite does not catch it. A demo reporting ' +
+                  'success because the suite found nothing proves the phase ' +
+                  'ran, not that it works, which is the whole difference ' +
+                  'between M3.2 being verified and M3.2 having tasks that ' +
+                  'closed.',
+                'The demo asserts the artifacts on disk and the event log ' +
+                  'after the run, never a session transcript: a Defect ' +
+                  'artifact at verified, a coverage report naming verified ' +
+                  'and unverified requirements, and the gate decision in the ' +
+                  'log. Artifacts are the only interface between phases and ' +
+                  'gate truth lives in the log, so a demo reading a ' +
+                  'transcript asserts against the one thing DESIGN says is ' +
+                  'not the interface.',
+                'The subject the suite attacks is stated and is not this ' +
+                  'working tree by default. nodeTestExecutor runs ' +
+                  'agent-authored JavaScript with node --test in the project ' +
+                  'directory it is given, and the subject restriction is ' +
+                  'documented as not being a confinement boundary.',
+                'The change reports what the run found about M3.2 rather than ' +
+                  'quietly closing it. If the phase cannot meet the gate ' +
+                  'REQUIREMENTS states — all Must-have requirements verified, ' +
+                  'no open critical or high defects, NFR results within the ' +
+                  'Scope thresholds — that is the finding, reported rather ' +
+                  'than worked around by weakening the gate.',
+              ],
+              dependsOn: ['T4.3.1', 'T4.3.4'],
+              tracesTo: ['TST-1', 'TST-2', 'TST-5'],
+            },
+          ],
+        },
       ],
     },
     {
