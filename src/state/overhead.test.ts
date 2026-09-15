@@ -523,6 +523,50 @@ describe('computeHarnessOverhead — a redispatched task contributes one interva
     expect(overhead.observedMs).toBe(31_000 + 125_000);
     expect(overhead.observedMs).not.toBe(31_000 + REDISPATCH_GAP_MS + 125_000);
   });
+
+  it('splits a round abandoned before its own TaskDispatched at its own last activity, not at the redispatch that follows it', () => {
+    // The mirror image of the previous test, and the case that fix left
+    // open: a round opened by `ContextAssembled` that never reaches its own
+    // `TaskDispatched` at all — the process dies (or `track` returns blocked
+    // without dispatching) in the window between the two. The old rule only
+    // split on `open.dispatched`, so a round with no dispatch of its own
+    // stayed open across the next invocation's `ContextAssembled` for the
+    // same taskId, and the entire gap between invocations landed inside
+    // whatever round eventually closed — this time inside
+    // `instrumentedSpanMs`, the ratio's own denominator, one step earlier
+    // than the case above. Round 1: a lone `ContextAssembled` at 0, nothing
+    // else ever names T1 again for it — closes at its own timestamp, 0ms
+    // long. Round 2 opens 3 days later with its own `ContextAssembled`,
+    // dispatches 100ms after that, and completes 1000ms after the dispatch.
+    const REDISPATCH_GAP_MS = 3 * 24 * 60 * 60 * 1000;
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        contextAssembled('T1', 40), // 0 — round 1 opens, never dispatches
+        contextAssembled('T1', 60), // 0 + REDISPATCH_GAP_MS — round 1 abandoned,
+        // this is round 2's own opening ContextAssembled, not an extension
+        dispatched('T1'), // 0 + REDISPATCH_GAP_MS + 100 — round 2's own dispatch
+        completed('T1'), // 0 + REDISPATCH_GAP_MS + 1_100 — round 2 closes
+      ],
+      [0, 0, REDISPATCH_GAP_MS, REDISPATCH_GAP_MS + 100, REDISPATCH_GAP_MS + 1_100],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Round 1: [0, 0) — 0ms, closed at its own last activity (its own
+    // ContextAssembled, nothing else ever touched it) rather than 3 days
+    // later. Round 2: [REDISPATCH_GAP_MS, REDISPATCH_GAP_MS + 1_100) —
+    // 1_100ms. Both rounds are instrumented, so instrumentedSpanMs is their
+    // sum, 1_100ms — not the 3-day gap the unfixed (dispatched-only) split
+    // rule would have folded into a single round's span.
+    expect(overhead.overheadMs).toBe(100);
+    expect(overhead.instrumentedSpanMs).toBe(1_100);
+    expect(overhead.instrumentedSpanMs).not.toBe(REDISPATCH_GAP_MS + 1_100);
+    expect(overhead.ratio).toBeCloseTo(100 / 1_100);
+    expect(overhead.ratio).not.toBeCloseTo(100 / (REDISPATCH_GAP_MS + 1_100));
+  });
 });
 
 describe('computeHarnessOverhead — overheadMs, instrumentedSpanMs and ratio are null together (CONV-5)', () => {
