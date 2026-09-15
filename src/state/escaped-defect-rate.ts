@@ -1,6 +1,6 @@
 import type { Artifact } from '../artifact/store.js';
 import type { StoredEvent } from '../event/envelope.js';
-import type { Defect } from '../test/defect.js';
+import { defectSchema, type Defect } from '../test/defect.js';
 
 /**
  * The escaped-defect rate, per run (OBS-4, T4.2.2b).
@@ -56,6 +56,35 @@ import type { Defect } from '../test/defect.js';
  * denominator. `rate` is null in either case, the same reading `null`
  * already carries elsewhere in this codebase — nothing decided or measured
  * yet — rather than the `0%` that would read as a clean run.
+ *
+ * `defects` is every artifact *version* the caller's `ArtifactStore.list`
+ * returned, and a Defect artifact accrues one version per lifecycle
+ * transition — `fileDefect` writes v1, `routeDefect` v2, `recordFix` v3,
+ * `retestDefect` v4. Counting each version as its own defect would report a
+ * single verified defect as `filed: 4`, and could credit the same escape to
+ * `escaped` up to three times over (v2 routed, v3 fix-pending and v4 verified
+ * all name the same task). This module reduces `defects` to one record per
+ * artifact `id` — the highest `version` — before counting anything, so every
+ * figure below is over defects, never over the versions a defect happened to
+ * pass through. `filed` and `rate`'s null test are computed from that same
+ * reduced, schema-validated set, not from `defects.length` — an artifact
+ * under `artifacts/defect/` that is not a Defect (wrong `schema`, or one that
+ * fails {@link defectSchema}) is excluded from both, exactly as it is
+ * excluded from `escaped` and `unrouted`, rather than inflating `filed` while
+ * every other figure skips it.
+ *
+ * A routed defect whose named task has merged but for which no
+ * `TaskCompleted` names the artifact cannot be dated at all — neither
+ * escaped nor a fix, because "precedes" has nothing to compare. Dropping it
+ * silently would let it vanish into a confident-looking rate; instead it is
+ * reported as {@link EscapedDefectRate.undated}, on the run that merged the
+ * task, the same way `unrouted` surfaces defects this module can place on
+ * neither side of the division rather than absorbing them into it. In this
+ * repository's own log `undated` reads as "every routed defect" today:
+ * `SessionRunner` (`src/agent/runner.ts`), the only production emitter of
+ * `TaskCompleted` on the task path, emits `artifactRefs: []`, so nothing
+ * currently populates the one field this dating depends on — the
+ * escaped-defect rate is measurable only once something does.
  */
 export interface EscapedDefectRate {
   readonly runId: string;
@@ -65,13 +94,24 @@ export interface EscapedDefectRate {
   readonly escaped: number;
   /** `escaped / merged`. Null when nothing has merged yet, or nothing has ever been filed. */
   readonly rate: number | null;
-  /** Total Defect artifacts read, any run, any status — zero here is what makes a null `rate` read as "unfiled" rather than "clean". */
+  /**
+   * Distinct Defect artifacts read, any run, any status — one entry per
+   * artifact `id` (its latest version), not per version on disk — zero here
+   * is what makes a null `rate` read as "unfiled" rather than "clean".
+   */
   readonly filed: number;
   /**
    * Defects attributed to this run that name no task — still `open`, or
    * routed to `design` — and so cannot be placed on either side of the rate.
    */
   readonly unrouted: number;
+  /**
+   * Defects attributed to this run (by the merged task their route names)
+   * whose named task merged but which no `TaskCompleted` names — the only
+   * dating this module has (module doc), and so a defect this module could
+   * not place on either side of the rate rather than one it decided against.
+   */
+  readonly undated: number;
 }
 
 interface ArtifactRefLike {
@@ -100,6 +140,59 @@ function namedTask(defect: Defect): string | undefined {
 /** Whether `ref` — one entry of a `TaskCompleted.artifactRefs` — names `artifact`. */
 function refersTo(ref: ArtifactRefLike, artifact: Artifact): boolean {
   return ref.id === artifact.id && ref.version === artifact.version;
+}
+
+/** An artifact schema-validated as a {@link Defect} — the pairing this module
+ * counts everything through, so a non-defect or malformed artifact under
+ * `artifacts/defect/` cannot reach `filed`, `escaped` or `unrouted` any way
+ * an artifact that does belong there can (CONV-5): there is no runtime flag
+ * to check and no cast to trust, only artifacts that already are one. */
+interface DefectRecord {
+  readonly artifact: Artifact;
+  readonly defect: Defect;
+}
+
+/**
+ * `artifacts` narrowed to the ones that parse as a {@link Defect}, paired
+ * with their parsed data. An artifact whose `schema` is not `'defect'`, or
+ * whose `data` fails {@link defectSchema}, is excluded here rather than
+ * merely skipped inside the counting loop — so nothing downstream can count
+ * it by accident the way `defects.length` once did.
+ */
+function parseDefects(artifacts: readonly Artifact[]): readonly DefectRecord[] {
+  const records: DefectRecord[] = [];
+  for (const artifact of artifacts) {
+    if (artifact.schema !== 'defect') {
+      continue;
+    }
+    const parsed = defectSchema.safeParse(artifact.data);
+    if (!parsed.success) {
+      continue;
+    }
+    records.push({ artifact, defect: parsed.data });
+  }
+  return records;
+}
+
+/**
+ * `records` reduced to the highest `version` per artifact `id`.
+ *
+ * A Defect artifact gains one version per lifecycle transition — filing,
+ * routing, a recorded fix, a re-test verdict all write a successor rather
+ * than editing in place (ART-1) — so `ArtifactStore.list` hands back every
+ * version a single defect ever held. The highest version is the defect's
+ * current state; the rest are history the lifecycle already folded forward,
+ * and counting them again would count one defect as several.
+ */
+function latestPerId(records: readonly DefectRecord[]): readonly DefectRecord[] {
+  const latest = new Map<string, DefectRecord>();
+  for (const record of records) {
+    const current = latest.get(record.artifact.id);
+    if (current === undefined || record.artifact.version > current.artifact.version) {
+      latest.set(record.artifact.id, record);
+    }
+  }
+  return [...latest.values()];
 }
 
 /**
@@ -131,14 +224,13 @@ export function computeEscapedDefectRate(
 
   const merged = changeMerged.filter((event) => event.runId === runId).length;
 
+  const records = latestPerId(parseDefects(defects));
+
   let escaped = 0;
   let unrouted = 0;
+  let undated = 0;
 
-  for (const artifact of defects) {
-    if (artifact.schema !== 'defect') {
-      continue;
-    }
-    const defect = artifact.data as Defect;
+  for (const { artifact, defect } of records) {
     const taskId = namedTask(defect);
 
     if (taskId === undefined) {
@@ -160,7 +252,11 @@ export function computeEscapedDefectRate(
     );
     if (filed === undefined) {
       // No TaskCompleted names this artifact — the only dating this module
-      // has (module doc) — so neither side of "precedes" is known.
+      // has (module doc) — so neither side of "precedes" is known. Reported
+      // rather than dropped: see `undated` on the interface.
+      if (merge.runId === runId) {
+        undated += 1;
+      }
       continue;
     }
 
@@ -179,8 +275,9 @@ export function computeEscapedDefectRate(
     runId,
     merged,
     escaped,
-    rate: merged === 0 || defects.length === 0 ? null : escaped / merged,
-    filed: defects.length,
+    rate: merged === 0 || records.length === 0 ? null : escaped / merged,
+    filed: records.length,
     unrouted,
+    undated,
   };
 }

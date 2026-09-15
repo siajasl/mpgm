@@ -4,7 +4,7 @@ import { MEMORY } from '../database.js';
 import type { EventInput, StoredEvent } from '../event/envelope.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
-import { fileDefect, routeDefect } from '../test/defect.js';
+import { fileDefect, recordFix, retestDefect, routeDefect } from '../test/defect.js';
 import { computeEscapedDefectRate } from './escaped-defect-rate.js';
 
 /**
@@ -81,18 +81,23 @@ const provenance = (runId: string) => ({
   runId,
 });
 
-function defectArtifact(id: string, foundByRunId: string, data: unknown): Artifact {
+function defectArtifact(
+  id: string,
+  foundByRunId: string,
+  data: unknown,
+  version = 1,
+): Artifact {
   return {
     id,
-    version: 1,
+    version,
     schema: 'defect',
     schemaVersion: 1,
     tracesTo: [],
     producedBy: provenance(foundByRunId),
-    supersedes: null,
+    supersedes: version > 1 ? version - 1 : null,
     egress: undefined,
     data,
-    path: `artifacts/defect/${id}.v1.md`,
+    path: `artifacts/defect/${id}.v${String(version)}.md`,
   };
 }
 
@@ -247,5 +252,129 @@ describe('computeEscapedDefectRate — no defects filed reads as unmeasured, not
 
     expect(rate.merged).toBe(0);
     expect(rate.rate).toBeNull();
+  });
+});
+
+describe('computeEscapedDefectRate — one defect, however many versions its lifecycle wrote', () => {
+  it('counts a defect once, not once per version, when it has only been routed', () => {
+    // Reproduces the review finding directly: v1 (open) and v2 (routed) of
+    // the same artifact id, both handed in the way `ArtifactStore.list`
+    // hands in every version it finds on disk.
+    const open = openDefect('zero-split-refused');
+    const v1 = defectArtifact('d7', 'r1', open, 1);
+    const routed = routeDefect(
+      open,
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug',
+    );
+    const v2 = defectArtifact('d7', 'r1', routed, 2);
+
+    const events = logWith([runStarted('r1'), changeMerged('r1', 'T-unrelated')]);
+
+    const rate = computeEscapedDefectRate('r1', events, [v1, v2]);
+
+    expect(rate.filed).toBe(1);
+    expect(rate.unrouted).toBe(0);
+  });
+
+  it('counts one escape, not three, when file/route/fix/verify each wrote a version', () => {
+    // The reviewer's own repro: drive one defect through the whole round
+    // trip and hand in every version `ArtifactStore.list` would return.
+    const v1Data = openDefect('zero-split-refused');
+    const v2Data = routeDefect(
+      v1Data,
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug',
+    );
+    const v3Data = recordFix(v2Data, { ref: 'deadbeef', summary: 'refuse a zero split' });
+    const v4Data = retestDefect(v3Data, {
+      passed: true,
+      detail: 're-ran the adversarial case',
+    });
+
+    const v1 = defectArtifact('d8', 'r1', v1Data, 1);
+    const v2 = defectArtifact('d8', 'r1', v2Data, 2);
+    const v3 = defectArtifact('d8', 'r1', v3Data, 3);
+    const v4 = defectArtifact('d8', 'r1', v4Data, 4);
+
+    const events = logWith([
+      runStarted('r1'),
+      changeMerged('r1', 'T-old'), // T-old already merged...
+      filedBy('r1', 'test-task', v4), // ...before the (latest version of the) defect was filed
+    ]);
+
+    const rate = computeEscapedDefectRate('r1', events, [v1, v2, v3, v4]);
+
+    expect(rate.filed).toBe(1);
+    expect(rate.escaped).toBe(1);
+    expect(rate.rate).toBe(1);
+    expect(rate.unrouted).toBe(0);
+  });
+
+  it('does not count an artifact under the defect path whose schema is not defect', () => {
+    const stray: Artifact = {
+      id: 'not-a-defect',
+      version: 1,
+      schema: 'brief',
+      schemaVersion: 1,
+      tracesTo: [],
+      producedBy: provenance('r1'),
+      supersedes: null,
+      egress: undefined,
+      data: { anything: 'at all' },
+      path: 'artifacts/defect/not-a-defect.v1.md',
+    };
+
+    const events = logWith([runStarted('r1'), changeMerged('r1', 'T1')]);
+
+    const rate = computeEscapedDefectRate('r1', events, [stray]);
+
+    // One artifact was handed in, but none of it is a Defect: `filed` stays
+    // 0 and `rate` reads as unmeasured, not a clean `0%` (CONV-6).
+    expect(rate.filed).toBe(0);
+    expect(rate.rate).toBeNull();
+  });
+});
+
+describe('computeEscapedDefectRate — a routed defect that cannot be dated', () => {
+  it('reports a routed defect whose named task merged but which no TaskCompleted names as undated, not silently dropped', () => {
+    const routed = routeDefect(
+      openDefect('zero-split-refused'),
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug',
+    );
+    const artifact = defectArtifact('d9', 'r1', routed);
+
+    // T-old merges, but nothing ever names this artifact in a TaskCompleted
+    // — the only dating this module has (module doc).
+    const events = logWith([runStarted('r1'), changeMerged('r1', 'T-old')]);
+
+    const rate = computeEscapedDefectRate('r1', events, [artifact]);
+
+    expect(rate.undated).toBe(1);
+    expect(rate.escaped).toBe(0);
+    expect(rate.unrouted).toBe(0);
+  });
+
+  it('attributes the undated defect to the run that merged the named task, not the run that found it', () => {
+    const routed = routeDefect(
+      openDefect('zero-split-refused'),
+      { to: 'implement', taskId: 'T-old' },
+      'implementation bug',
+    );
+    const artifact = defectArtifact('d10', 'r-found', routed);
+
+    const events = logWith([
+      runStarted('r-old'),
+      changeMerged('r-old', 'T-old'),
+      runStarted('r-found'),
+      // Nothing ever files a TaskCompleted naming this artifact.
+    ]);
+
+    const oldRun = computeEscapedDefectRate('r-old', events, [artifact]);
+    const foundRun = computeEscapedDefectRate('r-found', events, [artifact]);
+
+    expect(oldRun.undated).toBe(1);
+    expect(foundRun.undated).toBe(0);
   });
 });
