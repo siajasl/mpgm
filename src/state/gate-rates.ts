@@ -1,8 +1,14 @@
+import type { Artifact } from '../artifact/store.js';
 import type { StoredEvent } from '../event/envelope.js';
 import type { MergeRefusal } from '../implement/merge.js';
+import {
+  computeEscapedDefectRate,
+  type EscapedDefectRate,
+} from './escaped-defect-rate.js';
 
 /**
- * Gate rejection and rework rates, per run, in log order (OBS-4, DESIGN §4.5).
+ * Gate rejection, rework and escaped-defect rates, per run, in log order
+ * (OBS-4, DESIGN §4.5).
  *
  * "Gate rejection rate" says nothing until it says which gate (glossary,
  * "Gate"). This kernel has two an operator or a rate could mean, and this
@@ -12,11 +18,17 @@ import type { MergeRefusal } from '../implement/merge.js';
  * different remedies — a run that shows one number could not tell you which
  * of the two had gone wrong.
  *
- * Nothing here adds an event or keeps a tally beside the loop. Every figure
- * is folded from the run's own event slice, the same way `computeRunMetrics`
- * (`./metrics.ts`, OBS-2) already is — a counter kept alongside
- * `implement/loop.ts` would be a second source of truth for exactly what the
- * log already holds (ADR-2).
+ * Nothing here adds an event or keeps a tally beside the loop. The phase-gate,
+ * merge-gate and rework figures are folded from the run's own event slice,
+ * the same way `computeRunMetrics` (`./metrics.ts`, OBS-2) already is — a
+ * counter kept alongside `implement/loop.ts` would be a second source of
+ * truth for exactly what the log already holds (ADR-2). The escaped-defect
+ * figure (T4.2.2b, `./escaped-defect-rate.ts`) differs only in *where* it
+ * reads from: a Defect is an artifact, not an event (the catalog has no
+ * defect event and adds none for this), so it is read through the artifact
+ * store instead — still folded from the one place each fact already lives
+ * (events in the log, artifacts in git, ADR-3), never a tally this module
+ * keeps of its own.
  */
 
 /**
@@ -115,6 +127,8 @@ export interface RunGateRates {
   readonly phaseGate: PhaseGateRate;
   readonly mergeGate: MergeGateRate;
   readonly rework: ReworkRate;
+  /** OBS-4, T4.2.2b — see `./escaped-defect-rate.ts` for how this is read and attributed. */
+  readonly escapedDefects: EscapedDefectRate;
 }
 
 /**
@@ -142,15 +156,26 @@ interface BudgetExceededPayload {
 }
 
 /**
- * Gate rejection and rework rates for one run (OBS-4).
+ * Gate rejection, rework and escaped-defect rates for one run (OBS-4).
  *
  * `events` need not already be filtered to `runId` — every case below checks
  * it, the same guard `computeRunMetrics` applies — but a caller handing in
- * every run's events gets exactly that run's figures back either way.
+ * every run's events gets exactly that run's figures back either way. It
+ * should, however, cover every run and not just `runId`'s own: the escaped-
+ * defect figure needs to see a `ChangeMerged` that may belong to a different
+ * run than `runId` (`./escaped-defect-rate.ts`'s own doc explains why), and a
+ * caller that pre-filters to `runId` would silently starve that lookup.
+ *
+ * `defects` is every Defect artifact the caller has read from the artifact
+ * store (e.g. `ArtifactStore.list('artifacts/defect')`), defaulted to empty
+ * for callers with nothing to hand in — a run with no defect artifacts on
+ * disk is exactly what this reports as `escapedDefects.rate === null`
+ * (module doc, `./escaped-defect-rate.ts`) rather than a clean `0%`.
  */
 export function computeGateRates(
   runId: string,
   events: readonly StoredEvent[],
+  defects: readonly Artifact[] = [],
 ): RunGateRates {
   let gatesDecided = 0;
   let gatesRejected = 0;
@@ -224,5 +249,6 @@ export function computeGateRates(
       reworked: reviewRefusals,
       rate: reviewsTaken === 0 ? null : reviewRefusals / reviewsTaken,
     },
+    escapedDefects: computeEscapedDefectRate(runId, events, defects),
   };
 }
