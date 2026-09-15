@@ -73,19 +73,37 @@ import type { RunState } from './kernel-state.js';
  * summed denominator divides by 1000+1000 and reports 10.0%, a pass built by
  * treating the one overlapping window as if it were two separate ones. So
  * the denominator paired with the numerator is `mergeIntervals` (used for
- * `observedMs`
- * below, and reused here) applied to each instrumented task's own
- * `[min(firstDispatch, firstContextAssembled), terminalEvent)` interval,
- * under the same stated idle rule as `observedMs`: `{@link
- * HarnessOverhead.instrumentedSpanMs}`. It is smaller than the sum whenever
+ * `observedMs` below, and reused here) applied to each instrumented task's
+ * own *round* intervals — one `[min(dispatch, contextAssembled), terminal)`
+ * pair per `TaskDispatched`/terminal-event round that taskId carries, not
+ * one interval spanning its first dispatch to its last terminal — under the
+ * same stated idle rule as `observedMs`: {@link
+ * HarnessOverhead.instrumentedSpanMs}. It is smaller than the sum whenever
  * instrumented tasks' intervals overlap — concurrency correctly *shrinks*
  * the wall-clock denominator it divides into, rather than the numerator
  * growing to match it — and equal to the sum whenever they do not overlap
- * at all. The span's start is `min`, not `firstDispatch` alone, because both
+ * at all. Each round's start is `min`, not `dispatch` alone, because both
  * call sites append `ContextAssembled` *before* `SessionRunner.runTask`'s
  * own `TaskDispatched` (`src/state/reduce.ts`) — the context-assembly time
  * this module measures would otherwise fall outside the very window it is
  * divided by.
+ *
+ * **Rounds, not tasks, are the unit `mergeIntervals` is given — see the
+ * function body's own comment for why.** `implement/loop.ts` redispatches
+ * the same `taskId` for a CI-repair or review-rework round, sometimes from a
+ * fresh `mpgm implement` invocation days after the previous round's own
+ * terminal event ended it. A single `[firstDispatch, lastTerminal)` interval
+ * per task — this module's own first shape — would put that gap *inside*
+ * the interval `idleGapMs` is applied to, where merging can only ever widen
+ * a window between separate intervals and has nothing to act on inside one
+ * that was never split to begin with. This repository's own log has a real
+ * case: `T3.2.1` carries 12 rounds; its second closes with `TaskCompleted`
+ * at 2026-08-27T16:44:50Z and its third opens with `TaskDispatched` 70 hours
+ * later, at 2026-08-30T14:32:18Z. A few hundred milliseconds of context
+ * assembly divided by a denominator that swallowed those 70 hours is a false
+ * NFR-3 pass built from exactly the operator-absence contamination this
+ * module exists to keep out of `observedMs` (below) — round-level intervals
+ * keep it out of `instrumentedSpanMs` for the same reason.
  *
  * **The numerator and denominator are computed together, and null
  * together, not by three independent conditions that have to be kept in
@@ -108,14 +126,18 @@ import type { RunState } from './kernel-state.js';
  * away from the keyboard. Nor is it the sum of *every* settled task's span:
  * with concurrency and overlapping CLI invocations against one run id, that
  * sum is more than twice this repository's own run's actual elapsed time.
- * Instead it is the union of every settled task's own interval (same start
- * rule as above), merged by a stated idle rule
- * ({@link HarnessOverheadOptions.idleGapMs}): two intervals separated by a
- * gap no larger than `idleGapMs` count as one continuous busy window; a
- * larger gap is idle time and excluded. The default, `0`, merges only
- * intervals that literally overlap or touch; raising it pulls short
- * between-dispatch gaps into the window instead, and `observedMs` moves when
- * it does, because the window it sums changed and the events did not.
+ * Instead it is the union of every settled task's own *round* intervals
+ * (same start rule and same per-round shape as `instrumentedSpanMs` above —
+ * not one interval per task spanning every round, for the same reason),
+ * merged by a stated idle rule ({@link HarnessOverheadOptions.idleGapMs}):
+ * two intervals separated by a gap no larger than `idleGapMs` count as one
+ * continuous busy window; a larger gap is idle time and excluded. The
+ * default, `0`, merges only intervals that literally overlap or touch;
+ * raising it pulls short between-round gaps into the window instead — the
+ * time between one round's `TaskCompleted`/`TaskBlocked` and the next
+ * round's `TaskDispatched` for the same taskId, as much as the gap between
+ * two different tasks — and `observedMs` moves when it does, because the
+ * window it sums changed and the events did not.
  *
  * `overheadMs`, `instrumentedSpanMs`, `ratio` and `coverage` are each null
  * whenever their own inputs have nothing to report — the same null
@@ -138,26 +160,39 @@ import type { RunState } from './kernel-state.js';
  * DESIGN's only mention of NFR-3 is ADR-1, in service of a different
  * decision (TypeScript over Rust): "the harness is I/O-bound around model
  * calls (NFR-3 is trivially met in any mainstream language)". Run against a
- * copy of this repository's own self-hosted `run-1` this function reports
+ * copy of this repository's own self-hosted `run-1` (13,141 events,
+ * 2026-08-27T12:50:35Z to 2026-09-15T20:28:22Z) this function reports
  * `ratio: null` — every `ContextAssembled` event in this codebase is new
  * with this task, and the long-running process behind that log predates it,
  * so nothing yet brackets context assembly for it. `observedMs` alone is
- * already informative: merging that run's settled-task intervals (idle rule
- * at its default) gives a busy span of about 13 days inside a run whose raw
- * `startedAt`-to-last-event span is about 19 days — most of the run,
- * correctly excluded, was exactly the operator-absence gaps this module's
- * doc above says the raw span would wrongly charge to the harness. Because
- * `overheadMs` is null, this real run cannot yet be compared to the 10%
- * threshold, and so neither confirms nor contradicts ADR-1's claim — that
- * comparison becomes possible only once a run proceeds under this task's
- * code. ADR-1 is cited here either way: nothing this module has measured so
- * far is evidence against it, and nothing in this module is exempt from
- * being evidence against it the first time a real ratio comes back over
- * threshold, with enough coverage to trust. PLAN.md's own T4.2.9 row says so
- * explicitly: the 10%-threshold comparison against a self-hosted run is
- * deferred to the first run this instrumentation actually observes, rather
- * than left as a criterion this change silently could not meet — starting
- * that run is an operator action this change does not itself take.
+ * already informative, and the round-level fix above changes it
+ * substantially: merging that run's settled tasks' own *round* intervals
+ * (idle rule at its default) gives a busy span of ~178,074,567ms, about 2.1
+ * days, inside a run whose raw `startedAt`-to-last-event span is about 19.3
+ * days. A task-level version of this same function — one interval per task
+ * spanning its first dispatch to its last terminal, this module's own first
+ * shape — reported ~1,121,386,912ms instead, about 13.0 days, because
+ * several of this run's own tasks (`T3.2.1` among them) are redispatched
+ * across separate `mpgm implement` invocations days apart, and a task-wide
+ * interval folds the gap between those invocations into its own span. The
+ * ~6x difference between the two figures, on the same real log, is what the
+ * round-level fix is for: most of even the smaller figure is genuine
+ * concurrent/sequential busy work, not operator absence, but the coarser
+ * shape overstated it by counting days of idle time between rounds as busy.
+ *
+ * Because `overheadMs` is null — this log predates the instrumentation
+ * that would populate it — this real run cannot be compared to the 10%
+ * threshold, and so neither confirms nor contradicts ADR-1's claim.
+ * **That comparison is not completed by this change.** It requires a run
+ * that dispatches at least one task under this task's own code, which is an
+ * operator action (starting `mpgm implement`) this change does not itself
+ * take; the criterion is reported here as met for every log inspectable
+ * today and open against the one that is not, rather than declared met by
+ * relaxing the wording that asks for it. ADR-1 is cited here either way:
+ * nothing this module has measured so far is evidence against it, and
+ * nothing in this module is exempt from being evidence against it the first
+ * time a real ratio comes back over threshold, with enough coverage to
+ * trust.
  */
 
 export const NFR3_OVERHEAD_THRESHOLD = 0.1;
@@ -201,12 +236,14 @@ export interface HarnessOverhead {
   readonly overheadMs: number | null;
   /**
    * The ratio's own denominator (module doc): the merged union of each
-   * instrumented task's own span, under the same idle rule as `observedMs`,
-   * population-matched to `overheadMs` — never summed (module doc: summing
-   * understates NFR-3's own wall-clock fraction by up to the concurrency
-   * factor, because `assembleContext` is synchronous). Null when no task was
-   * instrumented. Computed together with `overheadMs` and `ratio` from one
-   * value that is null for all three at once (CONV-5, module doc).
+   * instrumented task's own *round* intervals (one per dispatch-to-terminal
+   * round that taskId carries, not one spanning every round), under the
+   * same idle rule as `observedMs`, population-matched to `overheadMs` —
+   * never summed (module doc: summing understates NFR-3's own wall-clock
+   * fraction by up to the concurrency factor, because `assembleContext` is
+   * synchronous). Null when no task was instrumented. Computed together with
+   * `overheadMs` and `ratio` from one value that is null for all three at
+   * once (CONV-5, module doc).
    */
   readonly instrumentedSpanMs: number | null;
   /**
@@ -217,10 +254,12 @@ export interface HarnessOverhead {
   readonly ratio: number | null;
   /**
    * The run's own busy span (module doc) — the merged union of every
-   * settled task's interval under the stated idle rule, instrumented or
-   * not. Informational: not the ratio's denominator, because it is not
-   * population-matched to `overheadMs` (see module doc for why an earlier
-   * revision that divided by this was wrong). Null when no task settled.
+   * settled task's own *round* intervals (one per dispatch-to-terminal
+   * round, not one spanning every round a redispatched task ran) under the
+   * stated idle rule, instrumented or not. Informational: not the ratio's
+   * denominator, because it is not population-matched to `overheadMs` (see
+   * module doc for why an earlier revision that divided by this was wrong).
+   * Null when no task settled.
    */
   readonly observedMs: number | null;
   /**
@@ -237,11 +276,14 @@ export interface HarnessOverhead {
 
 export interface HarnessOverheadOptions {
   /**
-   * The idle rule for `observedMs` (module doc): two busy intervals no more
-   * than this far apart merge into one continuous window; a larger gap is
-   * idle and excluded. Defaults to `0` — only literally overlapping or
-   * touching intervals merge. Does not affect `ratio`, which never merges
-   * (module doc).
+   * The idle rule `observedMs` *and* `instrumentedSpanMs` both merge their
+   * round intervals under (module doc): two busy intervals no more than this
+   * far apart merge into one continuous window; a larger gap is idle and
+   * excluded. Defaults to `0` — only literally overlapping or touching
+   * intervals merge. Raising it can move `ratio` as well as `observedMs`:
+   * `instrumentedSpanMs` merges under the same rule, so a wider `idleGapMs`
+   * can pull two of an instrumented task's own rounds together and change
+   * the denominator `ratio` divides by.
    */
   readonly idleGapMs?: number;
 }
@@ -300,7 +342,8 @@ interface TaskIdPayload {
 /**
  * Harness overhead for one run (T4.2.9, NFR-3, OBS-2). See the module doc
  * for the numerator formula, why the denominator is population-matched and
- * summed rather than merged, and what this cannot see.
+ * merged (by round, not by task) rather than summed, and what this cannot
+ * see.
  *
  * `events` need not already be filtered to `run.runId` — every case below
  * checks it, the same guard `computeRunMetrics` and `computeGateRates`
@@ -314,19 +357,50 @@ export function computeHarnessOverhead(
 ): HarnessOverhead {
   const idleGapMs = options.idleGapMs ?? DEFAULT_IDLE_GAP_MS;
 
-  // First `TaskDispatched` only, mirroring `computeRunMetrics`'s
-  // `avgLatencyMs`: a later dispatch of the same `taskId` is a CI repair or
-  // review-rework round, not a new busy interval starting from scratch.
-  const dispatchedAt = new Map<string, string>();
-  const completedAt = new Map<string, string>();
-  const blockedAt = new Map<string, string>();
-  // First `ContextAssembled` per task only: both call sites append it before
-  // that task's own `TaskDispatched`, so only the very first one can fall
-  // before `dispatchedAt` — a rework round's context assembly happens well
-  // inside the window a later dispatch already opened (module doc).
-  const contextAssembledFirstAt = new Map<string, string>();
+  // One interval per dispatch-to-terminal *round*, not one interval per task
+  // spanning every round it ever ran. `implement/loop.ts` redispatches the
+  // same `taskId` under its own key for a CI-repair or review-rework round —
+  // sometimes from a fresh `mpgm implement` invocation days after the
+  // previous round's own terminal event (this repository's own log: T3.2.1's
+  // `TaskCompleted` at 2026-08-27T16:44:50Z, its next `TaskDispatched` at
+  // 2026-08-30T14:32:18Z, 70 hours later, both under `taskId: T3.2.1`).
+  // Collapsing to `[firstDispatch, lastTerminal]` — an earlier revision's
+  // mistake — would put that gap inside the very denominator `idleGapMs` is
+  // meant to keep out: merging only ever widens a window *between*
+  // intervals, and a single task-wide interval already has nothing outside
+  // itself to be merged with, so `idleGapMs` could never split it back out.
+  // A round opens on whichever of `ContextAssembled` or `TaskDispatched`
+  // comes first (both call sites append the former before the latter,
+  // module doc) and closes on the next terminal event for that `taskId`.
+  const openRoundStart = new Map<string, number>();
+  const roundsByTask = new Map<string, Interval[]>();
   const contextAssemblyMsByTask = new Map<string, number>();
   const contextAssemblyCountByTask = new Map<string, number>();
+
+  const openRound = (taskId: string, ts: string): void => {
+    if (!openRoundStart.has(taskId)) {
+      openRoundStart.set(taskId, Date.parse(ts));
+    }
+  };
+  const closeRound = (taskId: string, ts: string): void => {
+    const start = openRoundStart.get(taskId);
+    if (start === undefined) {
+      // No round open for this taskId: `BudgetExceeded` fires twice in
+      // `src/agent/runner.ts` — once as a round's *only* terminal event
+      // (the ledger is exhausted before any attempt), once immediately
+      // before a `TaskCompleted` that already closed this same round a
+      // moment earlier. This is the second case; nothing to close.
+      return;
+    }
+    const interval: Interval = { start, end: Date.parse(ts) };
+    const existing = roundsByTask.get(taskId);
+    if (existing === undefined) {
+      roundsByTask.set(taskId, [interval]);
+    } else {
+      existing.push(interval);
+    }
+    openRoundStart.delete(taskId);
+  };
 
   let nonApiSessionMs = 0;
   let sessionsWithDuration = 0;
@@ -338,27 +412,26 @@ export function computeHarnessOverhead(
     switch (event.type) {
       case 'TaskDispatched': {
         const payload = event.payload as TaskIdPayload;
-        if (!dispatchedAt.has(payload.taskId)) {
-          dispatchedAt.set(payload.taskId, event.ts);
-        }
+        openRound(payload.taskId, event.ts);
         break;
       }
       case 'TaskCompleted': {
         const payload = event.payload as TaskIdPayload;
-        completedAt.set(payload.taskId, event.ts);
+        closeRound(payload.taskId, event.ts);
         break;
       }
       case 'TaskBlocked':
       case 'BudgetExceeded': {
         const payload = event.payload as TaskIdPayload;
-        blockedAt.set(payload.taskId, event.ts);
+        closeRound(payload.taskId, event.ts);
         break;
       }
       case 'ContextAssembled': {
         const payload = event.payload as ContextAssembledPayload;
-        if (!contextAssembledFirstAt.has(payload.taskId)) {
-          contextAssembledFirstAt.set(payload.taskId, event.ts);
-        }
+        // Appended before this round's own `TaskDispatched` at both call
+        // sites (module doc) — opens the round here so the span it measures
+        // falls inside the window it is divided by.
+        openRound(payload.taskId, event.ts);
         contextAssemblyMsByTask.set(
           payload.taskId,
           (contextAssemblyMsByTask.get(payload.taskId) ?? 0) + payload.durationMs,
@@ -390,34 +463,27 @@ export function computeHarnessOverhead(
   let contextAssemblyCount = 0;
 
   for (const task of Object.values(run.tasks)) {
-    const dispatched = dispatchedAt.get(task.taskId);
-    const terminal =
-      task.status === 'completed'
-        ? completedAt.get(task.taskId)
-        : task.status === 'blocked'
-          ? blockedAt.get(task.taskId)
-          : undefined;
-    if (dispatched === undefined || terminal === undefined) {
+    if (task.status !== 'completed' && task.status !== 'blocked') {
       // Not settled (or attested, with no dispatch at all): no firm end to
       // close a busy interval with, the same reason `avgLatencyMs` skips it.
       continue;
     }
-
-    const contextFirst = contextAssembledFirstAt.get(task.taskId);
-    const start =
-      contextFirst !== undefined && Date.parse(contextFirst) < Date.parse(dispatched)
-        ? contextFirst
-        : dispatched;
-    const interval: Interval = { start: Date.parse(start), end: Date.parse(terminal) };
+    const rounds = roundsByTask.get(task.taskId);
+    if (rounds === undefined || rounds.length === 0) {
+      // The fold says settled but no round of this taskId closed cleanly in
+      // this event slice (e.g. events filtered to a window that cuts a
+      // round off mid-way) — nothing this module can time.
+      continue;
+    }
 
     settledTaskCount += 1;
-    settledIntervals.push(interval);
+    settledIntervals.push(...rounds);
 
     const taskContextMs = contextAssemblyMsByTask.get(task.taskId);
     const taskContextCount = contextAssemblyCountByTask.get(task.taskId);
     if (taskContextMs !== undefined && taskContextCount !== undefined) {
       instrumentedTaskCount += 1;
-      instrumentedIntervals.push(interval);
+      instrumentedIntervals.push(...rounds);
       contextAssemblyMs += taskContextMs;
       contextAssemblyCount += taskContextCount;
     }

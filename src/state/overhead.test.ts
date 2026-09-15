@@ -362,6 +362,61 @@ describe('computeHarnessOverhead — observedMs is the run’s own busy span, in
   });
 });
 
+describe('computeHarnessOverhead — a redispatched task contributes one interval per round, not one spanning every round', () => {
+  it("does not fold a CI-repair or review-rework round's own idle gap into the task's busy span", () => {
+    // This repository's own log, shrunk: T3.2.1 closes a round with
+    // `TaskCompleted` at 2026-08-27T16:44:50Z and opens its next round's
+    // `TaskDispatched` 70 hours later, at 2026-08-30T14:32:18Z — both under
+    // the same taskId. A single [firstDispatch, lastTerminal) interval per
+    // task (an earlier revision of this module) would put that 70-hour
+    // operator-absence gap inside the very window `idleGapMs` is meant to
+    // keep out, because merging only ever widens a window *between*
+    // intervals and a single task-wide interval already has none to widen
+    // with. Round 1: [0, 1000). Round 2, after a 10-hour gap far past the
+    // default idleGapMs of 0: [37_200_000, 37_201_000).
+    const GAP_MS = 10 * 60 * 60 * 1000;
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        dispatched('T1'), // 0
+        contextAssembled('T1', 40), // 100 — round 1's own context assembly
+        completed('T1'), // 1_000 — round 1 closes
+        dispatched('T1'), // 1_000 + GAP_MS — round 2 opens, well past the gap
+        contextAssembled('T1', 60), // 1_000 + GAP_MS + 100 — round 2's own context assembly
+        completed('T1'), // 1_000 + GAP_MS + 1_000 — round 2 closes
+      ],
+      [0, 0, 100, 1_000, 1_000 + GAP_MS, 1_000 + GAP_MS + 100, 1_000 + GAP_MS + 1_000],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Two 1000ms rounds, not one interval spanning the 10-hour gap between
+    // them: observedMs is 2000ms. The bug this test catches would report
+    // 1_000 + GAP_MS + 1_000 instead — the gap counted as busy time.
+    expect(overhead.observedMs).toBe(2000);
+    expect(overhead.observedMs).not.toBe(1_000 + GAP_MS + 1_000);
+
+    // Both rounds carry their own ContextAssembled, so overheadMs sums both
+    // (40 + 60 = 100) and instrumentedSpanMs is the same 2000ms busy span —
+    // never the gap-inflated span a single task-wide interval would divide
+    // by, which would report a false NFR-3 pass built from operator absence.
+    expect(overhead.overheadMs).toBe(100);
+    expect(overhead.instrumentedSpanMs).toBe(2000);
+    expect(overhead.ratio).toBeCloseTo(100 / 2000);
+    expect(overhead.ratio).not.toBeCloseTo(100 / (1_000 + GAP_MS + 1_000));
+
+    // A caller stating an idle rule wider than the gap merges the two rounds
+    // back into one window — the rule is stated and the figure moves with
+    // it, rather than the gap being silently absorbed by default.
+    const lenient = computeHarnessOverhead(run, events, { idleGapMs: GAP_MS });
+    expect(lenient.observedMs).toBe(1_000 + GAP_MS + 1_000);
+    expect(lenient.instrumentedSpanMs).toBe(1_000 + GAP_MS + 1_000);
+    expect(lenient.ratio).toBeCloseTo(100 / (1_000 + GAP_MS + 1_000));
+  });
+});
+
 describe('computeHarnessOverhead — overheadMs, instrumentedSpanMs and ratio are null together (CONV-5)', () => {
   it('does not report a real overheadMs alongside a null ratio when the instrumented span merges to zero', () => {
     // T1 is instrumented (a real ContextAssembled event) but its own
