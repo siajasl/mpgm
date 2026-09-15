@@ -52,7 +52,7 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm run <phase> [--run <id>]        execute a phase and present its gate
   mpgm status [--run <id>] [--metrics] [--rates]
     folded state of a run, with cost/tokens/latency/retry/success per phase, role and run on
-    --metrics, and phase-gate/merge-gate/rework rates on --rates (OBS-4)
+    --metrics, and phase-gate/merge-gate/rework/escaped-defect rates on --rates (OBS-4)
   mpgm serve [--port <n>]              live dashboard over that state, until ctrl-c
   mpgm pause --run <id>                stop dispatching new tasks
   mpgm resume --run <id>               resume a paused run
