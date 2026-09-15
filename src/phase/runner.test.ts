@@ -784,4 +784,55 @@ describe('runPhase over a pipeline', () => {
       db.close();
     }
   });
+
+  it("appends ContextAssembled for each stage, before that stage's own TaskDispatched (T4.2.9, NFR-3)", async () => {
+    // `src/state/overhead.ts` divides by this event's timestamp to bracket
+    // context assembly on the harness-overhead ratio's numerator and
+    // denominator both — a call site that silently stopped appending it
+    // would report every task here as never instrumented rather than
+    // failing loudly, so this is asserted directly rather than only
+    // inferred from `computeHarnessOverhead`'s own fixtures.
+    const provider = new ProbeProvider((prompt) =>
+      prompt.includes('MARK-DRAFT') ? { note: 'rough draft' } : { note: 'polished' },
+    );
+    const { db, common, log } = harness(provider);
+    try {
+      await runPhase({
+        ...common,
+        playbook: parsePlaybook('scope.yaml', PIPELINE),
+        concurrency: 4,
+      });
+
+      const events = log.read();
+      const contextAssembled = events.filter(
+        (event) => event.type === 'ContextAssembled',
+      );
+      expect(contextAssembled).toHaveLength(2);
+      expect(contextAssembled.map((event) => event.payload)).toMatchObject([
+        { taskId: 'refine-draft', site: 'phase' },
+        { taskId: 'refine-polish', site: 'phase' },
+      ]);
+
+      // Appended before the stage's own TaskDispatched, not after — the span
+      // `computeHarnessOverhead` measures would otherwise fall outside the
+      // window it is divided by (module doc, `src/state/overhead.ts`).
+      const seqByTaskAndType = new Map<string, number>();
+      for (const event of events) {
+        if (event.type === 'TaskDispatched' || event.type === 'ContextAssembled') {
+          const payload = event.payload as { readonly taskId: string };
+          seqByTaskAndType.set(`${payload.taskId}:${event.type}`, event.seq);
+        }
+      }
+      for (const taskId of ['refine-draft', 'refine-polish']) {
+        const assembled = seqByTaskAndType.get(`${taskId}:ContextAssembled`);
+        const dispatched = seqByTaskAndType.get(`${taskId}:TaskDispatched`);
+        if (assembled === undefined || dispatched === undefined) {
+          throw new Error(`expected both events for ${taskId}`);
+        }
+        expect(assembled).toBeLessThan(dispatched);
+      }
+    } finally {
+      db.close();
+    }
+  });
 });
