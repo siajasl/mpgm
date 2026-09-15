@@ -4,6 +4,8 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
+import type { ArtifactStore } from '../artifact/store.js';
+import type { EventLog } from '../event/store.js';
 import type { Projector } from '../state/projector.js';
 import type { TraceIndex } from '../trace/index-store.js';
 import { allSummaries, runProjection, traceGraph } from './projection.js';
@@ -39,16 +41,31 @@ import { errorPage, runDetailPage, runListPage, traceGraphPage } from './render.
 export interface DashboardServerOptions {
   readonly projector: Projector;
   readonly traces: TraceIndex;
+  /**
+   * The per-phase/per-role/per-task metrics and quality rates a run page
+   * shows (T4.2.6) come from the run's own events and the Defect artifacts
+   * on disk, not from folded `RunState` — neither survives the reducer
+   * (`projection.ts` module doc). Required, not optional: an operator's
+   * page is either backed by the figures it promises or the type refuses to
+   * build the server at all, rather than quietly rendering an empty panel a
+   * test asserting only the section's presence would never catch (CONV-6).
+   */
+  readonly log: EventLog;
+  readonly artifacts: ArtifactStore;
 }
 
 export class DashboardServer {
   readonly #projector: Projector;
   readonly #traces: TraceIndex;
+  readonly #log: EventLog;
+  readonly #artifacts: ArtifactStore;
   readonly #server: Server;
 
   constructor(options: DashboardServerOptions) {
     this.#projector = options.projector;
     this.#traces = options.traces;
+    this.#log = options.log;
+    this.#artifacts = options.artifacts;
     this.#server = createServer((req, res) => {
       this.#handle(req, res);
     });
@@ -163,7 +180,16 @@ export class DashboardServer {
         this.#respond(req, res, 404, { error: message }, () => errorPage(404, message));
         return;
       }
-      const projection = runProjection(run);
+      // The whole log, not this run's own slice: `runProjection`'s
+      // escaped-defect figure needs to see a `ChangeMerged` that may belong
+      // to a different run than this one (`gate-rates.ts`'s own doc says
+      // why), and `computeRunMetrics`/`computeGateRates` inside it already
+      // filter to `run.runId` themselves for everything else.
+      const events = this.#log.read();
+      const defects = this.#artifacts
+        .list('artifacts/defect')
+        .map((entry) => entry.artifact);
+      const projection = runProjection(run, events, defects);
       this.#respond(req, res, 200, projection, () => runDetailPage(projection));
       return;
     }

@@ -61,7 +61,7 @@ describe('runProjection / summaryOf', () => {
       ]);
 
       const run = requireRun(projector.project(), RUN);
-      const projection = runProjection(run);
+      const projection = runProjection(run, log.read());
 
       expect(projection.tasks).toEqual([
         expect.objectContaining({ taskId: 'T1', status: 'dispatched', blocked: false }),
@@ -116,7 +116,10 @@ describe('runProjection / summaryOf', () => {
         },
       ]);
 
-      const beforeConfirm = runProjection(requireRun(projector.project(), RUN));
+      const beforeConfirm = runProjection(
+        requireRun(projector.project(), RUN),
+        log.read(),
+      );
       expect(beforeConfirm.destructiveCalls).toEqual([
         expect.objectContaining({ fingerprint: 'fp-1', dryRun: true, confirmedBy: null }),
       ]);
@@ -129,7 +132,10 @@ describe('runProjection / summaryOf', () => {
         },
       ]);
 
-      const afterConfirm = runProjection(requireRun(projector.project(), RUN));
+      const afterConfirm = runProjection(
+        requireRun(projector.project(), RUN),
+        log.read(),
+      );
       expect(afterConfirm.destructiveCalls).toEqual([
         expect.objectContaining({ fingerprint: 'fp-1', dryRun: true, confirmedBy: 'op' }),
       ]);
@@ -156,10 +162,127 @@ describe('runProjection / summaryOf', () => {
       ]);
 
       const run = requireRun(projector.project(), RUN);
-      const projection = runProjection(run);
+      const projection = runProjection(run, log.read());
       expect(projection.tasks[0]?.status).toBe('blocked');
       expect(projection.tasks[0]?.blocked).toBe(true);
       expect(summaryOf(run).blockedTasks).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reports the per-phase metrics and quality rates from the run's own events, not from RunState (T4.2.6)", () => {
+    const { db, log, projector } = harness();
+    try {
+      log.appendMany([
+        { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+        { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+        {
+          runId: RUN,
+          type: 'GatePresented',
+          payload: { gateId: 'G1', phase: 'implement', artifactRefs: [] },
+        },
+        {
+          runId: RUN,
+          type: 'GateRejected',
+          payload: { gateId: 'G1', by: 'op', reason: 'r' },
+        },
+      ]);
+
+      const run = requireRun(projector.project(), RUN);
+      const projection = runProjection(run, log.read());
+
+      // `RunState` folds none of this: `computeRunMetrics`/`computeGateRates`
+      // (`../state/metrics.js`/`../state/gate-rates.js`) read the run's own
+      // event slice a second time for exactly what the reducer folds away
+      // (module doc). A panel asserting only that these sections render
+      // would pass even with empty data (CONV-6) — so this pins down the
+      // actual figures.
+      expect(projection.metrics.byPhase.implement?.completed).toBe(1);
+      expect(projection.metrics.overall.successRate).toBe(1);
+      expect(projection.rates.phaseGate).toEqual({ decided: 1, rejected: 1, rate: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reports a run with no settled task as having nothing to report, not a 0% success rate (T4.2.6)', () => {
+    const { db, log, projector } = harness();
+    try {
+      log.appendMany([
+        { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+      ]);
+
+      const run = requireRun(projector.project(), RUN);
+      const projection = runProjection(run, log.read());
+
+      expect(projection.metrics.overall.successRate).toBeNull();
+      expect(projection.metrics.overall.avgLatencyMs).toBeNull();
+      expect(projection.rates.phaseGate.rate).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("corrects a repaired task's dashboard spend to its full total, not just its last session (T4.2.6)", () => {
+    const { db, log, projector } = harness();
+    try {
+      log.appendMany([
+        { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'SessionUsage',
+          payload: { taskId: 'T1', inputTokens: 200, outputTokens: 0, costUsd: 1.0 },
+        },
+        // A CI repair round: `implement/loop.ts` re-dispatches the same
+        // taskId, and `reduce.ts` resets `TaskState.usage` to zero here.
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'SessionUsage',
+          payload: { taskId: 'T1', inputTokens: 20, outputTokens: 0, costUsd: 0.25 },
+        },
+        {
+          runId: RUN,
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+
+      const run = requireRun(projector.project(), RUN);
+      // The folded figure this change replaces: only the repair round's own
+      // spend survives on `TaskState.usage`. Asserting it here is what
+      // proves the fixture actually exercises the bug T4.2.6 corrects,
+      // rather than a scenario where the two figures would coincide anyway.
+      expect(run.tasks.T1?.usage.costUsd).toBeCloseTo(0.25);
+
+      const projection = runProjection(run, log.read());
+      const task = projection.tasks.find((entry) => entry.taskId === 'T1');
+      expect(task?.usage.costUsd).toBeCloseTo(1.25);
     } finally {
       db.close();
     }

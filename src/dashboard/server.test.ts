@@ -1,4 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ArtifactStore } from '../artifact/store.js';
+import { ArtifactSchemaRegistry } from '../artifact/schema-registry.js';
 import { MEMORY, openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
@@ -8,6 +13,23 @@ import { TraceIndex } from '../trace/index-store.js';
 import { DashboardServer } from './server.js';
 
 const RUN = 'run-1';
+
+const tempDirs: string[] = [];
+
+/**
+ * Every route this suite exercises other than a run's own detail page has
+ * no use for a real artifact store — this is only here because
+ * `DashboardServer` requires one (T4.2.6, see its own module doc for why
+ * that requirement is not optional). An empty temp directory is enough:
+ * `ArtifactStore.list` reports `[]` for a subdirectory that does not exist,
+ * which is exactly "no defects filed" rather than a fixture this suite has
+ * to populate to make the server buildable.
+ */
+function newArtifacts(): ArtifactStore {
+  const root = mkdtempSync(join(tmpdir(), 'mpgm-dashboard-'));
+  tempDirs.push(root);
+  return new ArtifactStore({ root, schemas: new ArtifactSchemaRegistry([]) });
+}
 
 function harness() {
   const db = openDatabase(MEMORY);
@@ -30,6 +52,9 @@ afterEach(async () => {
   for (const db of openDbs.splice(0)) {
     db.close();
   }
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 async function start(): Promise<{
@@ -40,7 +65,12 @@ async function start(): Promise<{
 }> {
   const { db, log, projector, traces } = harness();
   openDbs.push(db);
-  const server = new DashboardServer({ projector, traces });
+  const server = new DashboardServer({
+    projector,
+    traces,
+    log,
+    artifacts: newArtifacts(),
+  });
   openServers.push(server);
   const port = await server.listen(0);
   return { base: `http://127.0.0.1:${String(port)}`, log, server, traces };
@@ -114,6 +144,46 @@ describe('DashboardServer', () => {
     expect(listAfterDecision.runs[0]?.pendingApprovals).toBe(0);
   });
 
+  it('serves per-phase metrics and quality rates on the run detail route (T4.2.6)', async () => {
+    const { base, log } = await start();
+
+    log.appendMany([
+      { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+      { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+      {
+        runId: RUN,
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+      },
+      { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
+      {
+        runId: RUN,
+        type: 'GatePresented',
+        payload: { gateId: 'G1', phase: 'implement', artifactRefs: [] },
+      },
+      {
+        runId: RUN,
+        type: 'GateRejected',
+        payload: { gateId: 'G1', by: 'op', reason: 'r' },
+      },
+    ]);
+
+    // This is the API T3.2.5a already ships (JSON, no `Accept: text/html`);
+    // what's new is that its body now carries the figures `RunState` alone
+    // cannot answer — the whole reason this route now plumbs a log and an
+    // artifact store through to `runProjection` (T4.2.6).
+    const body = (await (await fetch(`${base}/runs/${RUN}`)).json()) as {
+      metrics: {
+        byPhase: Record<string, { completed: number }>;
+        overall: { successRate: number | null };
+      };
+      rates: { phaseGate: { decided: number; rejected: number; rate: number | null } };
+    };
+    expect(body.metrics.byPhase.implement?.completed).toBe(1);
+    expect(body.metrics.overall.successRate).toBe(1);
+    expect(body.rates.phaseGate).toEqual({ decided: 1, rejected: 1, rate: 1 });
+  });
+
   it('finds a run whose id needs percent-decoding, the same id `/runs` lists it under', async () => {
     const { base, log } = await start();
     const runId = 'run with spaces';
@@ -184,7 +254,7 @@ describe('DashboardServer', () => {
   });
 
   it('answers a projector failure with 500 rather than dying: the server keeps serving', async () => {
-    const { db, traces } = harness();
+    const { db, log, traces } = harness();
     openDbs.push(db);
 
     // The dashboard shares the kernel's own projector and database, so a
@@ -197,7 +267,12 @@ describe('DashboardServer', () => {
       },
     } as unknown as Projector;
 
-    const server = new DashboardServer({ projector: throwingProjector, traces });
+    const server = new DashboardServer({
+      projector: throwingProjector,
+      traces,
+      log,
+      artifacts: newArtifacts(),
+    });
     openServers.push(server);
     const port = await server.listen(0);
     const base = `http://127.0.0.1:${String(port)}`;
@@ -303,7 +378,7 @@ describe('DashboardServer', () => {
   });
 
   it('renders a projector failure as HTML for a browser, same as the JSON boundary', async () => {
-    const { db, traces } = harness();
+    const { db, log, traces } = harness();
     openDbs.push(db);
 
     const throwingProjector = {
@@ -312,7 +387,12 @@ describe('DashboardServer', () => {
       },
     } as unknown as Projector;
 
-    const server = new DashboardServer({ projector: throwingProjector, traces });
+    const server = new DashboardServer({
+      projector: throwingProjector,
+      traces,
+      log,
+      artifacts: newArtifacts(),
+    });
     openServers.push(server);
     const port = await server.listen(0);
     const base = `http://127.0.0.1:${String(port)}`;
