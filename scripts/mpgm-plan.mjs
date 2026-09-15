@@ -922,6 +922,58 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['OBS-1', 'IMP-1'],
             },
+            {
+              id: 'T4.2.13',
+              title:
+                'The last rework round does not escalate the model, the way ' +
+                'the last repair round does',
+              completionCriteria: [
+                'A review-rework round escalates one model tier on the final ' +
+                  'attempt, or the change says why review differs from CI ' +
+                  'repair. repairUntilGreen already escalates its last ' +
+                  'attempt (isFinal && canEscalate(options.model), ' +
+                  'src/implement/repair.ts), which is what T3.1.2b delivered ' +
+                  'and what PLAN section 3 promises post-switchover. The ' +
+                  "rework dispatch (track('rework', round, ...) in " +
+                  'src/implement/loop.ts) passes no model at all, so every ' +
+                  "round runs on the implementer role's frozen " +
+                  'claude-sonnet-5.',
+                'T4.2.9 is the case the change is measured against: three ' +
+                  'rework rounds, required checks green at every one, three ' +
+                  'rejections, blocked on BudgetExceeded kind=reviews, and no ' +
+                  'tier ever moved — on a task PLAN section 3 assigns to ' +
+                  'Opus 5.',
+                'Which round escalates is stated and defended. The last is ' +
+                  "T3.1.2b's choice for CI; escalating every round spends the " +
+                  'stronger model on rounds the weaker one closes; escalating ' +
+                  'none is the behaviour today.',
+                'The PLAN Model column is not quietly made binding. ' +
+                  'planTaskSchema (src/schemas.ts) carries no model field, so ' +
+                  'the gated Plan artifact never holds one and no code path ' +
+                  'can read it; PLAN section 3 says the column is advisory ' +
+                  'and hands routing to T5.2.3. A change that does make a ' +
+                  'per-task model reach dispatch says so and revises section ' +
+                  "3 and T5.2.3's scope in the same commit; one that does not " +
+                  'says the escalation is role-relative and the column stays ' +
+                  'documentation.',
+                'The escalated round is legible in the log afterwards. ' +
+                  'TaskDispatched records model, so a reader can tell which ' +
+                  'round ran on which, and the test asserts it there rather ' +
+                  'than on a return value.',
+                'The cost budget is addressed rather than assumed. A stronger ' +
+                  'tier costs more per round against a task ledger measured ' +
+                  'in dollars (AGT-4), so the change says what happens when ' +
+                  'the escalated round would exhaust what is left: refusing ' +
+                  'is a decision, silently dropping back a tier is not.',
+                'The test rejects every round and asserts the final rework ' +
+                  'was dispatched one tier up, and that a task approved on ' +
+                  'round one never escalates. Without the second half the ' +
+                  'test passes on an implementation that escalates ' +
+                  'unconditionally (CONV-6).',
+              ],
+              dependsOn: [],
+              tracesTo: ['AGT-5', 'IMP-3'],
+            },
           ],
         },
         {
