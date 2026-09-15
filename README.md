@@ -31,6 +31,10 @@ npm run check
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run build` | Emit `dist/` |
 
+Running the harness on a hosted box rather than a laptop — required binaries, the four
+credentials, what a non-persistent `.mpgm/` costs, and what the absence of a Docker daemon
+rules out — is [DEVELOPMENT-CLOUD.md](DEVELOPMENT-CLOUD.md).
+
 ## License
 
 CC0 1.0 Universal — see [LICENSE](LICENSE).
