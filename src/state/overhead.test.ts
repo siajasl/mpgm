@@ -91,6 +91,14 @@ function contextAssembled(
   return { runId, type: 'ContextAssembled', payload: { taskId, site, durationMs } };
 }
 
+function toolCallLogged(taskId: string, runId: string = RUN): EventInput {
+  return {
+    runId,
+    type: 'ToolCallLogged',
+    payload: { taskId, tool: 'Bash', decision: 'allowed', detail: '', outputBlob: null },
+  };
+}
+
 function sessionUsage(
   taskId: string,
   durationMs: number | null,
@@ -115,8 +123,10 @@ describe('computeHarnessOverhead — the numerator is context assembly, and noth
   it('sums only ContextAssembled.durationMs into overheadMs, and keeps session non-API time out of it', () => {
     const events = logWith([
       runStarted(),
-      dispatched('T1'), // 1s
-      contextAssembled('T1', 50, 'phase'), // 2s
+      contextAssembled('T1', 50, 'phase'), // 1s — both call sites append this
+      // before their own TaskDispatched (module doc); a dedicated test below
+      // covers exactly how far that widens the round's start.
+      dispatched('T1'), // 2s
       sessionUsage('T1', 500, 300), // 3s
       completed('T1'), // 4s
     ]);
@@ -125,10 +135,7 @@ describe('computeHarnessOverhead — the numerator is context assembly, and noth
 
     const overhead = computeHarnessOverhead(run, events);
 
-    // T1's own span is [dispatch@1000ms, terminal@4000ms) = 3000ms — the
-    // ContextAssembled timestamp (2000ms) falls after dispatch here, so it
-    // does not move the start (a dedicated test below covers the case where
-    // it does).
+    // T1's own span is [contextAssembled@1000ms, terminal@4000ms) = 3000ms.
     expect(overhead.overheadMs).toBe(50);
     expect(overhead.instrumentedSpanMs).toBe(3000);
     expect(overhead.ratio).toBeCloseTo(50 / 3000);
@@ -205,8 +212,8 @@ describe('computeHarnessOverhead — the ratio is population-matched, not dilute
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        dispatched('T1'), // 1_000
-        contextAssembled('T1', 100), // 1_100
+        contextAssembled('T1', 100), // 1_000 — precedes its own TaskDispatched
+        dispatched('T1'), // 1_100
         completed('T1'), // 2_000 -> T1 span [1000, 2000) = 1000ms, overhead 100ms -> 10%
         dispatched('T2'), // 3_000
         completed('T2'), // 1_000_000 -> T2 span ~997_000ms, never instrumented
@@ -233,6 +240,56 @@ describe('computeHarnessOverhead — the ratio is population-matched, not dilute
     const wrongDenominator = 1000 + 997_000 + 1_000_000;
     expect(overhead.ratio).not.toBeCloseTo(100 / wrongDenominator);
   });
+
+  it('matches the population at round granularity too: an uninstrumented round of an instrumented task does not dilute the ratio', () => {
+    // The first measurable run on this repository's own run-1 is exactly
+    // this shape: a task with many pre-instrumentation rounds (no
+    // ContextAssembled at all, because the log predates T4.2.9) plus one new
+    // round that carries one. Pushing every round of an "instrumented task"
+    // into the denominator — the task-level population match alone — would
+    // divide that one round's context-assembly time by a dozen rounds'
+    // spans and understate the ratio by roughly the round count, the same
+    // dilution the module doc already rejects at task granularity (the
+    // 1-of-230 example) left open one level down.
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        // 11 uninstrumented rounds, 1000ms each, no ContextAssembled.
+        ...Array.from({ length: 11 }, () => [dispatched('T1'), completed('T1')]).flat(),
+        // The 12th round is instrumented: 100ms of context assembly inside
+        // a 1000ms round.
+        contextAssembled('T1', 100),
+        dispatched('T1'),
+        completed('T1'),
+      ],
+      [
+        0,
+        ...Array.from({ length: 11 }, (_unused, i) => [
+          i * 2_000,
+          i * 2_000 + 1_000,
+        ]).flat(),
+        22_000,
+        22_100,
+        23_000,
+      ],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Only the 12th round's own 1000ms span is the denominator — not the
+    // union of all 12 rounds' spans, which a task-level-only population
+    // match would report instead (12,000ms, understating the ratio twelvefold).
+    expect(overhead.overheadMs).toBe(100);
+    expect(overhead.instrumentedSpanMs).toBe(1000);
+    expect(overhead.ratio).toBeCloseTo(0.1);
+    const taskLevelWrongDenominator = 11 * 1000 + 1000;
+    expect(overhead.ratio).not.toBeCloseTo(100 / taskLevelWrongDenominator);
+    // observedMs, by contrast, is not population-matched — it is every
+    // settled round, instrumented or not — so it does include all 12.
+    expect(overhead.observedMs).toBe(12 * 1000);
+  });
 });
 
 describe('computeHarnessOverhead — the denominator is merged, not summed, so concurrency does not hide it', () => {
@@ -250,10 +307,10 @@ describe('computeHarnessOverhead — the denominator is merged, not summed, so c
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        dispatched('T1'), // 0
-        contextAssembled('T1', 100), // 50
-        dispatched('T2'), // 500
-        contextAssembled('T2', 100), // 550
+        contextAssembled('T1', 100), // 0
+        dispatched('T1'), // 50
+        contextAssembled('T2', 100), // 500
+        dispatched('T2'), // 550
         completed('T1'), // 1000
         completed('T2'), // 1500
       ],
@@ -283,11 +340,11 @@ describe('computeHarnessOverhead — the denominator is merged, not summed, so c
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        dispatched('T1'), // 0
-        contextAssembled('T1', 100), // 50
+        contextAssembled('T1', 100), // 0
+        dispatched('T1'), // 50
         completed('T1'), // 1000
-        dispatched('T2'), // 2000
-        contextAssembled('T2', 100), // 2050
+        contextAssembled('T2', 100), // 2000
+        dispatched('T2'), // 2050
         completed('T2'), // 3000
       ],
       [0, 0, 50, 1000, 2000, 2050, 3000],
@@ -378,11 +435,11 @@ describe('computeHarnessOverhead — a redispatched task contributes one interva
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        dispatched('T1'), // 0
-        contextAssembled('T1', 40), // 100 — round 1's own context assembly
-        completed('T1'), // 1_000 — round 1 closes
-        dispatched('T1'), // 1_000 + GAP_MS — round 2 opens, well past the gap
-        contextAssembled('T1', 60), // 1_000 + GAP_MS + 100 — round 2's own context assembly
+        contextAssembled('T1', 40), // 0 — round 1's own context assembly, before its dispatch
+        dispatched('T1'), // 100
+        completed('T1'), // 1_000 — round 1 closes cleanly, terminal event first
+        contextAssembled('T1', 60), // 1_000 + GAP_MS — round 2 opens, well past the gap
+        dispatched('T1'), // 1_000 + GAP_MS + 100 — round 2's own dispatch
         completed('T1'), // 1_000 + GAP_MS + 1_000 — round 2 closes
       ],
       [0, 0, 100, 1_000, 1_000 + GAP_MS, 1_000 + GAP_MS + 100, 1_000 + GAP_MS + 1_000],
@@ -415,6 +472,57 @@ describe('computeHarnessOverhead — a redispatched task contributes one interva
     expect(lenient.instrumentedSpanMs).toBe(1_000 + GAP_MS + 1_000);
     expect(lenient.ratio).toBeCloseTo(100 / (1_000 + GAP_MS + 1_000));
   });
+
+  it('splits a round abandoned before its terminal event at its own last activity, not at the redispatch that follows it', () => {
+    // This repository's own log, shrunk to the same shape: T3.2.1's round
+    // opens with `TaskDispatched` at seq 398 (2026-08-30T14:32:18.781Z),
+    // produces `ToolCallLogged` activity ending at 14:32:49.793Z, and then
+    // never reaches a terminal event — the process died. A second
+    // `TaskDispatched` for the same `taskId` arrives 20.1 hours later at seq
+    // 407 (2026-08-31T10:38:05.683Z), and only *that* round reaches
+    // `TaskCompleted`, 125 seconds after it opens. `openRound`'s original
+    // no-op on a `taskId` that already had a round open let the entire 20.1
+    // hours land inside the interval that eventually closed. Modelled here
+    // at a smaller scale: round 1 opens at 0, its last `ToolCallLogged` is
+    // at 31_000ms, and the redispatch arrives 20 hours later.
+    const REDISPATCH_GAP_MS = 20 * 60 * 60 * 1000;
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        dispatched('T1'), // 0 — round 1 opens
+        toolCallLogged('T1'), // 4_000 — activity inside round 1
+        toolCallLogged('T1'), // 19_000 — round 1's last observed activity
+        toolCallLogged('T1'), // 31_000 — round 1's last observed activity
+        dispatched('T1'), // 31_000 + REDISPATCH_GAP_MS — round 1 abandoned,
+        // no terminal event ever closed it; this is a fresh round for the
+        // same taskId
+        completed('T1'), // 31_000 + REDISPATCH_GAP_MS + 125_000 — round 2 closes
+      ],
+      [
+        0,
+        0,
+        4_000,
+        19_000,
+        31_000,
+        31_000 + REDISPATCH_GAP_MS,
+        31_000 + REDISPATCH_GAP_MS + 125_000,
+      ],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Round 1: [0, 31_000) = 31_000ms — closed at its last observed
+    // activity, not at the redispatch 20 hours later. Round 2:
+    // [31_000 + REDISPATCH_GAP_MS, 31_000 + REDISPATCH_GAP_MS + 125_000) =
+    // 125_000ms. Neither round is instrumented (no ContextAssembled at all,
+    // the same as this repository's real pre-T4.2.9 log), so only
+    // observedMs is exercised — the bug this test catches would report one
+    // interval spanning the entire 20-hour gap instead of two short ones.
+    expect(overhead.observedMs).toBe(31_000 + 125_000);
+    expect(overhead.observedMs).not.toBe(31_000 + REDISPATCH_GAP_MS + 125_000);
+  });
 });
 
 describe('computeHarnessOverhead — overheadMs, instrumentedSpanMs and ratio are null together (CONV-5)', () => {
@@ -429,11 +537,11 @@ describe('computeHarnessOverhead — overheadMs, instrumentedSpanMs and ratio ar
     const events = logWithTimestamps(
       [
         runStarted(), // 0
-        dispatched('T1'), // 1000
-        contextAssembled('T1', 50), // 1050 — after dispatch, does not move the start
-        completed('T1'), // 1000 — same instant as dispatch: zero-length interval
+        contextAssembled('T1', 50), // 1000 — opens the round
+        dispatched('T1'), // 1000 — same instant, extends without moving the start
+        completed('T1'), // 1000 — same instant again: zero-length interval
       ],
-      [0, 1000, 1050, 1000],
+      [0, 1000, 1000, 1000],
     );
     const run = fold(events).runs[RUN];
     if (run === undefined) throw new Error('run not folded');
@@ -476,8 +584,8 @@ describe('computeHarnessOverhead — null discipline (CONV-6)', () => {
   it('reads a run with no settled task as unmeasured, even with a ContextAssembled event recorded', () => {
     const events = logWith([
       runStarted(),
-      dispatched('T1'),
       contextAssembled('T1', 20),
+      dispatched('T1'),
       sessionUsage('T1', 500, 300),
       // No TaskCompleted/TaskBlocked: still in flight.
     ]);
@@ -500,8 +608,8 @@ describe('computeHarnessOverhead — two runs at different ratios read different
   it('does not report the same figure for a lean run and an overhead-heavy one', () => {
     const lean = logWith([
       runStarted('lean'),
-      dispatched('T1', 'lean'), // 1s
-      contextAssembled('T1', 10, 'phase', 'lean'), // 2s
+      contextAssembled('T1', 10, 'phase', 'lean'), // 1s
+      dispatched('T1', 'lean'), // 2s
       completed('T1', 'lean'), // 3s -> span [1000,3000) = 2000ms, overhead 10ms
     ]);
     const leanRun = fold(lean).runs.lean;
@@ -510,8 +618,8 @@ describe('computeHarnessOverhead — two runs at different ratios read different
 
     const heavy = logWith([
       runStarted('heavy'),
-      dispatched('T1', 'heavy'), // 1s
-      contextAssembled('T1', 400, 'implement', 'heavy'), // 2s
+      contextAssembled('T1', 400, 'implement', 'heavy'), // 1s
+      dispatched('T1', 'heavy'), // 2s
       completed('T1', 'heavy'), // 3s -> span [1000,3000) = 2000ms, overhead 400ms
     ]);
     const heavyRun = fold(heavy).runs.heavy;
