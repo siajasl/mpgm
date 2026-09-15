@@ -249,9 +249,23 @@ const TRAILER_RELATIONS: Readonly<Record<string, TraceRelation>> = {
  * full stop that belongs to the sentence, not to `§4.1`. Stripped before the
  * id shape is tested, so the trailing-period case resolves to the same node
  * as a citation without one, rather than a second one beside it.
+ *
+ * A trailer value is text from a commit a scanned repository did not write —
+ * CodeQL flags `/[.,;:]+$/` here as `js/polynomial-redos` because V8's
+ * backtracking engine re-checks the `$` anchor once per matched character on
+ * a non-matching tail (`"." .repeat(n) + "x"` measures quadratic, not
+ * linear), so a crafted trailer of many trailing punctuation characters
+ * would cost the indexer quadratic time. Walking from the end by hand keeps
+ * the same trimming with no backtracking to exploit.
  */
+const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':']);
+
 function stripTrailingPunctuation(value: string): string {
-  return value.replace(/[.,;:]+$/, '');
+  let end = value.length;
+  while (end > 0 && TRAILING_PUNCTUATION.has(value.charAt(end - 1))) {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 /**
