@@ -440,6 +440,80 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
 export const GIT_MERGE_CONTRACT = 'git.merge';
 export const GIT_MERGE_OPERATION = 'mergeBranch';
 
+/** What {@link verifyOperatorMerge} found. */
+export interface OperatorMergeVerification {
+  readonly verified: boolean;
+  /** Why, either way — what a refusal needs to be fixable without reading this module (CONV-3). */
+  readonly detail: string;
+}
+
+/**
+ * Checks an operator's claim that `commit` reached `into`, the way
+ * `gitMergeContract.check` already checks the kernel's own merges, applied
+ * here to one nobody but git can attest to (T4.2.15).
+ *
+ * `mpgm record-merge` (`cli/commands.ts`'s `recordMerge`) calls this *before* appending
+ * `ChangeMergedByOperator`, and refuses to record anything this returns
+ * `verified: false` for (CONV-4): an operator asserting a merge that never
+ * landed would otherwise put a commit in the log no clone can resolve — the
+ * defect T4.2.12 closed for the kernel's own merges, reopened for an
+ * operator's if nothing checks their word the same way.
+ *
+ * `remote` is used only when a remote by that name is actually configured on
+ * `repo` — defaulting to `origin`, the same default `mergeChange` applies —
+ * so a project with nothing to push to is verified against its local trunk
+ * alone, same as `gitMergeContract.check`. Where a remote *is* configured,
+ * a commit that only the local trunk can resolve is not enough: it is
+ * exactly the half-landed state this task exists to stop a log from
+ * claiming as done, so this fails closed on it rather than trusting the
+ * local repository's word for what a fresh clone would see.
+ */
+export async function verifyOperatorMerge(
+  repo: string,
+  commit: string,
+  into: string,
+  remote?: string,
+): Promise<OperatorMergeVerification> {
+  try {
+    await git(repo, ['cat-file', '-e', `${commit}^{commit}`]);
+  } catch {
+    return { verified: false, detail: `'${commit}' is not a commit '${repo}' has` };
+  }
+
+  try {
+    await git(repo, ['merge-base', '--is-ancestor', commit, into]);
+  } catch {
+    return {
+      verified: false,
+      detail:
+        `'${commit}' is not reachable from '${into}' in '${repo}' — the ` +
+        `claimed merge did not land there`,
+    };
+  }
+
+  const remoteName = remote ?? 'origin';
+  if (!(await remoteExists(repo, remoteName))) {
+    return { verified: true, detail: `reachable from local '${into}'` };
+  }
+
+  try {
+    await git(repo, ['fetch', remoteName, into]);
+    await git(repo, ['merge-base', '--is-ancestor', commit, 'FETCH_HEAD']);
+    return { verified: true, detail: `reachable from '${remoteName}/${into}'` };
+  } catch {
+    // The local trunk has it; the remote does not (yet), or is unreachable to
+    // ask. Fail closed, same as `gitMergeContract.check`: say it did not
+    // land rather than guess, since guessing "yes" here is exactly how a
+    // commit stays unresolvable from every clone but this one.
+    return {
+      verified: false,
+      detail:
+        `'${commit}' is reachable from local '${into}' but not from ` +
+        `'${remoteName}/${into}' — no clone but this one can resolve it yet`,
+    };
+  }
+}
+
 /**
  * Resume can ask git whether the merge landed, which makes this the safest
  * kind of effect there is (DESIGN §6): the repository itself is the record.

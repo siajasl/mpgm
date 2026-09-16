@@ -6,6 +6,7 @@ import {
   confirm,
   implement,
   intervene,
+  recordMerge,
   reopen,
   replay,
   rollback,
@@ -38,6 +39,7 @@ export const VERBS = [
   'attest',
   'confirm',
   'implement',
+  'record-merge',
   'reopen',
   'chat',
   'trace',
@@ -67,6 +69,11 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm attest <task> --by <who> --evidence <s> [--note <s>] [--run <id>]
   mpgm approve-role <role> --digest <d> --by <who> --reason <s> [--run <id>]
   mpgm implement <task> --repo <owner/name> [--into <path>] [--run <id>]
+  mpgm record-merge <task> --commit <sha> --by <who> [--reason <s>] [--repo <path>]
+    [--into <branch>] [--branch <b>] [--remote <name>] [--run <id>]
+    record a merge an operator performed by hand (e.g. a pull request merged on GitHub)
+    after the implement loop abandoned the task on a budget; verified against the
+    repository before anything is recorded (T4.2.15)
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
   mpgm trace <id> | --coverage | --dangling
@@ -190,6 +197,20 @@ export async function runCli(
         require('a task id', positional[0]),
         require('--repo', flags.repo),
         flags.into,
+      );
+
+    case 'record-merge':
+      return recordMerge(
+        context,
+        runId,
+        require('a task id', positional[0]),
+        require('--commit', flags.commit),
+        require('--by', flags.by),
+        flags.reason ?? '',
+        optional('--repo', flags.repo),
+        flags.into ?? 'main',
+        optional('--branch', flags.branch),
+        optional('--remote', flags.remote),
       );
 
     case 'reopen':

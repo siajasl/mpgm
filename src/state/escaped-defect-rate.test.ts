@@ -60,6 +60,27 @@ function changeMerged(runId: string, taskId: string): EventInput {
   };
 }
 
+/** A merge an operator recorded by hand (T4.2.15) — read identically to
+ * `changeMerged` above by `computeEscapedDefectRate` (the fields it reads,
+ * `taskId`/`ts`/`runId`, exist on both), so it belongs in the same merged-
+ * tasks denominator. */
+function changeMergedByOperator(runId: string, taskId: string): EventInput {
+  return {
+    runId,
+    type: 'ChangeMergedByOperator',
+    payload: {
+      taskId,
+      branch: `task/${taskId}`,
+      into: 'main',
+      commit: 'deadbeef',
+      by: 'macg',
+      reason: 'merged the pull request by hand after the review budget exhausted',
+      lastReviewApproved: false,
+      lastReviewTaskId: `${taskId}-review-3`,
+    },
+  };
+}
+
 /** A `TaskCompleted` naming `artifact` in its `artifactRefs` — the only way this module dates when a defect was filed. */
 function filedBy(runId: string, taskId: string, artifact: Artifact): EventInput {
   return {
@@ -187,6 +208,43 @@ describe('computeEscapedDefectRate — escape vs. fix', () => {
     expect(rate.filed).toBe(1);
     expect(rate.escaped).toBe(0);
     expect(rate.rate).toBe(0);
+  });
+});
+
+describe('computeEscapedDefectRate — a hand-recorded merge counts too (T4.2.15)', () => {
+  it('moves the merged-tasks denominator for a task an operator merged by hand', () => {
+    const events = logWith([
+      runStarted('r1'),
+      changeMerged('r1', 'T-old'),
+      changeMergedByOperator('r1', 'T-hand'),
+    ]);
+
+    const rate = computeEscapedDefectRate('r1', events, []);
+
+    // Two tasks merged this run: one the kernel merged, one an operator did.
+    // A denominator that only ever counted `ChangeMerged` would read 1 here.
+    expect(rate.merged).toBe(2);
+  });
+
+  it('escapes a defect against a task an operator merged by hand, the same as a kernel merge', () => {
+    const routed = routeDefect(
+      openDefect('zero-split-refused'),
+      { to: 'implement', taskId: 'T-hand' },
+      'implementation bug, not a design assumption',
+    );
+    const artifact = defectArtifact('d-hand', 'r1', routed);
+
+    const events = logWith([
+      runStarted('r1'),
+      changeMergedByOperator('r1', 'T-hand'), // merged by hand...
+      filedBy('r1', 'test-task', artifact), // ...before this defect was filed against it
+    ]);
+
+    const rate = computeEscapedDefectRate('r1', events, [artifact]);
+
+    expect(rate.merged).toBe(1);
+    expect(rate.escaped).toBe(1);
+    expect(rate.rate).toBe(1);
   });
 });
 

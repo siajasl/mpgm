@@ -551,6 +551,107 @@ export const changeMerged = defineEvent(
 );
 
 /**
+ * A change reached the trunk by an operator's own hand, verified afterwards
+ * rather than authorised beforehand (T4.2.15, HIL-5, OBS-1).
+ *
+ * `ChangeMerged` is appended by `mergeBranch` (`implement/merge.ts`) and
+ * nowhere else, so a task the loop abandons on a budget — most often
+ * `BudgetExceeded{kind: 'reviews'}`, the review-rework loop giving up after
+ * its bound — and an operator then merges by hand, on GitHub or otherwise,
+ * never gets one. The task then reads blocked forever while its code sits on
+ * the trunk: folded state, the dashboard, the implementer success rate and
+ * the escaped-defect rate's denominator (`state/escaped-defect-rate.ts`) all
+ * read a figure that is wrong and looks plausible, which is what makes it a
+ * gap in OBS-1 rather than a cosmetic one.
+ *
+ * `TaskAttested` is not this. It says a person's word stands in for a session
+ * the harness never ran, for work whose cost is not in the ledger — exactly
+ * mpgm's own P1–M3.1 bootstrap (see its own doc, above). Here the sessions
+ * ran inside the harness, every one of them logged and costed; only the
+ * merge happened outside it. Attesting would also leave `ChangeMerged`
+ * absent, so the escaped-defect denominator would stay wrong — the gap this
+ * event exists to close.
+ *
+ * Nor is this `ChangeMerged` reused with an empty `reviewTaskId`: that field
+ * is documented as empty *only* for a merge no review authorised, which the
+ * kernel itself refuses to make — reusing it here for a merge the merge gate
+ * actually refused would claim the opposite of what happened. A task reaches
+ * this path only after its last `ChangeReviewed` rejected (or, on a
+ * `repairs` budget, was never reached at all), so recording it as though the
+ * gate passed would make the merge-gate refusal rate read better than the
+ * run's own history. `lastReviewApproved`/`lastReviewTaskId` say instead what
+ * the last review actually found — `null`/`''` when there was none — so a
+ * reader can tell "the operator overrode a refusal" from "no refusal
+ * happened", which are different facts (HIL-5).
+ *
+ * `mpgm record-merge` (`cli/commands.ts`'s `recordMerge`) is the only writer,
+ * and only after `verifyOperatorMerge` (`implement/merge.ts`) confirms
+ * `commit` is actually reachable from `into` — locally, and from a
+ * configured remote's `into` too (T4.2.12's own reasoning) — so this can
+ * only ever record a merge that really landed, never an assertion nothing
+ * checked (CONV-4).
+ *
+ * This is an operator-run verb, not the kernel watching the trunk on its own
+ * — the choice this task asks for, made deliberately rather than left
+ * implicit. A kernel that polled `main` for `Closes-Task` trailers it never
+ * dispatched a session for would have to infer, from the trailer alone,
+ * facts a verb can simply be told: which review (if any) preceded the merge,
+ * and whether it was overridden or never reached at all (the paragraph
+ * above). Every other operator action this kernel records — `approve`,
+ * `confirm`, `attest`, `rollback` — is the operator telling the kernel
+ * something happened, not the kernel discovering it; a background scan would
+ * be the first event in this log nothing dispatched or an operator invoked
+ * directly, at odds with HIL-5's own frame of an *intervention* the operator
+ * performs. So the operator runs the verb, and the verb does not take the
+ * operator's word for what it claims: it asks the repository, the same
+ * question the kernel would have asked of it in the other design.
+ *
+ * The log is append-only (DESIGN §6): recording a hand-merge now, weeks after
+ * it actually happened, appends with *this* event's own later timestamp, not
+ * the timestamp of the real GitHub merge. Every figure that reads `ts`
+ * ordering inherits that gap — the escaped-defect rate above all
+ * (`state/escaped-defect-rate.ts`'s own doc says how a defect filed between
+ * the real merge and this record would misread).
+ *
+ * A task's stale `OperatorIntervened{action: 'redirect'}` note — T4.2.9
+ * carries one, written only to tell a future session the task is already
+ * done — is not explicitly cleared here, and does not need to be: the fold
+ * never clears a redirect note once written (`reduce.ts`), but
+ * `redirectNoteFor` is only ever read before a task's *next* dispatched
+ * session, and `intervene`'s own doc (`cli/commands.ts`) already states that
+ * a task that has already merged is never put back in front of the scheduler
+ * — `completedTaskIds` (`plan/ingest.ts`) reads any non-null `merged`, this
+ * event's included, as done. So the moment this event sets `merged`, the
+ * note reads no session's next prompt ever again, the same "silently inert"
+ * reading `intervene` already documents for a redirect aimed at a
+ * kernel-merged task — retired in effect, though not deleted from state,
+ * which the append-only log would refuse anyway.
+ */
+export const changeMergedByOperator = defineEvent(
+  'ChangeMergedByOperator',
+  z.object({
+    taskId: nonEmpty,
+    branch: nonEmpty,
+    into: nonEmpty,
+    /** The merge commit, verified reachable from `into` before this is appended. */
+    commit: nonEmpty,
+    /** Who merged it. */
+    by: nonEmpty,
+    /** Why it was done by hand rather than through the merge gate. */
+    reason: z.string().default(''),
+    /**
+     * What the task's last `ChangeReviewed` found, at the moment this was
+     * recorded: `true` approved, `false` rejected, `null` no review was ever
+     * recorded for this task. Never inferred from `ChangeMerged`'s own
+     * `reviewTaskId` convention, which this event does not reuse (see above).
+     */
+    lastReviewApproved: z.boolean().nullable(),
+    /** The reviewing task named by that last review, or `''` when `lastReviewApproved` is `null`. */
+    lastReviewTaskId: z.string().default(''),
+  }),
+);
+
+/**
  * The `taskId` a destructive-call event carries when no task made the call.
  *
  * The release-path deploy gate guards a call the kernel makes itself, so
@@ -812,6 +913,7 @@ export const releaseRollbackRefused = defineEvent(
 export const kernelEvents = [
   budgetExceeded,
   changeMerged,
+  changeMergedByOperator,
   changeReviewed,
   checksReported,
   contextAssembled,

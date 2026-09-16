@@ -4,6 +4,7 @@ import type { EventDefinition } from '../event/registry.js';
 import type {
   budgetExceeded,
   changeMerged,
+  changeMergedByOperator,
   changeReviewed,
   checksReported,
   deployConfirmationSpent,
@@ -58,7 +59,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 14;
+export const REDUCER_VERSION = 15;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -480,7 +481,36 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         into: payload.into,
         commit: payload.commit,
         reviewTaskId: payload.reviewTaskId,
+        by: '',
+        lastReviewApproved: null,
       };
+      return withRun(state, withTask(run, { ...task, merged }), seq);
+    }
+
+    case 'ChangeMergedByOperator': {
+      const payload = event.payload as PayloadOf<typeof changeMergedByOperator>;
+      const run = requireRun(state, event.runId, type);
+      const task = requireTask(run, payload.taskId, type);
+      const merged: MergeState = {
+        branch: payload.branch,
+        into: payload.into,
+        commit: payload.commit,
+        // Only an *approving* review authorises a merge (`decideMerge`); a
+        // rejected or absent one does not, so `reviewTaskId` stays empty for
+        // either the same way `ChangeMerged`'s own doc requires — the fuller
+        // truth (rejected vs. never reviewed) lives in `lastReviewApproved`
+        // below, not folded into this field.
+        reviewTaskId: payload.lastReviewApproved === true ? payload.lastReviewTaskId : '',
+        by: payload.by,
+        lastReviewApproved: payload.lastReviewApproved,
+      };
+      // `status` is left as whatever the harness itself last recorded — most
+      // often `blocked`, the fact that the loop gave up — rather than
+      // rewritten to `completed`: that field is the harness's own outcome,
+      // and it really did stop here. `merged` is the separate, now-current
+      // fact that the change landed anyway. Readers that mean "is this task
+      // done" (dashboard blocked counts, the implementer success rate) read
+      // both together (T4.2.15); nothing here conflates them into one.
       return withRun(state, withTask(run, { ...task, merged }), seq);
     }
 

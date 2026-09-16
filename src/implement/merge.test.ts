@@ -16,6 +16,7 @@ import {
   gitMergeContract,
   mergeChange,
   mergeMessage,
+  verifyOperatorMerge,
   type MergeDecisionRequest,
   type ReviewRecord,
 } from './merge.js';
@@ -553,6 +554,78 @@ describe('mergeChange', () => {
     git(repo, ['push', 'origin', 'main']);
 
     expect(await gitMergeContract.check?.(intent)).toBe(true);
+  });
+
+  // T4.2.15: `verifyOperatorMerge` is what `mpgm record-merge` calls before
+  // appending `ChangeMergedByOperator` — an operator's claim that a merge
+  // landed is only ever recorded once this agrees, never on the operator's
+  // word alone (CONV-4). Nested here (rather than its own top-level
+  // `describe`) so it can reuse `repoWithBranch`/`newBareRemote` above.
+  describe('verifyOperatorMerge', () => {
+    it('verifies a commit the local trunk already carries, with no remote configured', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+
+      const result = await verifyOperatorMerge(repo, commit, 'main');
+
+      expect(result).toMatchObject({ verified: true });
+      expect(result.detail).toContain('main');
+    });
+
+    it('refuses a commit that never reached the trunk', async () => {
+      const { repo, ref } = await repoWithBranch();
+
+      // `ref` is the tip of the task's own branch — real, but never merged.
+      const result = await verifyOperatorMerge(repo, ref, 'main');
+
+      expect(result.verified).toBe(false);
+      expect(result.detail).toContain('not reachable');
+    });
+
+    it('refuses a commit the repository does not have at all', async () => {
+      const { repo } = await repoWithBranch();
+
+      const result = await verifyOperatorMerge(repo, 'deadbeef1234', 'main');
+
+      expect(result.verified).toBe(false);
+      expect(result.detail).toContain('not a commit');
+    });
+
+    // The T4.2.12 shape, applied to an operator's claim rather than the
+    // kernel's own: a commit only the local clone can resolve is exactly the
+    // half-landed state this task exists to stop the log from recording as
+    // done, so this fails closed on it rather than trusting the local
+    // repository's word for what a fresh clone would see.
+    it('fails closed when a remote is configured and does not yet have the commit', async () => {
+      const { repo, branch } = await repoWithBranch();
+      const remote = newBareRemote();
+      git(repo, ['remote', 'add', 'origin', remote]);
+      git(repo, ['push', 'origin', 'main']);
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+
+      const beforePush = await verifyOperatorMerge(repo, commit, 'main');
+      expect(beforePush.verified).toBe(false);
+      expect(beforePush.detail).toContain('no clone but this one');
+
+      git(repo, ['push', 'origin', 'main']);
+
+      const afterPush = await verifyOperatorMerge(repo, commit, 'main');
+      expect(afterPush.verified).toBe(true);
+      expect(afterPush.detail).toContain('origin/main');
+    });
+
+    it('verifies against the local trunk alone when no remote by that name is configured', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+
+      const result = await verifyOperatorMerge(repo, commit, 'main', 'upstream');
+
+      expect(result.verified).toBe(true);
+      expect(result.detail).toContain('local');
+    });
   });
 });
 

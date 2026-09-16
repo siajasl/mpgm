@@ -82,6 +82,23 @@ export interface MergeState {
   readonly into: string;
   readonly commit: string;
   readonly reviewTaskId: string;
+  /**
+   * `''` for a kernel-authorised merge (`ChangeMerged`); the operator's name
+   * for one they performed by hand and recorded afterwards
+   * (`ChangeMergedByOperator`, T4.2.15) — so a reader can tell which merge
+   * produced this state without going back to the log to find the event
+   * type.
+   */
+  readonly by: string;
+  /**
+   * What the task's last review found at the moment an operator recorded a
+   * hand-merge: `true` approved, `false` rejected, `null` no review at all.
+   * Always `null` for a kernel-authorised merge, which by construction never
+   * happens without an approving review (`decideMerge`) — this exists for
+   * the case that is not that, so "the operator overrode a refusal" reads
+   * differently from "no refusal happened" (T4.2.15, HIL-5).
+   */
+  readonly lastReviewApproved: boolean | null;
 }
 
 export interface TaskState {
