@@ -63,11 +63,25 @@ function statementOf(raw) {
   return raw.trim();
 }
 
+// The requirement's own modality is its *first* RFC 2119 keyword, not any
+// keyword occurring anywhere in the statement: several requirements (AGT-7
+// is the one this matters for) state a SHOULD and then impose a MUST as a
+// condition on something the SHOULD produces ("Every adopted refinement
+// MUST pass AGT-6 evaluation"), which is a constraint on adoption, not the
+// requirement's own priority. Scanning for MUST first — as an earlier
+// version of this function did — promoted AGT-7 to `must`, contradicting
+// REQUIREMENTS.md (CONV-2). "MUST NOT" and "SHOULD NOT" are matched before
+// the bare form so the leftmost match at a given position is the longer,
+// correct one.
+const keywordPattern = /\b(MUST NOT|MUST|SHOULD NOT|SHOULD|MAY)\b/;
+
 function priorityOf(statement) {
-  if (/\bMUST\b/.test(statement)) return 'must';
-  if (/\bSHOULD\b/.test(statement)) return 'should';
-  if (/\bMAY\b/.test(statement)) return 'could';
-  return 'must';
+  const match = keywordPattern.exec(statement);
+  if (match === null) return 'must';
+  const keyword = match[1];
+  if (keyword.startsWith('MUST')) return 'must';
+  if (keyword.startsWith('SHOULD')) return 'should';
+  return 'could';
 }
 
 // The only two bullets in REQUIREMENTS.md that state an actual number and
@@ -96,6 +110,18 @@ const thresholds = {
   },
 };
 
+// REQUIREMENTS.md assigns no acceptance criteria to any of its 84 bullets —
+// it is prose stating a requirement's modality and behaviour, not a Scope
+// artifact's per-requirement criteria list — but the schema demands at
+// least one (`requirementCommon.acceptanceCriteria`, CONV-5: it cannot be
+// represented without one). Rather than invent one, every requirement here
+// carries its own statement as its sole criterion, and says so in its own
+// `rationale` so a reader of one requirement sees the substitution without
+// reading the artifact summary; deriving a genuine, independently-checkable
+// criterion is Scope-revision work this migration does not do.
+const acceptanceCriteriaNote =
+  'REQUIREMENTS.md assigns no acceptance criteria; its statement stands as its own criterion pending a later Scope revision.';
+
 const requirements = bullets.map(({ id, area, raw }) => {
   const statement = statementOf(raw);
   const priority = priorityOf(statement);
@@ -114,15 +140,15 @@ const requirements = bullets.map(({ id, area, raw }) => {
     return {
       ...common,
       kind: 'non-functional',
-      rationale: `Carried from REQUIREMENTS.md — ${heading}. Its threshold (${String(threshold.value)}${threshold.unit}) is the number REQUIREMENTS.md itself states; SCP-1 binds it to TST-3.`,
+      rationale: `Carried from REQUIREMENTS.md — ${heading}. Its threshold (${String(threshold.value)}${threshold.unit}) is the number REQUIREMENTS.md itself states; SCP-1 binds it to TST-3. ${acceptanceCriteriaNote}`,
       threshold,
     };
   }
 
   const isNfrArea = area === 'NFR';
   const rationale = isNfrArea
-    ? `Carried from REQUIREMENTS.md — ${heading}. REQUIREMENTS.md states this quality but no measurable metric, value and unit for it; SCP-1's schema cannot represent a non-functional requirement without a quantified threshold, so this is carried as functional rather than with an invented number (a quantification gap for a later Scope revision to close, not this migration).`
-    : `Carried from REQUIREMENTS.md — ${heading}.`;
+    ? `Carried from REQUIREMENTS.md — ${heading}. REQUIREMENTS.md states this quality but no measurable metric, value and unit for it; SCP-1's schema cannot represent a non-functional requirement without a quantified threshold, so this is carried as functional rather than with an invented number (a quantification gap for a later Scope revision to close, not this migration). ${acceptanceCriteriaNote}`
+    : `Carried from REQUIREMENTS.md — ${heading}. ${acceptanceCriteriaNote}`;
 
   return {
     ...common,
@@ -184,7 +210,12 @@ const artifact = store.write({
       `non-functional with it; the other four §6 entries (NFR-1, NFR-2, ` +
       `NFR-4, NFR-5) name a quality with no measurable value in the source ` +
       `text, and are carried as functional rather than fitted with an ` +
-      `invented number — see each one's rationale.`,
+      `invented number — see each one's rationale. REQUIREMENTS.md assigns ` +
+      `no acceptance criteria to any of its ${String(requirements.length)} bullets; the schema ` +
+      `demands at least one per requirement (CONV-5), so every requirement ` +
+      `here carries its own statement as its sole acceptanceCriteria entry ` +
+      `— stated per requirement in its own rationale — pending a later ` +
+      `Scope revision to derive genuine, independently-checkable criteria.`,
     requirements,
     outOfScope,
   },
