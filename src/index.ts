@@ -518,6 +518,7 @@ export type {
   MergeDecisionRequest,
   MergeRefusal,
   MergeResult,
+  OperatorMergeClaim,
   OperatorMergeVerification,
   ReviewFinding,
   ReviewRecord,

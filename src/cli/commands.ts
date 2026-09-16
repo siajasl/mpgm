@@ -1709,7 +1709,11 @@ export function attest(
  * operator's claim that does not check out is refused, not written
  * unverifiable (CONV-4) — a `commit` no clone can resolve is exactly the
  * defect T4.2.12 closed for `mergeChange`, reopened here if nothing checked
- * an operator's word the same way.
+ * an operator's word the same way. Two halves of that: `--commit` is
+ * recorded as the sha git resolved it to, so a symbolic ref cannot enter an
+ * append-only log as itself, and the commit has to be tied to *this* task —
+ * carrying its branch, or naming it in the merge message — so that any trunk
+ * commit cannot be recorded as any task's merge.
  *
  * Distinct from `attest` (see `TaskAttested`'s own doc): the sessions that
  * produced this change ran inside the harness, and their cost is already in
@@ -1756,20 +1760,35 @@ export async function recordMerge(
     }
 
     const repoPath = repo ?? context.root;
-    const verification = await verifyOperatorMerge(repoPath, commit, into, remote);
+    const taskBranch = branch ?? branchNameFor(taskId);
+    const verification = await verifyOperatorMerge({
+      repo: repoPath,
+      claimedCommit: commit,
+      into,
+      taskId,
+      branch: taskBranch,
+      ...(remote === undefined ? {} : { remote }),
+    });
     if (!verification.verified) {
       context.write(`refusing to record ${taskId} merged: ${verification.detail}`);
       return { ok: false, detail: 'unverified merge' };
     }
+
+    // `verification.commit`, never the operator's own `commit` string: what
+    // goes in the log is the sha git resolved, so a `HEAD` or a `main` typed
+    // here cannot become a value that resolves elsewhere to something else,
+    // or here to something else tomorrow (T4.2.12's defect, arriving through
+    // the operator's keyboard).
+    const resolved = verification.commit;
 
     log.append({
       runId,
       type: 'ChangeMergedByOperator',
       payload: {
         taskId,
-        branch: branch ?? branchNameFor(taskId),
+        branch: taskBranch,
         into,
-        commit,
+        commit: resolved,
         by,
         reason,
         lastReviewApproved: task.review?.approved ?? null,
@@ -1778,7 +1797,7 @@ export async function recordMerge(
     });
 
     context.write(
-      `${taskId} recorded merged by ${by} at ${commit.slice(0, 12)} (${verification.detail})`,
+      `${taskId} recorded merged by ${by} at ${resolved.slice(0, 12)} (${verification.detail})`,
     );
     return { ok: true, detail: 'merged' };
   } finally {

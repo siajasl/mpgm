@@ -846,6 +846,76 @@ describe('recordMerge', () => {
     expect(state.runs.r1?.tasks.T1?.merged).toBeNull();
   });
 
+  // T4.2.15 rework: `--commit` is operator input, and an operator reaches for
+  // `HEAD` (or `main`, or an abbreviation) as readily as a sha. Every one of
+  // those resolves elsewhere — or here, later — to a different commit, so
+  // writing the string as typed into an append-only log is the T4.2.12 defect
+  // arriving by another door. What is appended is the sha git resolved.
+  it('records the resolved sha, not the symbolic ref the operator typed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    const commit = mergeTaskBranch(repo, 'T1');
+    abandonedOnReviewBudget(root, 'r1', 'T1');
+
+    const result = await recordMerge(
+      newContext(root, []),
+      'r1',
+      'T1',
+      'HEAD',
+      'macg',
+      'merged by hand, sha copied from the local checkout',
+      repo,
+      'main',
+    );
+
+    expect(result.ok).toBe(true);
+
+    const merged = fold(eventsOf(root) as never).runs.r1?.tasks.T1?.merged;
+    expect(merged?.commit).toBe(commit);
+    expect(merged?.commit).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  // T4.2.15 rework: reachable-from-the-trunk is not the same claim as this
+  // task's change landed. Without the tie, any commit on `main` records as
+  // any task's merge, and the resulting event is indistinguishable in the log
+  // from a true one — a record nothing verified, which is what this verb
+  // exists to refuse (CONV-4).
+  it('refuses a trunk commit that is not this task-s merge, and appends nothing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    mergeTaskBranch(repo, 'T1');
+    // Somebody else's work, landing on the trunk after T1's own merge.
+    writeFileSync(join(repo, 'unrelated.ts'), 'export const other = 2;\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'unrelated work']);
+    const unrelated = git(repo, ['rev-parse', 'HEAD']);
+    abandonedOnReviewBudget(root, 'r1', 'T2');
+
+    const writes: string[] = [];
+    const result = await recordMerge(
+      newContext(root, writes),
+      'r1',
+      'T2',
+      unrelated,
+      'macg',
+      'a commit on main that carries nothing of T2',
+      repo,
+      'main',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('unverified merge');
+    expect(writes.join('\n')).toContain('nothing ties it to T2');
+
+    const events = eventsOf(root);
+    expect(
+      (events as { type: string }[]).some(
+        (event) => event.type === 'ChangeMergedByOperator',
+      ),
+    ).toBe(false);
+    expect(fold(events as never).runs.r1?.tasks.T2?.merged).toBeNull();
+  });
+
   it('refuses to overwrite a merge already recorded, kernel or operator', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
     const repo = newGitRepo();

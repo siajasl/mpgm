@@ -1206,6 +1206,34 @@ try {
       encoding: 'utf8',
     }).trim();
 
+    // Reachable from the trunk is not the same claim as "this task's change
+    // landed": an unrelated commit on `main` satisfies the first and nothing
+    // of the second, and a record of it would be indistinguishable in the log
+    // from a true one (T4.2.15 rework, CONV-4).
+    // The repository's own root commit: on the trunk, older than the task's
+    // branch, and carrying nothing of it.
+    const unrelated = execFileSync('git', ['rev-list', '--max-parents=0', 'main'], {
+      cwd: mergeRepo,
+      encoding: 'utf8',
+    }).trim();
+    const untied = await call([
+      'record-merge',
+      mergeTaskId,
+      '--commit',
+      unrelated,
+      '--by',
+      'macg',
+      '--repo',
+      mergeRepo,
+      '--run',
+      mergeRunId,
+    ]);
+    check(
+      'record-merge refuses a trunk commit that is not this task-s merge',
+      !untied.result.ok && untied.output.includes('does not contain'),
+      untied.output,
+    );
+
     const recorded = await call([
       'record-merge',
       mergeTaskId,

@@ -633,7 +633,14 @@ export const changeMergedByOperator = defineEvent(
     taskId: nonEmpty,
     branch: nonEmpty,
     into: nonEmpty,
-    /** The merge commit, verified reachable from `into` before this is appended. */
+    /**
+     * The merge commit, as git resolved it — a full sha, verified before this
+     * is appended both to be reachable from `into` and to be this task's
+     * merge rather than merely a commit on the trunk (`verifyOperatorMerge`).
+     * Never the string the operator typed: `HEAD` or `main` in an
+     * append-only log is a value that resolves to a different commit in every
+     * clone, which is the T4.2.12 defect.
+     */
     commit: nonEmpty,
     /** Who merged it. */
     by: nonEmpty,
