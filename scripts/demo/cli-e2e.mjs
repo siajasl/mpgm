@@ -1185,11 +1185,20 @@ try {
     execFileSync('git', ['checkout', '-b', `mpgm/${mergeTaskId}`], { cwd: mergeRepo });
     writeFileSync(join(mergeRepo, 'feature.ts'), 'export const feature = 1;\n');
     execFileSync('git', ['add', '-A'], { cwd: mergeRepo });
-    execFileSync('git', ['commit', '--quiet', '-m', 'add the feature'], { cwd: mergeRepo });
+    execFileSync('git', ['commit', '--quiet', '-m', 'add the feature'], {
+      cwd: mergeRepo,
+    });
     execFileSync('git', ['checkout', 'main'], { cwd: mergeRepo });
     execFileSync(
       'git',
-      ['merge', '--no-ff', '--no-edit', '-m', `Merge mpgm/${mergeTaskId}`, `mpgm/${mergeTaskId}`],
+      [
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        '-m',
+        `Merge mpgm/${mergeTaskId}`,
+        `mpgm/${mergeTaskId}`,
+      ],
       { cwd: mergeRepo },
     );
     const mergedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -1212,7 +1221,7 @@ try {
       mergeRunId,
     ]);
     check(
-      "record-merge verifies the claimed commit against the repository and records it",
+      'record-merge verifies the claimed commit against the repository and records it',
       recorded.result.ok &&
         recorded.output.includes(`${mergeTaskId} recorded merged by macg`),
       recorded.output,
