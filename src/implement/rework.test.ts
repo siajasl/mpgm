@@ -1296,6 +1296,108 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  // T4.2.14: before this task, a blocked task's refusal existed only in the
+  // rework prompt the implementing session happened to see — `ChangeReviewed`
+  // carried a count, not the findings themselves, so nobody else could ever
+  // read back why. This asserts the read-back, not merely that the count is
+  // non-zero (CONV-6): every finding's file, severity and remedy must survive
+  // replay untouched.
+  it("lets a blocked task's refusal be read back from the log alone (T4.2.14)", async () => {
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const findings = [
+      {
+        file: 'src/a.ts',
+        line: 12,
+        concern: 'off-by-one in the boundary check',
+        remedy: 'use <= rather than <',
+        severity: 'blocker' as const,
+      },
+      {
+        file: 'src/b.ts',
+        concern: 'the new test cannot fail against the old code',
+        remedy: 'assert on the behaviour the change introduces',
+        severity: 'major' as const,
+      },
+      {
+        file: 'src/c.ts',
+        concern: 'naming is inconsistent with the rest of the module',
+        remedy: 'rename to match the module it lives in',
+        severity: 'minor' as const,
+      },
+    ];
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'request-changes',
+        summary: 'Two smaller inaccuracies and one assertion gap follow',
+        findings,
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+      expect(result.status).toBe('blocked');
+
+      // From here on, only the log is read — not `result`, not `provider`,
+      // nothing the session returned directly. That is the property under
+      // test: a transcript is not an interface (ORC-3), so this has to be
+      // reconstructable without one.
+      const reviewed = log
+        .read()
+        .filter((event) => event.type === 'ChangeReviewed')
+        .map(
+          (event) =>
+            event.payload as {
+              findings: number;
+              findingDetails: readonly {
+                file: string;
+                line?: number;
+                concern: string;
+                remedy: string;
+                severity: string;
+              }[];
+            },
+        );
+
+      expect(reviewed).toHaveLength(1);
+      expect(reviewed[0]?.findings).toBe(3);
+      expect(reviewed[0]?.findingDetails.map((f) => f.severity)).toStrictEqual([
+        'blocker',
+        'major',
+        'minor',
+      ]);
+      expect(reviewed[0]?.findingDetails.map((f) => f.remedy)).toStrictEqual([
+        'use <= rather than <',
+        'assert on the behaviour the change introduces',
+        'rename to match the module it lives in',
+      ]);
+      expect(reviewed[0]?.findingDetails).toStrictEqual(findings);
+    } finally {
+      log.close();
+    }
+  });
+
   it('takes DEFAULT_REVIEW_ATTEMPTS reviews when the caller names no bound', async () => {
     // Asserted against the constant rather than against a literal: what would
     // go wrong is the default being disconnected, not its value changing, and

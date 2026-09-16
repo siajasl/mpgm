@@ -420,6 +420,39 @@ export const checksReported = defineEvent(
 );
 
 /**
+ * One thing a reviewer found, matching `codeReviewSchema`'s `findings` shape
+ * (`../schemas.ts`) field for field. Kept as its own literal object here
+ * rather than imported, the same way `blobRefSchema` and `artifactRefSchema`
+ * above are — this catalog validates what the log actually stores and does
+ * not reach into the role-output schemas to do it, so the two are free to
+ * evolve independently and a change to one cannot silently narrow what old
+ * log rows already satisfy.
+ */
+const reviewFindingSchema = z.object({
+  file: nonEmpty,
+  /** Where in the file, when the reviewer can say. */
+  line: z.number().int().positive().optional(),
+  concern: nonEmpty,
+  /** What would resolve it. */
+  remedy: nonEmpty,
+  severity: z.enum(['blocker', 'major', 'minor']),
+});
+
+/**
+ * v1 → v2 (T4.2.14): v1 recorded only how many findings a review carried, so
+ * a pre-existing event names no `findingDetails`. Defaulted to `[]` for
+ * exactly the reason `SessionUsage`'s upcaster nulls `durationMs` above: an
+ * empty list here means *unrecorded*, not *the reviewer found nothing* — the
+ * count in `findings` on the same event still says how many there were, and
+ * a reader that wants to know disagrees with the empty list rather than
+ * trusting it as zero.
+ */
+const upcastChangeReviewedV1: Upcaster = (payload) => ({
+  ...(payload as object),
+  findingDetails: [],
+});
+
+/**
  * An agent reviewed a change it did not write (IMP-3).
  *
  * The reviewer's role is in the payload because independence is a property of
@@ -429,6 +462,16 @@ export const checksReported = defineEvent(
  *
  * `ref` is the commit reviewed. Approval is of a state, not of a branch: a
  * change that moves on after its review has not been reviewed.
+ *
+ * `findingDetails` exists because `findings` alone (T4.2.14) made a review's
+ * reasoning unreconstructable from the log: a blocked task's rework prompt
+ * carried the reviewer's file, concern and remedy for each finding, and
+ * nothing else ever did — not a replay, not an operator, not a resumed
+ * session's prior-review context (`prior-review.ts`) — because a transcript
+ * is deliberately not an interface (ORC-3, OBS-1). `findings` stays, rather
+ * than being replaced by `findingDetails.length`, because CONV-7 is additive
+ * and a v1 event's count is still the only thing an upcast payload can say
+ * with confidence.
  */
 export const changeReviewed = defineEvent(
   'ChangeReviewed',
@@ -442,6 +485,23 @@ export const changeReviewed = defineEvent(
     approved: z.boolean(),
     summary: nonEmpty,
     findings: z.number().int().nonnegative().default(0),
+    /**
+     * Every finding the reviewer reported, in full (T4.2.14, OBS-1).
+     *
+     * Inline rather than behind a `blobRef` (contrast `ToolCallLogged.
+     * outputBlob`, above). A blob exists for output with no natural bound —
+     * a full command's stdout, a session transcript — where a run can produce
+     * megabytes. A review's findings are one role-output JSON object a single
+     * session returns within its own output budget, each finding a short
+     * concern and remedy rather than a diff; even a review that names thirty
+     * findings on a large change is on the order of a few kilobytes, nowhere
+     * near where a second fetch earns its cost. Keeping it inline also means
+     * every reader of this event — `decideMerge`'s callers, `gate-rates.ts`,
+     * an operator replaying the log — gets the full detail from the one
+     * event that decided whether the change could merge, without a blob
+     * store also having to be reachable to answer why it did not.
+     */
+    findingDetails: z.array(reviewFindingSchema).default([]),
     /** Convention ids the reviewer found broken (IMP-4). */
     deviations: z.array(nonEmpty).default([]),
     /**
@@ -457,6 +517,7 @@ export const changeReviewed = defineEvent(
     /** Of those the reviewer found, the ones no declaration covered. */
     undeclaredDeviations: z.array(nonEmpty).default([]),
   }),
+  [upcastChangeReviewedV1],
 );
 
 /** A change reached the trunk, and what authorised it (IMP-1, IMP-3). */

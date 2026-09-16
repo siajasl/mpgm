@@ -1,11 +1,16 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { z } from 'zod';
 import type { EffectJournal } from '../effect/journal.js';
 import type { EffectContract, EffectIntent } from '../effect/contract.js';
 import type { EventInput } from '../event/envelope.js';
 import { undeclaredDeviations } from '../context/conventions.js';
+import type { codeReviewSchema } from '../schemas.js';
 import { blockingReasons, type MergeVerdict } from './checks.js';
 import { refsAgree } from './commit-ref.js';
+
+/** One finding from a review, matching `codeReviewSchema`'s shape. */
+export type ReviewFinding = z.infer<typeof codeReviewSchema>['findings'][number];
 
 /**
  * Reviewed merge (IMP-1, IMP-3, IMP-5, DESIGN §4.1/§4.7).
@@ -149,7 +154,7 @@ export function changeReviewed(
   runId: string,
   taskId: string,
   review: ReviewRecord,
-  findings: number,
+  findings: readonly ReviewFinding[],
   declaredDeviations: readonly string[] = [],
 ): EventInput {
   const deviations = review.deviations ?? [];
@@ -163,7 +168,11 @@ export function changeReviewed(
       ref: review.ref,
       approved: review.approved,
       summary: review.summary,
-      findings,
+      findings: findings.length,
+      // Full detail (T4.2.14, OBS-1): a count alone left a blocked task's
+      // refusal unreconstructable from the log, readable only in the rework
+      // prompt of the session that happened to receive it.
+      findingDetails: [...findings],
       deviations: [...deviations],
       declaredDeviations: [...declaredDeviations],
       undeclaredDeviations: undeclaredDeviations(deviations, declaredDeviations),

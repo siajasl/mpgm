@@ -786,7 +786,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       deviations: parsed.data.deviations.map((entry) => entry.convention),
     };
     options.log.append(
-      changeReviewed(runId, task.id, review, parsed.data.findings.length, declared),
+      changeReviewed(runId, task.id, review, parsed.data.findings, declared),
     );
 
     request = {

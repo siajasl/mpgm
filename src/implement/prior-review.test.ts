@@ -21,6 +21,14 @@ function reviewed(overrides: Record<string, unknown> = {}, seq = 1): StoredEvent
       approved: false,
       summary: 'the env constraint is missing at the input boundary',
       findings: 3,
+      findingDetails: [
+        {
+          file: 'src/context/assembler.ts',
+          concern: 'the env constraint is missing at the input boundary',
+          remedy: 'validate it where the boundary is crossed',
+          severity: 'blocker',
+        },
+      ],
       deviations: ['CONV-5'],
       declaredDeviations: [],
       undeclaredDeviations: ['CONV-5'],
@@ -50,6 +58,14 @@ describe('which review is still worth carrying', () => {
 
     expect(found?.summary).toBe('second');
     expect(found?.undeclared).toStrictEqual(['CONV-5']);
+    expect(found?.findings).toStrictEqual([
+      {
+        file: 'src/context/assembler.ts',
+        concern: 'the env constraint is missing at the input boundary',
+        remedy: 'validate it where the boundary is crossed',
+        severity: 'blocker',
+      },
+    ]);
   });
 
   it('takes a review that recorded the commit in the short form a model wrote', () => {
@@ -110,6 +126,15 @@ describe('which review is still worth carrying', () => {
 
     expect(found?.undeclared).toStrictEqual([]);
   });
+
+  it('tolerates a v1 event recorded before findings were more than a count (T4.2.14)', () => {
+    // `upcastChangeReviewedV1` (`../event/catalog.ts`) sets `findingDetails`
+    // to `[]` on replay, not to a fabricated array the length of `findings`,
+    // so this reads the same as an event that never named any.
+    const found = lastReviewOf([reviewed({ findingDetails: undefined })], 'T1', TIP);
+
+    expect(found?.findings).toStrictEqual([]);
+  });
 });
 
 describe('what the resuming author is told', () => {
@@ -119,6 +144,15 @@ describe('what the resuming author is told', () => {
     approved: false,
     summary: 'the env constraint is missing at the input boundary',
     undeclared: ['CONV-5'],
+    findings: [
+      {
+        file: 'src/context/assembler.ts',
+        line: 42,
+        concern: 'the env constraint is missing at the input boundary',
+        remedy: 'validate it where the boundary is crossed',
+        severity: 'blocker',
+      },
+    ],
   };
   const rendered = renderPriorReview(base);
 
@@ -145,6 +179,17 @@ describe('what the resuming author is told', () => {
     const clean = renderPriorReview({ ...base, undeclared: [] });
     expect(clean).not.toContain('departed from');
     expect(clean).toContain('the env constraint is missing');
+  });
+
+  it('names each finding by file and line, with its remedy (T4.2.14)', () => {
+    expect(rendered).toContain('Findings it named:');
+    expect(rendered).toContain('[blocker] src/context/assembler.ts:42');
+    expect(rendered).toContain('Remedy: validate it where the boundary is crossed');
+  });
+
+  it('says nothing about findings when the prior review named none', () => {
+    const clean = renderPriorReview({ ...base, findings: [] });
+    expect(clean).not.toContain('Findings it named');
   });
 
   it('frames the review as evidence rather than as the task', () => {

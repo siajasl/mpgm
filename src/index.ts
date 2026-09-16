@@ -319,7 +319,7 @@ export {
 } from './cli/commands.js';
 export type { Verb } from './cli/main.js';
 export { parseArgs, runCli, USAGE, VERBS } from './cli/main.js';
-export type { PriorReview } from './implement/prior-review.js';
+export type { PriorFinding, PriorReview } from './implement/prior-review.js';
 export { lastReviewOf, renderPriorReview } from './implement/prior-review.js';
 export type { LateDeviationInput } from './implement/late-deviation.js';
 export {
@@ -517,6 +517,7 @@ export type {
   MergeDecisionRequest,
   MergeRefusal,
   MergeResult,
+  ReviewFinding,
   ReviewRecord,
 } from './implement/merge.js';
 export {

@@ -23,10 +23,31 @@ import { namesCommit } from './commit-ref.js';
  */
 
 /**
- * The event log keeps a review's `summary` and its deviations as text, but
- * `findings` only as a count — so this carries the prose, which is where the
- * reviewers in practice put the specifics, and the deviations, which are
- * exactly what a resumed run needs in order to declare rather than rediscover.
+ * One finding, as `ChangeReviewed.findingDetails` carries it (`../event/
+ * catalog.ts`, T4.2.14).
+ */
+export interface PriorFinding {
+  readonly file: string;
+  readonly line?: number;
+  readonly concern: string;
+  readonly remedy: string;
+  readonly severity: 'blocker' | 'major' | 'minor';
+}
+
+/**
+ * This carries the prose, which is where reviewers in practice put the
+ * specifics, the deviations, which are exactly what a resumed run needs in
+ * order to declare rather than rediscover, and — since T4.2.14 gave
+ * `ChangeReviewed` somewhere to put them — the findings themselves. Before
+ * that the event log kept a review's `summary` and its deviations as text but
+ * `findings` only as a count, so a resumed run's first round rediscovered
+ * whatever the last round had already named file-by-file; only the prose
+ * happened to survive.
+ *
+ * `findings` defaults to `[]` on an older event upcast without detail
+ * (`upcastChangeReviewedV1`), which reads the same as a review that found
+ * nothing to name beyond its summary — the prose above still carries what it
+ * said, the same as it always did.
  */
 export interface PriorReview {
   readonly reviewTaskId: string;
@@ -34,6 +55,7 @@ export interface PriorReview {
   readonly approved: boolean;
   readonly summary: string;
   readonly undeclared: readonly string[];
+  readonly findings: readonly PriorFinding[];
 }
 
 interface ReviewPayload {
@@ -43,6 +65,7 @@ interface ReviewPayload {
   readonly approved: boolean;
   readonly summary: string;
   readonly undeclaredDeviations?: readonly string[];
+  readonly findingDetails?: readonly PriorFinding[];
 }
 
 /**
@@ -80,6 +103,7 @@ export function lastReviewOf(
           approved: payload.approved,
           summary: payload.summary,
           undeclared: payload.undeclaredDeviations ?? [],
+          findings: payload.findingDetails ?? [],
         }
       : undefined;
   }
@@ -104,6 +128,24 @@ export function renderPriorReview(prior: PriorReview): string {
     '',
     prior.summary.trim(),
   ];
+
+  // Named individually, the same as a round rendered within the run
+  // (`renderReview`, `rework.ts`) — a resumed session is not owed less detail
+  // than one that never stopped, and rediscovering a finding by file is
+  // exactly the round this exists to save (T4.2.14).
+  if (prior.findings.length > 0) {
+    lines.push('', 'Findings it named:');
+    for (const finding of prior.findings) {
+      const where =
+        finding.line === undefined
+          ? finding.file
+          : `${finding.file}:${String(finding.line)}`;
+      lines.push(
+        `- [${finding.severity}] ${where} — ${finding.concern}`,
+        `  Remedy: ${finding.remedy}`,
+      );
+    }
+  }
 
   if (prior.undeclared.length > 0) {
     lines.push(
