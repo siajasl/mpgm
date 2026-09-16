@@ -1017,6 +1017,82 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['OBS-1', 'IMP-3'],
             },
+            {
+              id: 'T4.2.15',
+              title:
+                'A merge the operator performs by hand leaves the task ' +
+                'blocked in the log forever',
+              completionCriteria: [
+                'A task whose change reached the trunk is recorded as ' +
+                  'merged whoever performed the merge. ChangeMerged is ' +
+                  'appended by mergeBranch (src/implement/merge.ts) and ' +
+                  'nowhere else, so a task the loop abandons and an operator ' +
+                  'then merges on GitHub never gets one. M4.2 is the case ' +
+                  'and it is measured, not asserted: 13 of its 15 tasks ' +
+                  'carry a ChangeMerged and T4.2.9 and T4.2.10 do not, both ' +
+                  'having ended on BudgetExceeded kind=reviews limit=3 ' +
+                  '(T4.2.9 three times) before being merged by hand as pull ' +
+                  'requests 134 and 135.',
+                'What the gap costs is named rather than left to inference, ' +
+                  'because every figure below is wrong today and reads ' +
+                  'plausible: folded state reports both tasks blocked while ' +
+                  'their code is on main; the dashboard shows 3 blocked on a ' +
+                  'run whose work is done; the implementer success rate ' +
+                  'counts them as failures; and the escaped-defect rate ' +
+                  'divides by the tasks that merged ' +
+                  '(src/state/escaped-defect-rate.ts), which is 28 where the ' +
+                  'truth is 30. This is OBS-1 — a log sufficient for full ' +
+                  'run reconstruction — failing in the milestone that ' +
+                  'delivers observability, the same shape as T4.2.12 (a sha ' +
+                  'no clone could resolve) and T4.2.14 (a refusal that could ' +
+                  'not be read back).',
+                'TaskAttested is not the answer and the change says why ' +
+                  'rather than reaching for it: the catalog defines it as a ' +
+                  'plan task completed **outside the harness** ' +
+                  '(src/event/catalog.ts) and reduce.ts sets status ' +
+                  "'attested', which is false here — the sessions ran inside " +
+                  'the harness and their cost is already in the ledger; only ' +
+                  'the merge happened outside. Attesting would also leave ' +
+                  'ChangeMerged absent, so the merged-tasks denominator ' +
+                  'stays wrong. The 10 genuinely attested tasks (T3.1.1 to ' +
+                  'T3.1.9) are the contrast.',
+                'The change picks between a verb the operator runs when they ' +
+                  'merge by hand and the kernel observing the trunk, says ' +
+                  'which and why, and does not let a claim go unchecked: an ' +
+                  'operator asserting a merge that never landed would put a ' +
+                  'sha in the log that no clone resolves, which is the defect ' +
+                  'T4.2.12 just closed. Whatever it records is verified ' +
+                  'against the repository the way gitMergeContract.check ' +
+                  'already does, and fails closed toward refusing the record ' +
+                  'rather than writing an unverifiable one.',
+                'A task reaching this path was abandoned on a budget, so the ' +
+                  'change says what the recorded event claims about review: ' +
+                  'the last ChangeReviewed for T4.2.9 and T4.2.10 rejected, ' +
+                  'and a merge recorded as though the gate passed would make ' +
+                  "the merge-gate refusal rate read better than the run's " +
+                  'history. Recording that the operator overrode a refusal ' +
+                  'is a different fact from recording that no refusal ' +
+                  'happened (HIL-5).',
+                'T4.2.9 and T4.2.10 are brought into the log by the change ' +
+                  'or the cost of leaving them out is stated: their events ' +
+                  'are not rewritten — the log is append-only (DESIGN ' +
+                  'section 6) — so anything recorded now is appended with ' +
+                  'its own later timestamp, and the change says what that ' +
+                  'does to any figure that reads ts ordering, the ' +
+                  'escaped-defect rate above all. T4.2.9 also carries a ' +
+                  'redirection note whose only purpose is to tell a future ' +
+                  'session the task is already done; the change says whether ' +
+                  'that note is now retired.',
+                'The test drives a task to BudgetExceeded, records the ' +
+                  "operator's merge, and asserts from the log alone that the " +
+                  'task reads merged, that the recorded sha is reachable ' +
+                  'from the trunk, and that the merged-tasks denominator ' +
+                  'moved. A test asserting only that an event was appended ' +
+                  'passes against a record nothing verified (CONV-6).',
+              ],
+              dependsOn: [],
+              tracesTo: ['OBS-1', 'OBS-4', 'HIL-5'],
+            },
           ],
         },
         {
