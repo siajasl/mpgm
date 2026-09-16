@@ -203,6 +203,51 @@ describe('EventLog redaction (SAF-6)', () => {
     );
   });
 
+  // T4.2.14: `findingDetails` quotes file paths and code back at the author,
+  // which is exactly where a credential a reviewer noticed and described
+  // could land. Redaction is generic over the payload shape (`Redactor.
+  // redact` walks every string in every nested array and object), but that
+  // has to be checked against what this field actually carries rather than
+  // assumed — the same class of gap a new field with no test would leave
+  // silently uncovered.
+  it('redacts a secret quoted inside a review finding, not only inside tool output', () => {
+    const secret = `sk-ant-${'a'.repeat(32)}`;
+    const log = openMemoryLog();
+    try {
+      log.append({
+        runId: 'run-1',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: 'abc123',
+          approved: false,
+          summary: 'leaves a credential in the diff',
+          findings: 1,
+          findingDetails: [
+            {
+              file: 'src/config.ts',
+              concern: `hardcodes ${secret} rather than reading it from the broker`,
+              remedy: 'read it from the secret broker instead',
+              severity: 'blocker',
+            },
+          ],
+          deviations: [],
+          declaredDeviations: [],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const stored = JSON.stringify(log.readRaw());
+
+      expect(stored).not.toContain(secret);
+      expect(stored).toContain(marker('anthropic-key'));
+    } finally {
+      log.close();
+    }
+  });
+
   it('honours a custom rule set', () => {
     const log = EventLog.open(':memory:', {
       registry: kernelRegistry(),
@@ -492,6 +537,73 @@ describe('EventLog schema evolution', () => {
         });
       } finally {
         reopened.close();
+      }
+    });
+  });
+
+  describe('ChangeReviewed v1 -> v2 (T4.2.14)', () => {
+    // v1 recorded only how many findings a review carried, never what any of
+    // them said. A run started before this task must still replay rather
+    // than throw `EventValidationError` on the first such row.
+    const v1Registry = new EventRegistry([
+      defineEvent(
+        'ChangeReviewed',
+        z.object({
+          taskId: z.string().min(1),
+          reviewTaskId: z.string().min(1),
+          reviewerRole: z.string().min(1),
+          ref: z.string().min(1),
+          approved: z.boolean(),
+          summary: z.string().min(1),
+          findings: z.number().int().nonnegative().default(0),
+          deviations: z.array(z.string().min(1)).default([]),
+          declaredDeviations: z.array(z.string().min(1)).default([]),
+          undeclaredDeviations: z.array(z.string().min(1)).default([]),
+        }),
+      ),
+    ]);
+
+    function writeV1(path: string): void {
+      const log = EventLog.open(path, { registry: v1Registry, clock: fixedClock });
+      log.append({
+        runId: 'run-1',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: 'abc123',
+          approved: false,
+          summary: 'two smaller inaccuracies and one assertion gap follow',
+          findings: 4,
+          deviations: [],
+          declaredDeviations: [],
+          undeclaredDeviations: [],
+        },
+      });
+      log.close();
+    }
+
+    it('reads a pre-T4.2.14 event with the count intact and no detail invented', () => {
+      const path = tempDbPath();
+      writeV1(path);
+
+      const log = EventLog.open(path, { registry: kernelRegistry(), clock: fixedClock });
+      try {
+        const [raw] = log.readRaw();
+        const [migrated] = log.read();
+
+        // Stored bytes are untouched.
+        expect(raw?.schemaVersion).toBe(1);
+        expect((raw?.payload as { findings: number }).findings).toBe(4);
+
+        // Readers see the current shape. `findingDetails` is `[]` — nothing
+        // was ever recorded for this event, not a claim that the review
+        // found nothing (the surviving `findings: 4` says otherwise).
+        expect(migrated?.schemaVersion).toBe(2);
+        expect(migrated?.payload).toMatchObject({ findings: 4, findingDetails: [] });
+      } finally {
+        log.close();
       }
     });
   });

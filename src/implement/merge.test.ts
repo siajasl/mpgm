@@ -399,18 +399,45 @@ describe('mergeChange', () => {
 });
 
 describe('changeReviewed', () => {
+  const findings = [
+    {
+      file: 'src/a.ts',
+      line: 12,
+      concern: 'drops the error',
+      remedy: 'rethrow it',
+      severity: 'blocker' as const,
+    },
+    {
+      file: 'src/b.ts',
+      concern: 'naming',
+      remedy: 'rename it',
+      severity: 'minor' as const,
+    },
+  ];
+
   it('records what the reviewer found and what nobody had declared', () => {
     const event = changeReviewed(
       'run-1',
       'T1',
       { ...approval('abc123'), deviations: ['CONV-1', 'CONV-6'] },
-      2,
+      findings,
       ['CONV-1'],
     );
 
     expect(event.payload).toMatchObject({
       deviations: ['CONV-1', 'CONV-6'],
       undeclaredDeviations: ['CONV-6'],
+    });
+  });
+
+  // T4.2.14: a count alone cannot answer why a task was refused. Every field
+  // a finding carries must survive into the event, not merely its length.
+  it('carries every finding in full, not merely a count', () => {
+    const event = changeReviewed('run-1', 'T1', approval('abc123'), findings);
+
+    expect(event.payload).toMatchObject({
+      findings: 2,
+      findingDetails: findings,
     });
   });
 });
