@@ -199,6 +199,36 @@ describe('columnFor', () => {
     expect(columnFor('T1.1.1', [], merged, completed)).toBe('done');
   });
 
+  // T4.2.15: a task the loop abandoned on a budget and an operator then
+  // merged by hand still carries `status === 'blocked'` forever, because the
+  // log is append-only. The board must not keep showing it stuck there.
+  it('reads a hand-merged blocked task as done, not blocked', () => {
+    const run = runState([
+      dispatch('T1.1.1'),
+      {
+        runId: RUN,
+        type: 'BudgetExceeded',
+        payload: { taskId: 'T1.1.1', kind: 'repairs', limit: 3, observed: 3 },
+      },
+      {
+        runId: RUN,
+        type: 'ChangeMergedByOperator',
+        payload: {
+          taskId: 'T1.1.1',
+          branch: 'mpgm/T1.1.1',
+          into: 'main',
+          commit: 'def',
+          by: 'operator@example.com',
+          reason: 'merged by hand after budget exhaustion',
+          lastReviewApproved: false,
+          lastReviewTaskId: 'T1.1.1-review',
+        },
+      },
+    ]);
+
+    expect(columnFor('T1.1.1', [], run, completed)).toBe('done');
+  });
+
   it('calls a task with no implement loop done when it completes', () => {
     const run = runState([
       dispatch('T1.1.1', 'analyst'),

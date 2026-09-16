@@ -54,9 +54,10 @@ import {
   openPullRequest,
 } from '../implement/github-checks.js';
 import { implementTask } from '../implement/loop.js';
+import { verifyOperatorMerge } from '../implement/merge.js';
 import { renderProgress } from '../implement/progress.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
-import { WorktreeManager } from '../implement/worktree.js';
+import { branchNameFor, WorktreeManager } from '../implement/worktree.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
 import { computeGateRates, type RunGateRates } from '../state/gate-rates.js';
 import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
@@ -404,8 +405,21 @@ export function status(
       );
       const tasks = Object.values(current.tasks);
       for (const task of tasks.filter((entry) => entry.status !== 'attested')) {
+        // `status` alone would still read a task an operator merged by hand
+        // after `BudgetExceeded` as stuck there forever — the log is
+        // append-only, so `task.status` never becomes anything but `blocked`
+        // (T4.2.15). `merged` is the second fact a reader has to combine with
+        // it, the same reading `pm/projection.ts`'s `columnFor` and
+        // `dashboard/projection.ts` already give it; printed here so `status`
+        // does too, rather than leaving an operator to fold the log a second
+        // time to see what the board and the dashboard already show.
+        const merge = task.merged;
+        const mergedSuffix =
+          merge === null
+            ? ''
+            : ` — merged${merge.by === '' ? '' : ` by ${merge.by}`} at ${merge.commit.slice(0, 12)}`;
         context.write(
-          `  task ${task.taskId} ${task.status} (${task.role} on ${task.model})`,
+          `  task ${task.taskId} ${task.status}${mergedSuffix} (${task.role} on ${task.model})`,
         );
       }
       // Summarised rather than listed: an attested task has no role, model,
@@ -1677,6 +1691,115 @@ export function attest(
 
     context.write(`${taskId} attested by ${by} — ${evidence}`);
     return { ok: true, detail: 'attested' };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `mpgm record-merge <task> --commit <sha> --by <who>` — record a merge an
+ * operator performed by hand, e.g. by approving a pull request on GitHub
+ * after the implement loop gave up on a budget (T4.2.15, HIL-5, OBS-1).
+ *
+ * The kernel observes the trunk here rather than trusting the operator's
+ * word for it: this verb is how an operator *tells* the kernel a merge
+ * happened, but what gets appended is decided by asking the repository
+ * itself (`verifyOperatorMerge`, `implement/merge.ts`), the same way
+ * `gitMergeContract.check` already asks it for the kernel's own merges. An
+ * operator's claim that does not check out is refused, not written
+ * unverifiable (CONV-4) — a `commit` no clone can resolve is exactly the
+ * defect T4.2.12 closed for `mergeChange`, reopened here if nothing checked
+ * an operator's word the same way. Two halves of that: `--commit` is
+ * recorded as the sha git resolved it to, so a symbolic ref cannot enter an
+ * append-only log as itself, and the commit has to be tied to *this* task —
+ * carrying its branch, or naming it in the merge message — so that any trunk
+ * commit cannot be recorded as any task's merge.
+ *
+ * Distinct from `attest` (see `TaskAttested`'s own doc): the sessions that
+ * produced this change ran inside the harness, and their cost is already in
+ * the ledger — only the merge itself happened outside it, so this requires a
+ * task the harness actually dispatched, and refuses one it never ran.
+ *
+ * Distinct from a plain `ChangeMerged` too: the merge gate never cleared
+ * this change — a task only reaches this path after budget exhaustion, most
+ * often `BudgetExceeded{kind: 'reviews'}` — so `ChangeMergedByOperator`
+ * records what the task's last review actually found (approved, rejected,
+ * or none at all) rather than reusing `ChangeMerged`'s own `reviewTaskId`,
+ * whose empty value is documented to mean "no review authorised, which the
+ * kernel refuses" — the opposite of what happened here.
+ */
+export async function recordMerge(
+  context: CliContext,
+  runId: string,
+  taskId: string,
+  commit: string,
+  by: string,
+  reason = '',
+  repo?: string,
+  into = 'main',
+  branch?: string,
+  remote?: string,
+): Promise<CommandResult> {
+  const { db, log, projector } = open(context);
+  try {
+    const task = projector.project().runs[runId]?.tasks[taskId];
+    if (task === undefined) {
+      context.write(
+        `no task '${taskId}' has run in run '${runId}' — record-merge is for a ` +
+          `task the harness dispatched and then abandoned, not one it never ran`,
+      );
+      return { ok: false, detail: 'unknown task' };
+    }
+    if (task.merged !== null) {
+      context.write(
+        `${taskId} is already recorded merged, at ${task.merged.commit} — the log ` +
+          `is append-only and this would not overwrite that record, only sit ` +
+          `beside it`,
+      );
+      return { ok: false, detail: 'already merged' };
+    }
+
+    const repoPath = repo ?? context.root;
+    const taskBranch = branch ?? branchNameFor(taskId);
+    const verification = await verifyOperatorMerge({
+      repo: repoPath,
+      claimedCommit: commit,
+      into,
+      taskId,
+      branch: taskBranch,
+      ...(remote === undefined ? {} : { remote }),
+    });
+    if (!verification.verified) {
+      context.write(`refusing to record ${taskId} merged: ${verification.detail}`);
+      return { ok: false, detail: 'unverified merge' };
+    }
+
+    // `verification.commit`, never the operator's own `commit` string: what
+    // goes in the log is the sha git resolved, so a `HEAD` or a `main` typed
+    // here cannot become a value that resolves elsewhere to something else,
+    // or here to something else tomorrow (T4.2.12's defect, arriving through
+    // the operator's keyboard).
+    const resolved = verification.commit;
+
+    log.append({
+      runId,
+      type: 'ChangeMergedByOperator',
+      payload: {
+        taskId,
+        branch: taskBranch,
+        into,
+        commit: resolved,
+        by,
+        reason,
+        lastReviewApproved: task.review?.approved ?? null,
+        lastReviewTaskId: task.review?.reviewTaskId ?? '',
+      },
+    });
+
+    context.write(
+      `${taskId} recorded merged by ${by} at ${resolved.slice(0, 12)} (${verification.detail})`,
+    );
+    return { ok: true, detail: 'merged' };
   } finally {
     db.close();
   }

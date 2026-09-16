@@ -55,7 +55,14 @@ export interface DashboardTask {
   readonly role: string;
   readonly model: string;
   readonly status: TaskStatus;
-  /** `status === 'blocked'` — what an operator needs to see without scanning (OBS-3). */
+  /**
+   * `status === 'blocked' && merged === null` — the harness gave up *and*
+   * nobody has since recorded the change landing anyway (T4.2.15, OBS-3):
+   * `status` alone would still read `blocked` for a task an operator
+   * recorded merged by hand after `BudgetExceeded`, which is exactly the
+   * stale reading this field exists to stop an operator from having to
+   * scan `merged` themselves to rule out.
+   */
   readonly blocked: boolean;
   readonly checks: ChecksState | null;
   readonly review: ReviewState | null;
@@ -131,7 +138,7 @@ function dashboardTask(
     role: task.role,
     model: task.model,
     status: task.status,
-    blocked: task.status === 'blocked',
+    blocked: task.status === 'blocked' && task.merged === null,
     checks: task.checks,
     review: task.review,
     merged: task.merged,
@@ -204,8 +211,13 @@ export function summaryOf(run: RunState): DashboardSummary {
     control: run.control,
     currentPhase: run.currentPhase,
     usage: run.usage,
-    blockedTasks: Object.values(run.tasks).filter((task) => task.status === 'blocked')
-      .length,
+    // Same reading as `dashboardTask.blocked` above (T4.2.15): a task an
+    // operator recorded merged by hand no longer counts, even though its
+    // `status` still says `blocked` — that field is the harness's own
+    // outcome, not "is this task done".
+    blockedTasks: Object.values(run.tasks).filter(
+      (task) => task.status === 'blocked' && task.merged === null,
+    ).length,
     pendingApprovals: Object.values(run.gates).filter(
       (gate) => gate.status === 'presented',
     ).length,

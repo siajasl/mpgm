@@ -440,6 +440,292 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
 export const GIT_MERGE_CONTRACT = 'git.merge';
 export const GIT_MERGE_OPERATION = 'mergeBranch';
 
+/** What {@link verifyOperatorMerge} found. */
+export interface OperatorMergeVerification {
+  readonly verified: boolean;
+  /** Why, either way — what a refusal needs to be fixable without reading this module (CONV-3). */
+  readonly detail: string;
+  /**
+   * The claimed commit resolved to a full 40-character sha, or `''` where it
+   * resolved to nothing.
+   *
+   * This, never the operator's own string, is what may be recorded. An
+   * operator types `HEAD`, `main`, `origin/main` or an abbreviation as
+   * readily as a sha, and every one of those resolves differently in another
+   * clone, or in this one tomorrow — which is precisely the T4.2.12 defect
+   * (a value in an append-only log that nothing can resolve back to the
+   * merge), reintroduced through the operator's keyboard rather than the
+   * kernel's code.
+   */
+  readonly commit: string;
+}
+
+/**
+ * An operator's claim that a merge landed, as {@link verifyOperatorMerge}
+ * takes it.
+ *
+ * `taskId` and `branch` are not optional and not decoration: a verification
+ * that cannot be asked without naming the task it is for is one that cannot
+ * silently answer "some commit is on the trunk" when the question was "this
+ * task's change is on the trunk" (CONV-5). Every trunk commit satisfies the
+ * first; only the task's own merge satisfies the second.
+ */
+export interface OperatorMergeClaim {
+  readonly repo: string;
+  /** What the operator said the merge commit is — resolved before it is recorded, never recorded as typed. */
+  readonly claimedCommit: string;
+  /** The trunk it is claimed to have reached. */
+  readonly into: string;
+  /** The task whose merge this is claimed to be. */
+  readonly taskId: string;
+  /** The branch that task's change was written on. */
+  readonly branch: string;
+  /** Defaults to `origin`; used only when a remote by that name is configured. */
+  readonly remote?: string;
+}
+
+/** Regex-safe form of a task id, so `T4.2.1` cannot match inside `T4.2.15`. */
+function taskIdPattern(taskId: string): RegExp {
+  const escaped = taskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^\\w.-])${escaped}([^\\w.-]|$)`);
+}
+
+/** The branch's tip, locally or on the remote, or `''` where nothing resolves it. */
+async function branchTip(repo: string, branch: string, remote: string): Promise<string> {
+  for (const ref of [
+    `refs/heads/${branch}`,
+    ...(remote === '' ? [] : [`refs/remotes/${remote}/${branch}`]),
+  ]) {
+    try {
+      return await git(repo, ['rev-parse', '--verify', `${ref}^{commit}`]);
+    } catch {
+      // Not this ref; try the next.
+    }
+  }
+  if (remote !== '') {
+    try {
+      await git(repo, ['fetch', remote, branch]);
+      return await git(repo, ['rev-parse', 'FETCH_HEAD']);
+    } catch {
+      // The branch is gone from the remote too — the usual state after a
+      // pull request is merged with "delete branch" on. Not an error here;
+      // the caller falls back to the commit's own message.
+    }
+  }
+  return '';
+}
+
+/** Whether `commit`'s own message names `taskId` — subject, body or trailer. */
+async function messageNames(
+  repo: string,
+  commit: string,
+  taskId: string,
+): Promise<boolean> {
+  try {
+    const message = await git(repo, ['log', '-1', '--format=%B', commit]);
+    return taskIdPattern(taskId).test(message);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `commit` is this task's merge and not merely *a* commit on the
+ * trunk.
+ *
+ * Reachability from the trunk says a commit landed; it says nothing about
+ * whose change landed in it, and `gitMergeContract.check` — the model this
+ * follows — never had to ask, because it checks the branch tip it merged
+ * itself. An operator's claim has no such provenance, so the tie is checked
+ * two ways, either of which is evidence the repository itself holds:
+ *
+ * - the task's branch tip is an ancestor of the claimed commit, i.e. the
+ *   commit really carries that branch; or
+ * - the claimed commit's own message names the task — the `Closes-Task`
+ *   trailer `mergeMessage` writes, and equally the `Merge pull request #N
+ *   from siajasl/mpgm/T4.2.9` subject GitHub writes, which is the M4.2 case.
+ *
+ * The second exists because the first stops being available exactly when
+ * this verb is most needed: a merged pull request usually has its branch
+ * deleted, and a squashed one has a tip that is an ancestor of nothing. When
+ * neither holds, this refuses rather than recording a merge tied to the task
+ * by nothing but the operator's say-so (CONV-4) — an untied record is
+ * indistinguishable in the log from a true one, which is the whole class of
+ * claim this verb exists to keep out.
+ */
+async function tieToTask(
+  repo: string,
+  commit: string,
+  claim: OperatorMergeClaim,
+  remote: string,
+): Promise<OperatorMergeVerification> {
+  const { branch, taskId } = claim;
+  const tip = await branchTip(repo, branch, remote);
+  if (tip !== '' && (await isAncestor(repo, tip, commit))) {
+    return {
+      verified: true,
+      detail: `and carries '${branch}' (${tip.slice(0, 12)}), ${taskId}'s own branch`,
+      commit,
+    };
+  }
+  if (await messageNames(repo, commit, taskId)) {
+    return { verified: true, detail: `and its message names ${taskId}`, commit };
+  }
+  return {
+    verified: false,
+    detail:
+      tip === ''
+        ? `${commit} is on '${claim.into}', but nothing ties it to ${taskId}: ` +
+          `'${branch}' resolves to no ref here${remote === '' ? '' : ` or on '${remote}'`} ` +
+          `(deleted after the merge, most likely) and ${commit.slice(0, 12)}'s own ` +
+          `message never names ${taskId}. Record the merge commit that names the ` +
+          `task, or restore '${branch}' so its tip can be checked — a commit tied ` +
+          `to this task by nothing but the claim is what this refuses to write`
+        : `${commit} is on '${claim.into}', but does not contain '${branch}' ` +
+          `(${tip.slice(0, 12)}), the branch ${taskId}'s change was written on, and ` +
+          `its message never names ${taskId} — so it is a trunk commit, not this ` +
+          `task's merge. Check the sha, or --branch if the change went in on ` +
+          `another branch`,
+    commit,
+  };
+}
+
+/** Whether `ancestor` is reachable from `descendant`. */
+async function isAncestor(
+  repo: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  try {
+    await git(repo, ['merge-base', '--is-ancestor', ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks an operator's claim that `commit` reached `into`, the way
+ * `gitMergeContract.check` already checks the kernel's own merges, applied
+ * here to one nobody but git can attest to (T4.2.15).
+ *
+ * `mpgm record-merge` (`cli/commands.ts`'s `recordMerge`) calls this *before* appending
+ * `ChangeMergedByOperator`, and refuses to record anything this returns
+ * `verified: false` for (CONV-4): an operator asserting a merge that never
+ * landed would otherwise put a commit in the log no clone can resolve — the
+ * defect T4.2.12 closed for the kernel's own merges, reopened for an
+ * operator's if nothing checks their word the same way.
+ *
+ * `remote` is used only when a remote by that name is actually configured on
+ * `repo` — defaulting to `origin`, the same default `mergeChange` applies.
+ * Where one *is* configured, it is fetched **before** anything is checked
+ * locally, and the check is answered against `FETCH_HEAD`, not the local
+ * trunk: the motivating case is a pull request merged on GitHub (T4.2.9,
+ * T4.2.10 — PRs 134, 135) by an operator whose local clone has not pulled
+ * since, and in that clone the merge commit is not an object the repository
+ * has at all — checking the local trunk first would refuse the very merge
+ * this task exists to record, and blame the sha for what is really a stale
+ * clone (CONV-3). Only when no remote is configured does this fall back to
+ * the local trunk alone, same as `gitMergeContract.check` does for a project
+ * with nothing to push to.
+ *
+ * Two things beyond "the trunk can reach it" have to hold before this says
+ * yes, because a record that satisfies only that one is not distinguishable
+ * in the log from a true one:
+ *
+ * - the claimed commit resolves to a full sha, and that resolved sha — not
+ *   the string the operator typed — is what {@link OperatorMergeVerification}
+ *   hands back to be recorded; and
+ * - the commit is tied to *this task* (see `tieToTask`), so that
+ *   `record-merge T4.2.10 --commit <any commit on main>` is refused rather
+ *   than written.
+ */
+export async function verifyOperatorMerge(
+  claim: OperatorMergeClaim,
+): Promise<OperatorMergeVerification> {
+  const { repo, into } = claim;
+  const remoteName = claim.remote ?? 'origin';
+  const remote = (await remoteExists(repo, remoteName)) ? remoteName : '';
+
+  // The trunk to answer against, pinned to a sha the moment it is fetched:
+  // `tieToTask` may fetch the task's branch below, and that would move
+  // `FETCH_HEAD` out from under a later reachability check.
+  let trunk = into;
+  let trunkName = `local '${into}'`;
+  if (remote !== '') {
+    try {
+      await git(repo, ['fetch', remote, into]);
+      trunk = await git(repo, ['rev-parse', 'FETCH_HEAD']);
+      trunkName = `'${remote}/${into}'`;
+    } catch (cause) {
+      // Nothing here has been checked yet, so a refusal at this point is about
+      // reaching the remote, not about the commit — say so, and name the next
+      // step, rather than letting a network failure read as an unlanded merge
+      // (CONV-3).
+      return {
+        verified: false,
+        commit: '',
+        detail:
+          `fetching '${remote}' to check '${into}' failed (` +
+          (cause instanceof Error ? cause.message : String(cause)) +
+          `) — the local clone may simply be behind and unable to confirm the ` +
+          `claimed merge until '${remote}' can be reached; retry once it can`,
+      };
+    }
+  }
+
+  let commit: string;
+  try {
+    commit = await git(repo, [
+      'rev-parse',
+      '--verify',
+      `${claim.claimedCommit}^{commit}`,
+    ]);
+  } catch {
+    return {
+      verified: false,
+      commit: '',
+      detail:
+        `'${claim.claimedCommit}' is not a commit '${repo}' has` +
+        (remote === ''
+          ? ''
+          : `, even after fetching '${remote}/${into}' — check the sha, or that ` +
+            `'${remote}' is where the merge actually landed`),
+    };
+  }
+
+  if (await isAncestor(repo, commit, trunk)) {
+    const tie = await tieToTask(repo, commit, claim, remote);
+    return tie.verified
+      ? { ...tie, detail: `reachable from ${trunkName} ${tie.detail}` }
+      : tie;
+  }
+
+  if (remote === '') {
+    return {
+      verified: false,
+      commit,
+      detail:
+        `'${commit}' is not reachable from local '${into}' in '${repo}' — ` +
+        `the claimed merge did not land there`,
+    };
+  }
+
+  // Fail closed, same as `gitMergeContract.check`: say it did not land
+  // rather than guess, since guessing "yes" here is exactly how a commit
+  // stays unresolvable from every clone but this one. The remote's trunk
+  // was just fetched fresh above, so this is not a stale-clone question —
+  // the claimed merge is not there.
+  return {
+    verified: false,
+    commit,
+    detail:
+      `'${commit}' is not reachable from '${remote}/${into}' after ` +
+      `fetching it — the claimed merge did not land there, and no clone but ` +
+      `this one can resolve it yet`,
+  };
+}
+
 /**
  * Resume can ask git whether the merge landed, which makes this the safest
  * kind of effect there is (DESIGN §6): the repository itself is the record.

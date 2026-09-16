@@ -16,6 +16,7 @@ import {
   gitMergeContract,
   mergeChange,
   mergeMessage,
+  verifyOperatorMerge,
   type MergeDecisionRequest,
   type ReviewRecord,
 } from './merge.js';
@@ -553,6 +554,243 @@ describe('mergeChange', () => {
     git(repo, ['push', 'origin', 'main']);
 
     expect(await gitMergeContract.check?.(intent)).toBe(true);
+  });
+
+  // T4.2.15: `verifyOperatorMerge` is what `mpgm record-merge` calls before
+  // appending `ChangeMergedByOperator` — an operator's claim that a merge
+  // landed is only ever recorded once this agrees, never on the operator's
+  // word alone (CONV-4). Nested here (rather than its own top-level
+  // `describe`) so it can reuse `repoWithBranch`/`newBareRemote` above.
+  describe('verifyOperatorMerge', () => {
+    /** The claim `mpgm record-merge` builds, with the task's own branch. */
+    function claim(
+      repo: string,
+      claimedCommit: string,
+      branch: string,
+      overrides: Partial<Parameters<typeof verifyOperatorMerge>[0]> = {},
+    ): Parameters<typeof verifyOperatorMerge>[0] {
+      return { repo, claimedCommit, into: 'main', taskId: 'T1', branch, ...overrides };
+    }
+
+    it('verifies a commit the local trunk already carries, with no remote configured', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+
+      const result = await verifyOperatorMerge(claim(repo, commit, branch));
+
+      expect(result).toMatchObject({ verified: true, commit });
+      expect(result.detail).toContain('main');
+    });
+
+    it('refuses a commit that never reached the trunk', async () => {
+      const { repo, ref, branch } = await repoWithBranch();
+
+      // `ref` is the tip of the task's own branch — real, but never merged.
+      const result = await verifyOperatorMerge(claim(repo, ref, branch));
+
+      expect(result.verified).toBe(false);
+      expect(result.detail).toContain('not reachable');
+    });
+
+    it('refuses a commit the repository does not have at all', async () => {
+      const { repo, branch } = await repoWithBranch();
+
+      const result = await verifyOperatorMerge(claim(repo, 'deadbeef1234', branch));
+
+      expect(result.verified).toBe(false);
+      expect(result.detail).toContain('not a commit');
+      expect(result.commit).toBe('');
+    });
+
+    // T4.2.15 rework: an operator types `HEAD`, `main` or an abbreviation as
+    // readily as a sha, and every one of those is a value that resolves
+    // differently in another clone — or here tomorrow. Recording the string
+    // as typed would put exactly the T4.2.12 defect back in the log through
+    // the operator's keyboard, so what comes back to be recorded is the sha
+    // git resolved, never the claim.
+    it('resolves a symbolic ref to the full sha rather than handing the claim back', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+
+      for (const symbolic of ['HEAD', 'main', commit.slice(0, 8)]) {
+        const result = await verifyOperatorMerge(claim(repo, symbolic, branch));
+
+        expect(result.verified).toBe(true);
+        expect(result.commit).toBe(commit);
+        expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+      }
+    });
+
+    // T4.2.15 rework: reachability from the trunk says *a* commit landed. It
+    // says nothing about whose change is in it, so on its own it would verify
+    // `record-merge T4.2.10 --commit <any commit on main>` — a record
+    // indistinguishable in the log from a true one, which is the class of
+    // claim this verb exists to keep out (CONV-4).
+    it('refuses a trunk commit that has nothing to do with the task', async () => {
+      const { repo, branch } = await repoWithBranch();
+      // A commit on the trunk that is not the task's merge, and whose message
+      // never names it: unrelated work landing first, as it does.
+      writeFileSync(join(repo, 'unrelated.txt'), 'somebody else\n');
+      git(repo, ['add', '--all']);
+      git(repo, ['commit', '-m', 'unrelated work']);
+      const unrelated = git(repo, ['rev-parse', 'HEAD']);
+
+      const result = await verifyOperatorMerge(claim(repo, unrelated, branch));
+
+      expect(result.verified).toBe(false);
+      expect(result.detail).toContain('does not contain');
+      expect(result.detail).toContain(branch);
+    });
+
+    // The branch deleted on merge is the normal state of a merged pull
+    // request, so the tie cannot depend on it alone: the merge commit's own
+    // message names the task (`Closes-Task` from `mergeMessage`, and equally
+    // GitHub's `Merge pull request #134 from siajasl/mpgm/T4.2.9`).
+    it('ties a merge to its task by the commit message when the branch is gone', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, [
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        '-m',
+        `Merge pull request #134 from siajasl/${branch}`,
+        branch,
+      ]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, [
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.mpgm', 'worktrees', 'T1'),
+      ]);
+      git(repo, ['branch', '-D', branch]);
+
+      const result = await verifyOperatorMerge(claim(repo, commit, branch));
+
+      expect(result).toMatchObject({ verified: true, commit });
+      expect(result.detail).toContain('names T1');
+    });
+
+    // ...and when neither holds, it refuses rather than recording a merge
+    // tied to the task by nothing but the operator's say-so.
+    it('refuses when the branch is gone and nothing in the commit names the task', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', 'Merge a branch', branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, [
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.mpgm', 'worktrees', 'T1'),
+      ]);
+      git(repo, ['branch', '-D', branch]);
+
+      const result = await verifyOperatorMerge(claim(repo, commit, branch));
+
+      expect(result.verified).toBe(false);
+      expect(result.detail).toContain('nothing ties it to T1');
+    });
+
+    // A task id that is a prefix of another must not tie a merge to the
+    // wrong task: `T4.2.1` reading itself into `T4.2.15` is a whole
+    // milestone's worth of ids away from being hypothetical here.
+    it('does not read a task id out of a longer one in the message', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', 'Merge mpgm/T15', branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, [
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.mpgm', 'worktrees', 'T1'),
+      ]);
+      git(repo, ['branch', '-D', branch]);
+
+      const result = await verifyOperatorMerge(claim(repo, commit, branch));
+
+      expect(result.verified).toBe(false);
+    });
+
+    // The T4.2.12 shape, applied to an operator's claim rather than the
+    // kernel's own: a commit only the local clone can resolve is exactly the
+    // half-landed state this task exists to stop the log from recording as
+    // done, so this fails closed on it rather than trusting the local
+    // repository's word for what a fresh clone would see.
+    it('fails closed when a remote is configured and does not yet have the commit', async () => {
+      const { repo, branch } = await repoWithBranch();
+      const remote = newBareRemote();
+      git(repo, ['remote', 'add', 'origin', remote]);
+      git(repo, ['push', 'origin', 'main']);
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+
+      const beforePush = await verifyOperatorMerge(claim(repo, commit, branch));
+      expect(beforePush.verified).toBe(false);
+      expect(beforePush.detail).toContain('no clone but this one');
+
+      git(repo, ['push', 'origin', 'main']);
+
+      const afterPush = await verifyOperatorMerge(claim(repo, commit, branch));
+      expect(afterPush.verified).toBe(true);
+      expect(afterPush.detail).toContain('origin/main');
+    });
+
+    it('verifies against the local trunk alone when no remote by that name is configured', async () => {
+      const { repo, branch } = await repoWithBranch();
+      git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+
+      const result = await verifyOperatorMerge(
+        claim(repo, commit, branch, { remote: 'upstream' }),
+      );
+
+      expect(result.verified).toBe(true);
+      expect(result.detail).toContain('local');
+    });
+
+    // The scenario this task exists for: a pull request merged on GitHub
+    // (PRs 134, 135) whose merge commit the local clone has never fetched.
+    // The local trunk does not carry the object at all — `cat-file -e`
+    // against it alone would refuse a merge that demonstrably landed. This
+    // fetches the remote before checking anything locally, so it verifies
+    // rather than blaming a stale clone (CONV-3).
+    it('verifies a commit merged on the remote before the local clone ever fetched it', async () => {
+      const { repo, branch } = await repoWithBranch();
+      const remote = newBareRemote();
+      git(repo, ['remote', 'add', 'origin', remote]);
+      git(repo, ['push', 'origin', 'main']);
+      git(repo, ['push', 'origin', branch]);
+
+      // The merge happens on a second clone — the shape of a pull request
+      // merged from GitHub's UI — and is pushed to the remote. The kernel's
+      // own repo never fetches on its own, so its local 'main' never learns
+      // about this commit; it is not even an object the local repo has.
+      const external = cloneOf(remote);
+      git(external, [
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        '-m',
+        `Merge ${branch}`,
+        `origin/${branch}`,
+      ]);
+      const commit = git(external, ['rev-parse', 'HEAD']);
+      git(external, ['push', 'origin', 'main']);
+
+      expect(() =>
+        execFileSync('git', ['cat-file', '-e', `${commit}^{commit}`], {
+          cwd: repo,
+          encoding: 'utf8',
+        }),
+      ).toThrow();
+
+      const result = await verifyOperatorMerge(claim(repo, commit, branch));
+
+      expect(result).toMatchObject({ verified: true, commit });
+      expect(result.detail).toContain('origin/main');
+    });
   });
 });
 

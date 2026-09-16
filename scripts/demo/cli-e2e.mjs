@@ -1077,6 +1077,240 @@ try {
     twice.output.split('\n')[0] ?? '',
   );
 
+  // record-merge — an operator's own hand-merge, verified against the
+  // repository itself rather than taken on the operator's word (T4.2.15,
+  // HIL-5, OBS-1): the M4.2 shape this verb exists for is a task the
+  // implement loop dispatched, reviewed, rejected three times and abandoned
+  // on a review budget, then merged by hand as a pull request (T4.2.9 and
+  // T4.2.10, merged as PRs 134/135). A run of its own, the same reason
+  // `--into` above got one: this task was never dispatched in `r1`, and
+  // `record-merge` refuses one it never ran.
+  {
+    const mergeRunId = 'r-hand-merge';
+    const mergeTaskId = 'T9.5.1';
+    const mergeRepo = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-'));
+    execFileSync('git', ['init', '--quiet', '--initial-branch=main'], {
+      cwd: mergeRepo,
+    });
+    execFileSync('git', ['config', 'user.email', 'e2e@example.com'], {
+      cwd: mergeRepo,
+    });
+    execFileSync('git', ['config', 'user.name', 'mpgm e2e'], { cwd: mergeRepo });
+    writeFileSync(join(mergeRepo, 'README.md'), '# sample\n');
+    execFileSync('git', ['add', '-A'], { cwd: mergeRepo });
+    execFileSync('git', ['commit', '--quiet', '-m', 'initial'], { cwd: mergeRepo });
+
+    // Driven to `BudgetExceeded{kind: 'reviews'}` the way the implement loop
+    // itself would: dispatched, completed, reviewed and rejected, then
+    // blocked — appended directly, the same way `confirm`'s `DryRunRecorded`
+    // is above, because nothing here needs a live agent to demonstrate.
+    {
+      const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        {
+          runId: mergeRunId,
+          type: 'RunStarted',
+          payload: { project: workspace, operator: 'operator' },
+        },
+        {
+          runId: mergeRunId,
+          type: 'TaskDispatched',
+          payload: { taskId: mergeTaskId, role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: mergeRunId,
+          type: 'TaskCompleted',
+          payload: { taskId: mergeTaskId, artifactRefs: [] },
+        },
+        {
+          runId: mergeRunId,
+          type: 'ChangeReviewed',
+          payload: {
+            taskId: mergeTaskId,
+            reviewTaskId: `${mergeTaskId}-review-3`,
+            reviewerRole: 'code-reviewer',
+            ref: 'abc1234',
+            approved: false,
+            summary: 'still not addressed',
+            findings: 1,
+          },
+        },
+        {
+          runId: mergeRunId,
+          type: 'BudgetExceeded',
+          payload: { taskId: mergeTaskId, kind: 'reviews', limit: 3, observed: 3 },
+        },
+        {
+          runId: mergeRunId,
+          type: 'TaskBlocked',
+          payload: { taskId: mergeTaskId, reason: 'the review still refuses the change' },
+        },
+      ]);
+      db.close();
+    }
+
+    const unresolvable = await call([
+      'record-merge',
+      mergeTaskId,
+      '--commit',
+      '0'.repeat(40),
+      '--by',
+      'macg',
+      '--repo',
+      mergeRepo,
+      '--run',
+      mergeRunId,
+    ]);
+    check(
+      'record-merge refuses a commit the repository cannot resolve',
+      !unresolvable.result.ok && unresolvable.output.includes('is not a commit'),
+      unresolvable.output,
+    );
+
+    // Before anything is recorded: the harness's own outcome (blocked) is
+    // the only fact in the log, and the merged-tasks denominator this run
+    // contributes to the escaped-defect rate reads 0.
+    const ratesBefore = await call(['status', '--run', mergeRunId, '--rates']);
+    check(
+      'before recording, the run contributes nothing to the merged-tasks denominator',
+      ratesBefore.output.includes('0 merged tasks'),
+      ratesBefore.output.split('\n').find((line) => line.includes('escaped-defects')) ??
+        '(no such line)',
+    );
+
+    // The operator merged it by hand anyway, on GitHub — played back locally
+    // as a real branch merged into `main`, the same shape
+    // `verifyOperatorMerge` checks against.
+    execFileSync('git', ['checkout', '-b', `mpgm/${mergeTaskId}`], { cwd: mergeRepo });
+    writeFileSync(join(mergeRepo, 'feature.ts'), 'export const feature = 1;\n');
+    execFileSync('git', ['add', '-A'], { cwd: mergeRepo });
+    execFileSync('git', ['commit', '--quiet', '-m', 'add the feature'], {
+      cwd: mergeRepo,
+    });
+    execFileSync('git', ['checkout', 'main'], { cwd: mergeRepo });
+    execFileSync(
+      'git',
+      [
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        '-m',
+        `Merge mpgm/${mergeTaskId}`,
+        `mpgm/${mergeTaskId}`,
+      ],
+      { cwd: mergeRepo },
+    );
+    const mergedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: mergeRepo,
+      encoding: 'utf8',
+    }).trim();
+
+    // Reachable from the trunk is not the same claim as "this task's change
+    // landed": an unrelated commit on `main` satisfies the first and nothing
+    // of the second, and a record of it would be indistinguishable in the log
+    // from a true one (T4.2.15 rework, CONV-4).
+    // The repository's own root commit: on the trunk, older than the task's
+    // branch, and carrying nothing of it.
+    const unrelated = execFileSync('git', ['rev-list', '--max-parents=0', 'main'], {
+      cwd: mergeRepo,
+      encoding: 'utf8',
+    }).trim();
+    const untied = await call([
+      'record-merge',
+      mergeTaskId,
+      '--commit',
+      unrelated,
+      '--by',
+      'macg',
+      '--repo',
+      mergeRepo,
+      '--run',
+      mergeRunId,
+    ]);
+    check(
+      'record-merge refuses a trunk commit that is not this task-s merge',
+      !untied.result.ok && untied.output.includes('does not contain'),
+      untied.output,
+    );
+
+    const recorded = await call([
+      'record-merge',
+      mergeTaskId,
+      '--commit',
+      mergedCommit,
+      '--by',
+      'macg',
+      '--reason',
+      'merged pull request #999 by hand after the review budget ran out',
+      '--repo',
+      mergeRepo,
+      '--run',
+      mergeRunId,
+    ]);
+    check(
+      'record-merge verifies the claimed commit against the repository and records it',
+      recorded.result.ok &&
+        recorded.output.includes(`${mergeTaskId} recorded merged by macg`),
+      recorded.output,
+    );
+
+    // CONV-6: checked independently of `result.ok` — the recorded sha really
+    // is reachable from the trunk, read back from the repository itself.
+    check(
+      'the recorded commit really is reachable from the trunk',
+      (() => {
+        try {
+          execFileSync('git', ['merge-base', '--is-ancestor', mergedCommit, 'main'], {
+            cwd: mergeRepo,
+            encoding: 'utf8',
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })(),
+    );
+
+    const afterRecorded = await call(['status', '--run', mergeRunId]);
+    check(
+      'status reads the task merged from the log alone, its harness outcome unchanged',
+      afterRecorded.output.includes(`${mergeTaskId} blocked — merged by macg at`) &&
+        afterRecorded.output.includes(mergedCommit.slice(0, 12)),
+      afterRecorded.output,
+    );
+
+    // After recording: the merged-tasks denominator moved, read back from
+    // the log alone rather than from `recorded.result` — the same
+    // `computeEscapedDefectRate` the M4.2 case names as wrong today (28
+    // where the truth is 30) now folds this task in.
+    const ratesAfter = await call(['status', '--run', mergeRunId, '--rates']);
+    check(
+      'after recording, the merged-tasks denominator moved',
+      ratesAfter.output.includes('1 merged tasks'),
+      ratesAfter.output.split('\n').find((line) => line.includes('escaped-defects')) ??
+        '(no such line)',
+    );
+
+    const already = await call([
+      'record-merge',
+      mergeTaskId,
+      '--commit',
+      mergedCommit,
+      '--by',
+      'someone-else',
+      '--repo',
+      mergeRepo,
+      '--run',
+      mergeRunId,
+    ]);
+    check(
+      'record-merge refuses to overwrite a merge already recorded',
+      !already.result.ok && already.output.includes('already recorded merged'),
+      already.output,
+    );
+  }
+
   // kill — terminal, and resume does not undo it
   await call(['kill', '--run', 'r1']);
   const afterKill = await call(['resume', '--run', 'r1']);

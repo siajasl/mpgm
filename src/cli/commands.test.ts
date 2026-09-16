@@ -16,8 +16,17 @@ import { EventLog } from '../event/store.js';
 import { deployFingerprint } from '../policy/deploy-gate.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
+import { computeEscapedDefectRate } from '../state/escaped-defect-rate.js';
+import { fold } from '../state/reduce.js';
 import { fileDefect, routeDefect } from '../test/defect.js';
-import { intervene, rollback, status, trace, type CliContext } from './commands.js';
+import {
+  intervene,
+  recordMerge,
+  rollback,
+  status,
+  trace,
+  type CliContext,
+} from './commands.js';
 
 /**
  * `rollback` (T4.1.5), against a fake `env.provision` rather than a real
@@ -609,6 +618,342 @@ describe('rollback', () => {
       },
     ]);
     expect(releaseRollbackRefusedEvents(afterRoot)).toEqual([]);
+  });
+});
+
+/**
+ * `recordMerge` / `mpgm record-merge` (T4.2.15, HIL-5, OBS-1) — a task the
+ * implement loop abandoned on a budget, merged by an operator's own hand
+ * afterwards.
+ */
+describe('recordMerge', () => {
+  function newGitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-repo-'));
+    const git = (args: readonly string[]): void => {
+      execFileSync('git', [...args], { cwd: dir, encoding: 'utf8' });
+    };
+    git(['init', '--initial-branch=main']);
+    git(['config', 'user.email', 'test@example.com']);
+    git(['config', 'user.name', 'Test']);
+    writeFileSync(join(dir, 'README.md'), '# sample\n');
+    git(['add', '--all']);
+    git(['commit', '-m', 'initial']);
+    return dir;
+  }
+
+  function git(cwd: string, args: readonly string[]): string {
+    return execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim();
+  }
+
+  /**
+   * A pull request GitHub merged, played back locally: a branch carrying the
+   * task's change, merged into `main` the way an operator's "Merge pull
+   * request" button would — `recordMerge` never asks how the commit got
+   * there, only whether it is reachable, so a plain `--no-ff` merge is
+   * enough to stand in for one.
+   */
+  function mergeTaskBranch(repo: string, taskId: string): string {
+    git(repo, ['checkout', '-b', `mpgm/${taskId}`]);
+    writeFileSync(join(repo, 'feature.ts'), 'export const feature = 1;\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'add the feature']);
+    git(repo, ['checkout', 'main']);
+    git(repo, [
+      'merge',
+      '--no-ff',
+      '--no-edit',
+      '-m',
+      `Merge mpgm/${taskId}`,
+      `mpgm/${taskId}`,
+    ]);
+    return git(repo, ['rev-parse', 'HEAD']);
+  }
+
+  /** A task abandoned on a review budget, the M4.2 shape this task exists
+   * for: completed, reviewed and rejected three times, then blocked. */
+  function abandonedOnReviewBudget(root: string, runId: string, taskId: string): void {
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        { runId, type: 'RunStarted', payload: { project: root, operator: 'op' } },
+        {
+          runId,
+          type: 'TaskDispatched',
+          payload: { taskId, role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        { runId, type: 'TaskCompleted', payload: { taskId, artifactRefs: [] } },
+        {
+          runId,
+          type: 'ChangeReviewed',
+          payload: {
+            taskId,
+            reviewTaskId: `${taskId}-review-3`,
+            reviewerRole: 'code-reviewer',
+            ref: 'abc1234',
+            approved: false,
+            summary: 'still not addressed',
+            findings: 1,
+          },
+        },
+        {
+          runId,
+          type: 'BudgetExceeded',
+          payload: { taskId, kind: 'reviews', limit: 3, observed: 3 },
+        },
+        {
+          runId,
+          type: 'TaskBlocked',
+          payload: { taskId, reason: 'the review still refuses the change' },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  }
+
+  function eventsOf(root: string): readonly unknown[] {
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      return log.read();
+    } finally {
+      db.close();
+    }
+  }
+
+  it('drives a task to BudgetExceeded, records the operator merge, and reads it back from the log alone', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    const commit = mergeTaskBranch(repo, 'T1');
+    abandonedOnReviewBudget(root, 'r1', 'T1');
+
+    const writes: string[] = [];
+    const result = await recordMerge(
+      newContext(root, writes),
+      'r1',
+      'T1',
+      commit,
+      'macg',
+      'merged pull request #135 by hand',
+      repo,
+      'main',
+    );
+
+    expect(result.ok).toBe(true);
+    expect(writes.join('\n')).toContain('T1 recorded merged by macg');
+
+    // CONV-6: this must be able to fail. Checked independently of the code
+    // path under test — not by trusting `result.ok` — that the recorded sha
+    // really is reachable from the trunk.
+    expect(() =>
+      execFileSync('git', ['merge-base', '--is-ancestor', commit, 'main'], {
+        cwd: repo,
+        encoding: 'utf8',
+      }),
+    ).not.toThrow();
+
+    // Everything from here reads a fresh open of the log alone, not `result`.
+    const events = eventsOf(root);
+    const state = fold(events as never);
+    const task = state.runs.r1?.tasks.T1;
+
+    expect(task?.status).toBe('blocked'); // the harness's own outcome, unchanged
+    expect(task?.merged).toMatchObject({
+      commit,
+      branch: 'mpgm/T1',
+      into: 'main',
+      by: 'macg',
+      lastReviewApproved: false,
+      reviewTaskId: '', // a rejected review does not authorise a merge
+    });
+
+    // The merged-tasks denominator moved: nothing had merged for this run
+    // before this task's own change landed and was recorded.
+    const rate = computeEscapedDefectRate('r1', events as never, []);
+    expect(rate.merged).toBe(1);
+  });
+
+  // T4.2.15: `status` prints `task.status`, and that field never becomes
+  // anything but `blocked` for this task — the log is append-only. A reader
+  // of `status` alone must be able to see the merge without folding the log
+  // themselves, the same combined reading `pm/projection.ts`'s `columnFor`
+  // and `dashboard/projection.ts` already give this state.
+  it('reports a hand-merged task as blocked-and-merged in one status line, not blocked alone', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    const commit = mergeTaskBranch(repo, 'T1');
+    abandonedOnReviewBudget(root, 'r1', 'T1');
+
+    await recordMerge(
+      newContext(root, []),
+      'r1',
+      'T1',
+      commit,
+      'macg',
+      'merged pull request #135 by hand',
+      repo,
+      'main',
+    );
+
+    const writes: string[] = [];
+    const result = status(newContext(root, writes), 'r1');
+
+    expect(result.ok).toBe(true);
+    const taskLine = writes
+      .join('\n')
+      .split('\n')
+      .find((line) => line.includes('task T1 '));
+    expect(taskLine).toContain('blocked');
+    expect(taskLine).toContain(`merged by macg at ${commit.slice(0, 12)}`);
+  });
+
+  it('refuses to record a merge that never reached the trunk, and appends nothing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    // A real commit, on a branch never merged into `main`.
+    git(repo, ['checkout', '-b', 'mpgm/T1']);
+    writeFileSync(join(repo, 'feature.ts'), 'export const feature = 1;\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'add the feature']);
+    const unmerged = git(repo, ['rev-parse', 'HEAD']);
+    git(repo, ['checkout', 'main']);
+    abandonedOnReviewBudget(root, 'r1', 'T1');
+
+    const writes: string[] = [];
+    const result = await recordMerge(
+      newContext(root, writes),
+      'r1',
+      'T1',
+      unmerged,
+      'macg',
+      'claims a merge that never happened',
+      repo,
+      'main',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('unverified merge');
+    expect(writes.join('\n')).toContain('not reachable');
+
+    const events = eventsOf(root);
+    expect(
+      (events as { type: string }[]).some(
+        (event) => event.type === 'ChangeMergedByOperator',
+      ),
+    ).toBe(false);
+    const state = fold(events as never);
+    expect(state.runs.r1?.tasks.T1?.merged).toBeNull();
+  });
+
+  // T4.2.15 rework: `--commit` is operator input, and an operator reaches for
+  // `HEAD` (or `main`, or an abbreviation) as readily as a sha. Every one of
+  // those resolves elsewhere — or here, later — to a different commit, so
+  // writing the string as typed into an append-only log is the T4.2.12 defect
+  // arriving by another door. What is appended is the sha git resolved.
+  it('records the resolved sha, not the symbolic ref the operator typed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    const commit = mergeTaskBranch(repo, 'T1');
+    abandonedOnReviewBudget(root, 'r1', 'T1');
+
+    const result = await recordMerge(
+      newContext(root, []),
+      'r1',
+      'T1',
+      'HEAD',
+      'macg',
+      'merged by hand, sha copied from the local checkout',
+      repo,
+      'main',
+    );
+
+    expect(result.ok).toBe(true);
+
+    const merged = fold(eventsOf(root) as never).runs.r1?.tasks.T1?.merged;
+    expect(merged?.commit).toBe(commit);
+    expect(merged?.commit).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  // T4.2.15 rework: reachable-from-the-trunk is not the same claim as this
+  // task's change landed. Without the tie, any commit on `main` records as
+  // any task's merge, and the resulting event is indistinguishable in the log
+  // from a true one — a record nothing verified, which is what this verb
+  // exists to refuse (CONV-4).
+  it('refuses a trunk commit that is not this task-s merge, and appends nothing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    mergeTaskBranch(repo, 'T1');
+    // Somebody else's work, landing on the trunk after T1's own merge.
+    writeFileSync(join(repo, 'unrelated.ts'), 'export const other = 2;\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'unrelated work']);
+    const unrelated = git(repo, ['rev-parse', 'HEAD']);
+    abandonedOnReviewBudget(root, 'r1', 'T2');
+
+    const writes: string[] = [];
+    const result = await recordMerge(
+      newContext(root, writes),
+      'r1',
+      'T2',
+      unrelated,
+      'macg',
+      'a commit on main that carries nothing of T2',
+      repo,
+      'main',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('unverified merge');
+    expect(writes.join('\n')).toContain('nothing ties it to T2');
+
+    const events = eventsOf(root);
+    expect(
+      (events as { type: string }[]).some(
+        (event) => event.type === 'ChangeMergedByOperator',
+      ),
+    ).toBe(false);
+    expect(fold(events as never).runs.r1?.tasks.T2?.merged).toBeNull();
+  });
+
+  it('refuses to overwrite a merge already recorded, kernel or operator', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    const commit = mergeTaskBranch(repo, 'T1');
+    abandonedOnReviewBudget(root, 'r1', 'T1');
+
+    const writes: string[] = [];
+    const first = await recordMerge(
+      newContext(root, writes),
+      'r1',
+      'T1',
+      commit,
+      'macg',
+      'merged pull request #135 by hand',
+      repo,
+      'main',
+    );
+    expect(first.ok).toBe(true);
+
+    const secondWrites: string[] = [];
+    const second = await recordMerge(
+      newContext(root, secondWrites),
+      'r1',
+      'T1',
+      commit,
+      'someone-else',
+      'trying again',
+      repo,
+      'main',
+    );
+
+    expect(second.ok).toBe(false);
+    expect(second.detail).toBe('already merged');
+
+    const events = eventsOf(root) as { type: string }[];
+    expect(
+      events.filter((event) => event.type === 'ChangeMergedByOperator'),
+    ).toHaveLength(1);
   });
 });
 

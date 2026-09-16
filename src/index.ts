@@ -309,6 +309,7 @@ export {
   chat,
   DEFAULT_DASHBOARD_PORT,
   intervene,
+  recordMerge,
   reopen,
   replay,
   rollback,
@@ -517,6 +518,8 @@ export type {
   MergeDecisionRequest,
   MergeRefusal,
   MergeResult,
+  OperatorMergeClaim,
+  OperatorMergeVerification,
   ReviewFinding,
   ReviewRecord,
 } from './implement/merge.js';
@@ -529,6 +532,7 @@ export {
   mergeChange,
   MergeError,
   mergeMessage,
+  verifyOperatorMerge,
 } from './implement/merge.js';
 export type {
   RefusalReason,

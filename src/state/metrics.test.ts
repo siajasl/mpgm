@@ -214,6 +214,53 @@ describe('computeRunMetrics', () => {
     expect(report.overall.avgLatencyMs).toBe(1000);
   });
 
+  // T4.2.15: `BudgetExceeded{kind: 'reviews'}` really did stop the loop, and
+  // a task that then reads blocked forever misreports a run whose work is
+  // on the trunk. An operator recording the hand-merge afterwards is what
+  // this asserts stops counting it as a failed implementer session.
+  it('counts a task an operator merged by hand as a success, not a failure', () => {
+    const events = logWith([
+      runStarted,
+      { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
+      dispatched('T1', 'implementer'),
+      usage('T1', 0.5),
+      completed('T1'),
+      {
+        runId: RUN,
+        type: 'BudgetExceeded',
+        payload: { taskId: 'T1', kind: 'reviews', limit: 3, observed: 3 },
+      },
+      blocked('T1', 'the review still refuses the change'),
+      {
+        runId: RUN,
+        type: 'ChangeMergedByOperator',
+        payload: {
+          taskId: 'T1',
+          branch: 'mpgm/T1',
+          into: 'main',
+          commit: 'def5678',
+          by: 'macg',
+          reason: 'merged pull request #135 by hand',
+          lastReviewApproved: false,
+          lastReviewTaskId: 'T1-review-3',
+        },
+      },
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    // The harness's own outcome is unchanged: it really did give up here.
+    expect(run.tasks.T1?.status).toBe('blocked');
+
+    const report = computeRunMetrics(run, events);
+
+    expect(report.overall.completed).toBe(1);
+    expect(report.overall.blocked).toBe(0);
+    expect(report.overall.successRate).toBe(1);
+  });
+
   it('latency spans every round of a task, not just its last dispatch', () => {
     // `implement/loop.ts` re-dispatches the same taskId for a CI repair round
     // and again for a review-rework round, appending a fresh `TaskDispatched`

@@ -9,8 +9,10 @@ import { defectSchema, type Defect } from '../test/defect.js';
  * the artifact store — the event catalog has no defect event and this module
  * adds none (TST-5's artifacts are the record; the log only ever points at
  * them). A Defect history entry carries no date of its own, so "when did the
- * task its route names merge" is dated from that task's own `ChangeMerged`,
- * and "when was this filed" is dated primarily from the `TaskCompleted`
+ * task its route names merge" is dated from that task's own `ChangeMerged`
+ * — or `ChangeMergedByOperator` (T4.2.15), read identically here; see
+ * `computeEscapedDefectRate`'s own comment for what recording one late does
+ * to this dating — and "when was this filed" is dated primarily from the `TaskCompleted`
  * event whose `artifactRefs` names the artifact — both read off the event's
  * own `ts` (`StoredEvent.ts`).
  *
@@ -357,8 +359,28 @@ export function computeEscapedDefectRate(
   events: readonly StoredEvent[],
   defects: readonly Artifact[] = [],
 ): EscapedDefectRate {
+  // `ChangeMergedByOperator` (T4.2.15) counts here exactly as `ChangeMerged`
+  // does: both mean the same fact — a task's change reached the trunk — and
+  // the only difference between them is who performed the merge, which this
+  // module never asks. Leaving the operator-recorded kind out would keep the
+  // denominator below exactly as wrong as the gap this task closes: a task
+  // whose change is on `main` still not counted among the tasks that merged.
+  //
+  // What does change for a hand-recorded merge: its `ts` is *this* event's
+  // own append time, weeks or more after the real GitHub merge it records
+  // (the log is append-only, DESIGN §6, and neither event type is ever
+  // rewritten). The `merge.ts >= filed.ts` comparison below reads that
+  // recorded `ts`, not history — a defect actually filed between the real
+  // merge and this record would compare as filed *before* the merge and read
+  // as the fix landing rather than an escape, undercounting `escaped` for
+  // exactly the two tasks this task exists to bring into the denominator at
+  // all. There is no fix for this within the log's own append-only
+  // guarantee (§6): the true merge time was never recorded, so nothing here
+  // can recover it, and this module does not pretend otherwise by
+  // backdating the comparison.
   const changeMerged = events.filter(
-    (event): event is StoredEvent<ChangeMergedPayload> => event.type === 'ChangeMerged',
+    (event): event is StoredEvent<ChangeMergedPayload> =>
+      event.type === 'ChangeMerged' || event.type === 'ChangeMergedByOperator',
   );
   const taskCompleted = events.filter(
     (event): event is StoredEvent<TaskCompletedPayload> => event.type === 'TaskCompleted',

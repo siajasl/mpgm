@@ -187,6 +187,17 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
         ? Date.parse(end) - Date.parse(start)
         : null;
 
+    // A task an operator recorded merged by hand (T4.2.15) reads `blocked`
+    // here — that is the harness's own outcome, and `latencyMs` above still
+    // measures how long it took to reach it — but counting it against
+    // `successRate` below would count a change that is on the trunk as a
+    // failure of the implementer that wrote it, which is exactly the wrong
+    // figure this task exists to fix. Only `blocked` is remapped: a task
+    // still `dispatched` or genuinely `blocked` with no merge stays exactly
+    // that.
+    const status: TaskStatus =
+      task.status === 'blocked' && task.merged !== null ? 'completed' : task.status;
+
     // `dispatchCount - 1`: the first dispatch is the task running once, not
     // a retry of itself. An attested task never dispatches at all, so this
     // floors at 0 rather than reading -1.
@@ -201,7 +212,7 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
       taskId: task.taskId,
       role: task.role === '' ? '(attested)' : task.role,
       phase: dispatchedPhase.get(task.taskId) ?? NO_PHASE,
-      status: task.status,
+      status,
       costUsd: usage.costUsd,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

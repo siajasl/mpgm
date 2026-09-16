@@ -171,6 +171,50 @@ describe('runProjection / summaryOf', () => {
     }
   });
 
+  // T4.2.15: `status` stays `blocked` — the harness really did give up — but
+  // an operator recording the hand-merge afterwards is what an operator
+  // scanning the dashboard needs to read as "not blocked any more".
+  it('does not count a task an operator merged by hand as blocked', () => {
+    const { db, log, projector } = harness();
+    try {
+      log.appendMany([
+        { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'BudgetExceeded',
+          payload: { taskId: 'T1', kind: 'reviews', limit: 3, observed: 3 },
+        },
+        {
+          runId: RUN,
+          type: 'ChangeMergedByOperator',
+          payload: {
+            taskId: 'T1',
+            branch: 'mpgm/T1',
+            into: 'main',
+            commit: 'def5678',
+            by: 'macg',
+            reason: 'merged pull request #135 by hand',
+            lastReviewApproved: false,
+            lastReviewTaskId: 'T1-review-3',
+          },
+        },
+      ]);
+
+      const run = requireRun(projector.project(), RUN);
+      const projection = runProjection(run, log.read());
+      expect(projection.tasks[0]?.status).toBe('blocked');
+      expect(projection.tasks[0]?.blocked).toBe(false);
+      expect(summaryOf(run).blockedTasks).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("reports the per-phase metrics and quality rates from the run's own events, not from RunState (T4.2.6)", () => {
     const { db, log, projector } = harness();
     try {

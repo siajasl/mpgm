@@ -147,6 +147,20 @@ describe('reduce', () => {
       },
       {
         runId: RUN,
+        type: 'ChangeMergedByOperator',
+        payload: {
+          taskId: 'T1',
+          branch: 'mpgm/T1',
+          into: 'main',
+          commit: 'ghi9012',
+          by: 'macg',
+          reason: 'merged the pull request after the review budget exhausted',
+          lastReviewApproved: false,
+          lastReviewTaskId: 'T1-review-3',
+        },
+      },
+      {
+        runId: RUN,
         type: 'DryRunRecorded',
         payload: {
           taskId: 'T1',
@@ -581,6 +595,116 @@ describe('reduce', () => {
 
     expect(state.runs[RUN]?.tasks.T1?.status).toBe('blocked');
     expect(state.runs[RUN]?.tasks.T1?.budgetBreaches).toBe(1);
+  });
+
+  it('folds an operator-recorded merge onto a task the loop abandoned on a budget (T4.2.15)', () => {
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'ChangeReviewed',
+          payload: {
+            taskId: 'T1',
+            reviewTaskId: 'T1-review-3',
+            reviewerRole: 'code-reviewer',
+            ref: 'abc1234',
+            approved: false,
+            summary: 'still not addressed',
+            findings: 1,
+          },
+        },
+        {
+          runId: RUN,
+          type: 'BudgetExceeded',
+          payload: { taskId: 'T1', kind: 'reviews', limit: 3, observed: 3 },
+        },
+        {
+          runId: RUN,
+          type: 'TaskBlocked',
+          payload: { taskId: 'T1', reason: 'the review still refuses the change' },
+        },
+        {
+          runId: RUN,
+          type: 'ChangeMergedByOperator',
+          payload: {
+            taskId: 'T1',
+            branch: 'mpgm/T1',
+            into: 'main',
+            commit: 'def5678',
+            by: 'macg',
+            reason: 'merged pull request #135 by hand',
+            lastReviewApproved: false,
+            lastReviewTaskId: 'T1-review-3',
+          },
+        },
+      ]),
+    );
+
+    const task = state.runs[RUN]?.tasks.T1;
+    // The harness's own outcome is left alone — it really did give up — and
+    // is not the same question as whether the change landed.
+    expect(task?.status).toBe('blocked');
+    expect(task?.merged).toMatchObject({
+      commit: 'def5678',
+      by: 'macg',
+      lastReviewApproved: false,
+      // Only an *approving* review authorises a merge (`ChangeMerged`'s own
+      // documented convention); a rejected one does not, so this field stays
+      // empty rather than naming the review that refused it.
+      reviewTaskId: '',
+    });
+  });
+
+  it('leaves reviewTaskId set when the operator merge follows an approving review', () => {
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'ChangeReviewed',
+          payload: {
+            taskId: 'T1',
+            reviewTaskId: 'T1-review',
+            reviewerRole: 'code-reviewer',
+            ref: 'abc1234',
+            approved: true,
+            summary: 'fine',
+            findings: 0,
+          },
+        },
+        {
+          runId: RUN,
+          type: 'ChangeMergedByOperator',
+          payload: {
+            taskId: 'T1',
+            branch: 'mpgm/T1',
+            into: 'main',
+            commit: 'def5678',
+            by: 'macg',
+            reason:
+              'the kernel pushed to a remote it lost access to; merged by hand instead',
+            lastReviewApproved: true,
+            lastReviewTaskId: 'T1-review',
+          },
+        },
+      ]),
+    );
+
+    expect(state.runs[RUN]?.tasks.T1?.merged).toMatchObject({
+      reviewTaskId: 'T1-review',
+      lastReviewApproved: true,
+    });
   });
 
   it('refuses to block a task the run never dispatched', () => {
