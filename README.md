@@ -41,8 +41,9 @@ node ./bin/mpgm.mjs approve definition-gate --run r1 --by <you>
 The first command is an interactive elicitation dialogue and is not optional:
 [phases/definition.yaml](phases/definition.yaml) declares its output as a required input to the
 phase, and `run definition` refuses to dispatch anything without it — that dialogue is the
-unbounded term inside NFR-6's one-hour bound. The second drafts and adversarially reviews a
-Definition artifact and presents a gate packet for your decision; the first two need model
+unbounded term inside NFR-6's one-hour bound. The second surveys prior art, drafts a
+Definition artifact, challenges it with an independent reviewer role, and presents a gate packet
+for your decision — three sessions, which is where most of the elapsed time below goes; the first two need model
 access — `ANTHROPIC_API_KEY`, or a `claude` login on disk — and nothing else. The third only
 records your decision — gate truth lives in the event log (ADR-3), and it makes no model call.
 The walk is complete once it returns; do not add `--tag` here. That flag exists to write a derived
@@ -50,14 +51,18 @@ git marker for the decision, but `tagGate` (`src/git/tag.ts`) does so by running
 artifacts` and `git commit` **in the checkout you were just told to run these commands from**,
 leaving an extra commit (and an annotated tag, `gate/definition/v1`) on whatever branch is
 checked out — not something to do by default in a checkout you may intend to contribute from. If
-you do want the marker, know what it costs and how to undo it: `git reset --hard HEAD~1 && git tag
--d gate/definition/v1`. Keep `--run r1` on every command: the gate packet's own "Approve with:
+you do want the marker, know what it costs and how to undo it: `git tag -d gate/definition/v1 &&
+git reset HEAD~1`, which drops the commit and leaves the artifacts it captured on disk. Do not
+reach for `reset --hard` here: that discards the walk's own artifacts along with anything else
+uncommitted in the checkout. Keep `--run r1` on every command: the gate packet's own "Approve with:
 mpgm approve definition-gate --by <you>" hint omits it, and copying that literally targets the
 CLI's default run (`run-1`) instead of the one you started, failing with `no such run: run-1` —
 friction inside the hour NFR-6 bounds, reported here rather than worked around. The full
 credential list for running the harness further than this (`gh`, `git push`, Docker) is in
-[DEVELOPMENT-CLOUD.md](DEVELOPMENT-CLOUD.md). `npm run demo:definition` runs the same three steps
-against a disposable sample project with scripted operator answers and prints its own elapsed
+[DEVELOPMENT-CLOUD.md](DEVELOPMENT-CLOUD.md). `npm run demo:definition` runs the same three verbs
+against a disposable sample project with scripted operator answers — it does pass `--tag`, which
+is safe there and not here, because the workspace it commits into is a temporary directory it
+made — and prints its own elapsed
 time for the walk — a scripted operator's time, not a substitute for timing yourself (T4.2.10,
 NFR-6) — if you want to see it before running it on your own.
 

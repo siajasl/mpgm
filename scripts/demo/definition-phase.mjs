@@ -201,6 +201,15 @@ try {
       '(scripted operator, already-built process — see the file header for what this ' +
       'does not measure)\n',
   );
+  // Asserted, not merely printed: NFR-6 is a threshold, and a demo whose own
+  // headline finding cannot fail reports the walk happened rather than that it
+  // happened inside the bound (CONV-6). A zero or negative reading fails here
+  // too — that is a broken clock, not a fast walk.
+  check(
+    "the walk reached an approved gate inside NFR-6's hour",
+    walkMs > 0 && walkMs < 60 * 60 * 1000,
+    formatDuration(walkMs),
+  );
 
   process.stdout.write('\n4. Prior art (DEF-3)\n');
   const priorArtPath = join(workspace, 'artifacts', 'definition', 'prior-art.v1.md');
