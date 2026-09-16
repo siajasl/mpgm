@@ -17,17 +17,20 @@ Requires Node >= 24.
 
 ```bash
 npm install
-npm run check
+npm run build
 ```
 
-`npm run check` runs the same pipeline as CI: format, lint, typecheck, build, test, a secret
-scan, and the milestone verification demos in `scripts/demo/`. Four of those demos
-(`demo:env`, `demo:release`, `demo:verify`, `demo:gate`) shell to a real Docker daemon and fail
-without one — use `npm run check:fast` where no daemon is available, and see
-[DEVELOPMENT-CLOUD.md](DEVELOPMENT-CLOUD.md) for what else that changes.
+`npm run build` is the step the invocation below actually depends on — `bin/mpgm.mjs` imports
+from `dist/`, which does not exist until this runs. `npm run check` (below) builds too, but it
+also runs the full CI pipeline — lint, typecheck, test, a secret scan, nine demos — so it is not
+a step on the path to a gated artifact, only what to run before contributing.
 
 `mpgm` is not installed globally — `package.json` is `"private": true` — so invoke the built CLI
-directly. This walks a project to its first gated artifact, the Definition phase (DEF-1):
+directly, **from this checkout's root**: `chat` and `run` read `phases/`, `roles/` and `kb/` from
+the current working directory, and there is no scaffold command yet that copies them into a
+project of your own — run them anywhere else and `RoleRegistry` throws an uncaught
+`RoleLoadError` with a stack trace, not a clean message. This walks the checkout itself to its
+first gated artifact, the Definition phase (DEF-1):
 
 ```bash
 node ./bin/mpgm.mjs chat definition --run r1 --brief "<a sentence on what you're building>"
@@ -37,14 +40,29 @@ node ./bin/mpgm.mjs approve definition-gate --run r1 --by <you> --tag
 
 The first command is an interactive elicitation dialogue and is not optional:
 [phases/definition.yaml](phases/definition.yaml) declares its output as a required input to the
-phase, and `run definition` refuses to dispatch anything without it. The second drafts and
-adversarially reviews a Definition artifact and presents a gate packet for your decision; the
-third approves it, which tags it in git (immutable from there on). All three need model access —
-`ANTHROPIC_API_KEY`, or a `claude` login on disk — and nothing else; the full credential list for
+phase, and `run definition` refuses to dispatch anything without it — that dialogue is the
+unbounded term inside NFR-6's one-hour bound. The second drafts and adversarially reviews a
+Definition artifact and presents a gate packet for your decision; the first two need model
+access — `ANTHROPIC_API_KEY`, or a `claude` login on disk — and nothing else. The third only
+records your decision and tags the artifact in git (immutable from there on); it makes no model
+call. Keep `--run r1` on every command: the gate packet's own "Approve with: mpgm approve
+definition-gate --by <you>" hint omits it, and copying that literally targets the CLI's default
+run (`run-1`) instead of the one you started, failing with `no such run: run-1` — friction inside
+the hour NFR-6 bounds, reported here rather than worked around. The full credential list for
 running the harness further than this (`gh`, `git push`, Docker) is in
 [DEVELOPMENT-CLOUD.md](DEVELOPMENT-CLOUD.md). `npm run demo:definition` runs the same three steps
-against a disposable sample project with scripted operator answers, if you want to see it before
-running it on your own.
+against a disposable sample project with scripted operator answers and prints its own elapsed
+time for the walk — a scripted operator's time, not a substitute for timing yourself (T4.2.10,
+NFR-6) — if you want to see it before running it on your own.
+
+`npm run check` runs the same pipeline as CI: format, lint, typecheck, build, test, a secret
+scan, and nine of the milestone verification demos in `scripts/demo/` — every one that needs no
+model credentials. It excludes `demo:definition`, `demo:scope`, `demo:design`, `demo:plan`,
+`demo:agent` and `probe:sdk`, which drive real chat sessions like the one above and need
+`ANTHROPIC_API_KEY`; run those yourself. Four of the nine `check` runs (`demo:env`,
+`demo:release`, `demo:verify`, `demo:gate`) shell to a real Docker daemon and fail without one —
+use `npm run check:fast` where no daemon is available, and see
+[DEVELOPMENT-CLOUD.md](DEVELOPMENT-CLOUD.md) for what else that changes.
 
 ## Development
 
