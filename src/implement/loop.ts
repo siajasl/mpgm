@@ -1,4 +1,5 @@
 import type { SessionRunner, TaskOutcome } from '../agent/runner.js';
+import { escalateModel } from '../agent/models.js';
 import { assembleContext } from '../context/assembler.js';
 import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
@@ -860,12 +861,53 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       );
     }
 
+    // The last rework round runs one tier up, the same as the CI repair
+    // loop's own last attempt and for the same reason (PLAN §3, T3.1.2b,
+    // AGT-5): the model is a dispatch-time session parameter rather than a
+    // role field, so trying a stronger one before the review budget runs out
+    // costs nothing beyond the round that was going to be spent regardless.
+    // Escalating every round would spend the stronger model on rounds the
+    // weaker one would have closed on its own; escalating none is what this
+    // task found — every round pinned to the implementer role's frozen
+    // `claude-sonnet-5` however many times it came back from review.
+    //
+    // "Last" is a round of the *budget*, not of the reviewer's patience: the
+    // branch above already stops the task on a rejection at the cap with
+    // nothing left to extend it (`BudgetExceeded`, `kind: 'reviews'`), and a
+    // rework dispatched there would fix a change no further round would ever
+    // review. So `track('rework', ...)` below is only ever reached with a
+    // review round still to come, and the round dispatched here is the last
+    // one whose fix that next round can still use — one short of `attempts`
+    // as it stands now, after the extension above has already been applied
+    // when this round earned one.
+    //
+    // Read off the implementer role rather than off the PLAN Model column:
+    // `planTaskSchema` (`src/schemas.ts`) carries no model field, so the
+    // gated Plan artifact never holds a per-task model for any dispatch to
+    // read, and PLAN §3 hands routing on that column to T5.2.3. Making it
+    // binding here, without changing the schema and revising §3 and T5.2.3's
+    // scope in the same commit, would make the column binding by accident —
+    // so the escalation stays role-relative, one tier above whatever this
+    // role already runs on, whatever the column happens to say for this task.
+    //
+    // No separate cost check guards the escalated round: `SessionRunner`
+    // already caps what one session may spend against the implementer role's
+    // own budget regardless of which model runs it (`maxBudgetUsd:
+    // ledger.remainingCostUsd`, AGT-4), so a round that would exceed what
+    // is left is refused there — the session is blocked and `BudgetExceeded`
+    // is written, never silently re-run on the cheaper tier instead.
+    const isFinalRework = round === attempts - 1;
+    const reworkModel = isFinalRework
+      ? escalateModel(implementerRole.model)
+      : implementerRole.model;
+
     // Back to the author, with what the reviewer found. Without this the review
     // is written, recorded and read by nobody, and the next attempt at the task
     // reproduces the defect because a fresh session knows nothing about it.
     const reworked = await track('rework', round, {
       taskId: task.id,
       role: implementerRole,
+      model: reworkModel,
       prompt: declarationRound
         ? `${context.prompt}\n\n## The reviewer approved. One thing is missing\n\n${renderDeclarationRound(undeclared)}`
         : `${context.prompt}\n\n## The review asked for changes\n\n${renderReview({
