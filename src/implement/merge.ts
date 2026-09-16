@@ -305,7 +305,7 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
   // knows, on resume, whether "landed" has to mean "reachable from the
   // remote" or merely "reachable from the local trunk".
   const remoteName = options.remote ?? 'origin';
-  const remote = await remoteExists(options.repo, remoteName) ? remoteName : '';
+  const remote = (await remoteExists(options.repo, remoteName)) ? remoteName : '';
 
   const perform = async (): Promise<string> => {
     try {
