@@ -129,6 +129,14 @@ function issueBody(
  * one wrong answer that matters. A task that never entered the loop (nothing
  * checked, nothing reviewed) is done when it completes, because nothing else
  * is ever going to happen to it.
+ *
+ * `merged` is checked before `status`, not after (T4.2.15): a task the loop
+ * abandoned on a budget and an operator then merged by hand still carries
+ * `status === 'blocked'` forever — the log is append-only and that field is
+ * the harness's own outcome, not "is this task done" — so testing `blocked`
+ * first would keep such a task on this board's `blocked` column even though
+ * its code is on the trunk. Same reading as `dashboardTask.blocked` and
+ * `run.tasks[...].merged === null` in `dashboard/projection.ts`.
  */
 export function columnFor(
   taskId: string,
@@ -142,11 +150,11 @@ export function columnFor(
       ? 'ready'
       : 'backlog';
   }
-  if (state.status === 'blocked') {
-    return 'blocked';
-  }
   if (state.merged !== null) {
     return 'done';
+  }
+  if (state.status === 'blocked') {
+    return 'blocked';
   }
   if (state.status === 'completed') {
     return state.review === null && state.checks === null ? 'done' : 'in-review';

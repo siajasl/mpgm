@@ -405,8 +405,21 @@ export function status(
       );
       const tasks = Object.values(current.tasks);
       for (const task of tasks.filter((entry) => entry.status !== 'attested')) {
+        // `status` alone would still read a task an operator merged by hand
+        // after `BudgetExceeded` as stuck there forever — the log is
+        // append-only, so `task.status` never becomes anything but `blocked`
+        // (T4.2.15). `merged` is the second fact a reader has to combine with
+        // it, the same reading `pm/projection.ts`'s `columnFor` and
+        // `dashboard/projection.ts` already give it; printed here so `status`
+        // does too, rather than leaving an operator to fold the log a second
+        // time to see what the board and the dashboard already show.
+        const merge = task.merged;
+        const mergedSuffix =
+          merge === null
+            ? ''
+            : ` — merged${merge.by === '' ? '' : ` by ${merge.by}`} at ${merge.commit.slice(0, 12)}`;
         context.write(
-          `  task ${task.taskId} ${task.status} (${task.role} on ${task.model})`,
+          `  task ${task.taskId} ${task.status}${mergedSuffix} (${task.role} on ${task.model})`,
         );
       }
       // Summarised rather than listed: an attested task has no role, model,

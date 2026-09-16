@@ -774,6 +774,40 @@ describe('recordMerge', () => {
     expect(rate.merged).toBe(1);
   });
 
+  // T4.2.15: `status` prints `task.status`, and that field never becomes
+  // anything but `blocked` for this task — the log is append-only. A reader
+  // of `status` alone must be able to see the merge without folding the log
+  // themselves, the same combined reading `pm/projection.ts`'s `columnFor`
+  // and `dashboard/projection.ts` already give this state.
+  it('reports a hand-merged task as blocked-and-merged in one status line, not blocked alone', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
+    const repo = newGitRepo();
+    const commit = mergeTaskBranch(repo, 'T1');
+    abandonedOnReviewBudget(root, 'r1', 'T1');
+
+    await recordMerge(
+      newContext(root, []),
+      'r1',
+      'T1',
+      commit,
+      'macg',
+      'merged pull request #135 by hand',
+      repo,
+      'main',
+    );
+
+    const writes: string[] = [];
+    const result = status(newContext(root, writes), 'r1');
+
+    expect(result.ok).toBe(true);
+    const taskLine = writes
+      .join('\n')
+      .split('\n')
+      .find((line) => line.includes('task T1 '));
+    expect(taskLine).toContain('blocked');
+    expect(taskLine).toContain(`merged by macg at ${commit.slice(0, 12)}`);
+  });
+
   it('refuses to record a merge that never reached the trunk, and appends nothing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-record-merge-root-'));
     const repo = newGitRepo();

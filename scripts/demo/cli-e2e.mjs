@@ -1247,7 +1247,8 @@ try {
     const afterRecorded = await call(['status', '--run', mergeRunId]);
     check(
       'status reads the task merged from the log alone, its harness outcome unchanged',
-      afterRecorded.output.includes(mergeTaskId),
+      afterRecorded.output.includes(`${mergeTaskId} blocked — merged by macg at`) &&
+        afterRecorded.output.includes(mergedCommit.slice(0, 12)),
       afterRecorded.output,
     );
 

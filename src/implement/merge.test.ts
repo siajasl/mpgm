@@ -626,6 +626,48 @@ describe('mergeChange', () => {
       expect(result.verified).toBe(true);
       expect(result.detail).toContain('local');
     });
+
+    // The scenario this task exists for: a pull request merged on GitHub
+    // (PRs 134, 135) whose merge commit the local clone has never fetched.
+    // The local trunk does not carry the object at all — `cat-file -e`
+    // against it alone would refuse a merge that demonstrably landed. This
+    // fetches the remote before checking anything locally, so it verifies
+    // rather than blaming a stale clone (CONV-3).
+    it('verifies a commit merged on the remote before the local clone ever fetched it', async () => {
+      const { repo, branch } = await repoWithBranch();
+      const remote = newBareRemote();
+      git(repo, ['remote', 'add', 'origin', remote]);
+      git(repo, ['push', 'origin', 'main']);
+      git(repo, ['push', 'origin', branch]);
+
+      // The merge happens on a second clone — the shape of a pull request
+      // merged from GitHub's UI — and is pushed to the remote. The kernel's
+      // own repo never fetches on its own, so its local 'main' never learns
+      // about this commit; it is not even an object the local repo has.
+      const external = cloneOf(remote);
+      git(external, [
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        '-m',
+        `Merge ${branch}`,
+        `origin/${branch}`,
+      ]);
+      const commit = git(external, ['rev-parse', 'HEAD']);
+      git(external, ['push', 'origin', 'main']);
+
+      expect(() =>
+        execFileSync('git', ['cat-file', '-e', `${commit}^{commit}`], {
+          cwd: repo,
+          encoding: 'utf8',
+        }),
+      ).toThrow();
+
+      const result = await verifyOperatorMerge(repo, commit, 'main');
+
+      expect(result.verified).toBe(true);
+      expect(result.detail).toContain('origin/main');
+    });
   });
 });
 

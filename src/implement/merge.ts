@@ -460,13 +460,17 @@ export interface OperatorMergeVerification {
  * operator's if nothing checks their word the same way.
  *
  * `remote` is used only when a remote by that name is actually configured on
- * `repo` — defaulting to `origin`, the same default `mergeChange` applies —
- * so a project with nothing to push to is verified against its local trunk
- * alone, same as `gitMergeContract.check`. Where a remote *is* configured,
- * a commit that only the local trunk can resolve is not enough: it is
- * exactly the half-landed state this task exists to stop a log from
- * claiming as done, so this fails closed on it rather than trusting the
- * local repository's word for what a fresh clone would see.
+ * `repo` — defaulting to `origin`, the same default `mergeChange` applies.
+ * Where one *is* configured, it is fetched **before** anything is checked
+ * locally, and the check is answered against `FETCH_HEAD`, not the local
+ * trunk: the motivating case is a pull request merged on GitHub (T4.2.9,
+ * T4.2.10 — PRs 134, 135) by an operator whose local clone has not pulled
+ * since, and in that clone the merge commit is not an object the repository
+ * has at all — checking the local trunk first would refuse the very merge
+ * this task exists to record, and blame the sha for what is really a stale
+ * clone (CONV-3). Only when no remote is configured does this fall back to
+ * the local trunk alone, same as `gitMergeContract.check` does for a project
+ * with nothing to push to.
  */
 export async function verifyOperatorMerge(
   repo: string,
@@ -474,42 +478,72 @@ export async function verifyOperatorMerge(
   into: string,
   remote?: string,
 ): Promise<OperatorMergeVerification> {
-  try {
-    await git(repo, ['cat-file', '-e', `${commit}^{commit}`]);
-  } catch {
-    return { verified: false, detail: `'${commit}' is not a commit '${repo}' has` };
-  }
-
-  try {
-    await git(repo, ['merge-base', '--is-ancestor', commit, into]);
-  } catch {
-    return {
-      verified: false,
-      detail:
-        `'${commit}' is not reachable from '${into}' in '${repo}' — the ` +
-        `claimed merge did not land there`,
-    };
-  }
-
   const remoteName = remote ?? 'origin';
-  if (!(await remoteExists(repo, remoteName))) {
-    return { verified: true, detail: `reachable from local '${into}'` };
+  const hasRemote = await remoteExists(repo, remoteName);
+
+  if (!hasRemote) {
+    try {
+      await git(repo, ['cat-file', '-e', `${commit}^{commit}`]);
+    } catch {
+      return { verified: false, detail: `'${commit}' is not a commit '${repo}' has` };
+    }
+    try {
+      await git(repo, ['merge-base', '--is-ancestor', commit, into]);
+      return { verified: true, detail: `reachable from local '${into}'` };
+    } catch {
+      return {
+        verified: false,
+        detail:
+          `'${commit}' is not reachable from local '${into}' in '${repo}' — ` +
+          `the claimed merge did not land there`,
+      };
+    }
   }
 
   try {
     await git(repo, ['fetch', remoteName, into]);
-    await git(repo, ['merge-base', '--is-ancestor', commit, 'FETCH_HEAD']);
-    return { verified: true, detail: `reachable from '${remoteName}/${into}'` };
-  } catch {
-    // The local trunk has it; the remote does not (yet), or is unreachable to
-    // ask. Fail closed, same as `gitMergeContract.check`: say it did not
-    // land rather than guess, since guessing "yes" here is exactly how a
-    // commit stays unresolvable from every clone but this one.
+  } catch (cause) {
+    // Nothing here has been checked yet, so a refusal at this point is about
+    // reaching the remote, not about the commit — say so, and name the next
+    // step, rather than letting a network failure read as an unlanded merge
+    // (CONV-3).
     return {
       verified: false,
       detail:
-        `'${commit}' is reachable from local '${into}' but not from ` +
-        `'${remoteName}/${into}' — no clone but this one can resolve it yet`,
+        `fetching '${remoteName}' to check '${into}' failed (` +
+        (cause instanceof Error ? cause.message : String(cause)) +
+        `) — the local clone may simply be behind and unable to confirm the ` +
+        `claimed merge until '${remoteName}' can be reached; retry once it can`,
+    };
+  }
+
+  try {
+    await git(repo, ['cat-file', '-e', `${commit}^{commit}`]);
+  } catch {
+    return {
+      verified: false,
+      detail:
+        `'${commit}' is not a commit '${repo}' has, even after fetching ` +
+        `'${remoteName}/${into}' — check the sha, or that '${remoteName}' is ` +
+        `where the merge actually landed`,
+    };
+  }
+
+  try {
+    await git(repo, ['merge-base', '--is-ancestor', commit, 'FETCH_HEAD']);
+    return { verified: true, detail: `reachable from '${remoteName}/${into}'` };
+  } catch {
+    // Fail closed, same as `gitMergeContract.check`: say it did not land
+    // rather than guess, since guessing "yes" here is exactly how a commit
+    // stays unresolvable from every clone but this one. The remote's trunk
+    // was just fetched fresh above, so this is not a stale-clone question —
+    // the claimed merge is not there.
+    return {
+      verified: false,
+      detail:
+        `'${commit}' is not reachable from '${remoteName}/${into}' after ` +
+        `fetching it — the claimed merge did not land there, and no clone but ` +
+        `this one can resolve it yet`,
     };
   }
 }
