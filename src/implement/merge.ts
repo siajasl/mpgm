@@ -222,7 +222,15 @@ export interface MergeChangeOptions {
    * kernel's own merge as the one everybody, including a fresh clone, agrees
    * happened, and it is also what ends the operator ritual of resetting a
    * diverged local `main` back to `origin/main` by hand after every pull
-   * request merge: once the kernel pushes, there is nothing left to diverge.
+   * request merge — but only because `mergeChange` also fetches the remote
+   * trunk and fast-forwards the local one onto it before making the merge
+   * commit (see the pre-merge step in `mergeChange` itself). A plain push
+   * alone would not have ended that ritual: it would still be rejected
+   * non-fast-forward the moment `origin/main` moved by some other route —
+   * most likely the "Merge pull request #N" commit GitHub writes when a pull
+   * request is merged from its UI, which is how this project's own trunk has
+   * always advanced — leaving an unpushable merge commit behind and turning
+   * the reset into a precondition for the next merge rather than removing it.
    */
   readonly remote?: string;
 }
@@ -308,6 +316,45 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
   const remote = (await remoteExists(options.repo, remoteName)) ? remoteName : '';
 
   const perform = async (): Promise<string> => {
+    if (remote !== '') {
+      // Nothing here fetches or fast-forwards the local trunk on its own
+      // (worktree.ts branches from whatever `into` already is), so once
+      // `origin/into` has moved by any other route — most commonly the
+      // "Merge pull request #N" commit GitHub writes when a pull request is
+      // merged from its UI, which is how this repository's own trunk
+      // advances — a plain `git push` below would be rejected non-fast-
+      // forward. That would leave the local `--no-ff` merge made below
+      // stranded: created, unpushable, and blocking every merge after it
+      // until an operator resets `into` to the remote by hand — exactly the
+      // ritual this task exists to end, turned into a precondition instead
+      // of an afterthought. So catch up *before* making that commit: fetch
+      // the remote trunk and fast-forward the local one onto it.
+      try {
+        await git(options.repo, ['fetch', remote, into]);
+      } catch (cause) {
+        throw new MergeError(
+          `fetching '${remote}' to check '${into}' is caught up failed: ` +
+            (cause instanceof Error ? cause.message : String(cause)),
+          { cause },
+        );
+      }
+      try {
+        await git(options.repo, ['merge', '--ff-only', 'FETCH_HEAD']);
+      } catch (cause) {
+        // A real divergence, not merely a lag: local `into` carries commits
+        // '${remote}/${into}' does not, so no fast-forward can reconcile
+        // them without deciding which side wins — a decision this function
+        // has no basis to make. Fail closed (CONV-4): refuse rather than
+        // guess, and name the reset an operator would otherwise have
+        // performed by hand after noticing the same divergence downstream.
+        throw new MergeError(
+          `local '${into}' has diverged from '${remote}/${into}' and cannot be ` +
+            `fast-forwarded onto it; reset '${into}' to '${remote}/${into}' and retry: ` +
+            (cause instanceof Error ? cause.message : String(cause)),
+          { cause },
+        );
+      }
+    }
     try {
       await git(options.repo, [
         'merge',

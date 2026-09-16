@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -404,6 +404,18 @@ describe('mergeChange', () => {
     return dir;
   }
 
+  /** A second clone of `remote`, used to advance it by a route the kernel's
+   * own repo never sees locally — the shape of a pull request merged from
+   * GitHub's UI. */
+  function cloneOf(remote: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mpgm-clone-'));
+    tempDirs.push(dir);
+    execFileSync('git', ['clone', remote, dir], { encoding: 'utf8' });
+    git(dir, ['config', 'user.email', 'test@example.com']);
+    git(dir, ['config', 'user.name', 'Test']);
+    return dir;
+  }
+
   // T4.2.12: `mergeBranch` used to record `git rev-parse HEAD` against the
   // local trunk alone and stop there, so the sha `ChangeMerged` carried lived
   // only on the machine that made it. A test asserting merely that *some* sha
@@ -438,10 +450,58 @@ describe('mergeChange', () => {
 
   it('leaves a merge unresolved from the remote, and reports it, when the push fails', async () => {
     const { repo, branch, ref } = await repoWithBranch();
-    // A remote configured but unreachable — same shape as a network failure
-    // between the local merge landing and the push it depends on.
-    git(repo, ['remote', 'add', 'origin', join(repo, 'does-not-exist')]);
+    const remote = newBareRemote();
+    git(repo, ['remote', 'add', 'origin', remote]);
+    git(repo, ['push', 'origin', 'main']);
+    // Readable (so the pre-merge fetch this task adds still succeeds) but not
+    // writable — the same shape as a network failure between the local merge
+    // landing and the push it depends on, isolated from the fetch that now
+    // runs before it.
+    chmodSync(remote, 0o555);
+    try {
+      const result = await mergeChange({
+        runId: 'run-1',
+        repo,
+        branch,
+        request: request({ ref }),
+      });
 
+      expect(result.merged).toBe(false);
+      expect(result.reason).toContain('pushing');
+      expect(result.reason).toContain('no clone can resolve it');
+      // The local merge is not undone: only the push failed, and there is
+      // nothing to compensate by throwing the merge itself away.
+      expect(git(repo, ['log', '-1', '--pretty=%s'])).toBe(`Merge ${branch}`);
+    } finally {
+      // rmSync in afterEach needs to be able to delete this again.
+      chmodSync(remote, 0o755);
+    }
+  });
+
+  // T4.2.12 rework: a plain, unforced `git push` after the local `--no-ff`
+  // merge is rejected non-fast-forward the moment `origin/main` has moved by
+  // any other route while the kernel wasn't looking — most likely the "Merge
+  // pull request #N" commit GitHub writes when a pull request is merged from
+  // its UI. Reproduced here by advancing the remote from a second clone the
+  // kernel's own repo never fetches from on its own. Left unfixed, the merge
+  // commit made locally is stranded (created, unpushable) and every later
+  // merge needs the same manual reset this task exists to end. The fix is to
+  // catch the local trunk up *before* creating that commit, so the push that
+  // follows lands as a fast-forward on the remote.
+  it('catches a local trunk up to a remote that moved without it, before merging', async () => {
+    const { repo, branch, ref } = await repoWithBranch();
+    const remote = newBareRemote();
+    git(repo, ['remote', 'add', 'origin', remote]);
+    git(repo, ['push', 'origin', 'main']);
+
+    const external = cloneOf(remote);
+    writeFileSync(join(external, 'external.txt'), 'landed via the GitHub UI\n');
+    git(external, ['add', '--all']);
+    git(external, ['commit', '-m', 'Merge pull request #99 from someone/elsewhere']);
+    git(external, ['push', 'origin', 'main']);
+
+    // The local repo has not fetched, so it does not yet know `origin/main`
+    // moved — exactly the state the kernel is in when this happens for real.
     const result = await mergeChange({
       runId: 'run-1',
       repo,
@@ -449,12 +509,20 @@ describe('mergeChange', () => {
       request: request({ ref }),
     });
 
-    expect(result.merged).toBe(false);
-    expect(result.reason).toContain('pushing');
-    expect(result.reason).toContain('no clone can resolve it');
-    // The local merge is not undone: only the push failed, and there is
-    // nothing to compensate by throwing the merge itself away.
-    expect(git(repo, ['log', '-1', '--pretty=%s'])).toBe(`Merge ${branch}`);
+    expect(result.merged).toBe(true);
+    // The local trunk was fast-forwarded onto the externally-advanced commit
+    // before the task's own merge landed on top of it.
+    expect(readFileSync(join(repo, 'external.txt'), 'utf8')).toContain(
+      'landed via the GitHub UI',
+    );
+    const commit = result.commit;
+    expect(() =>
+      execFileSync(
+        'git',
+        ['--git-dir', remote, 'merge-base', '--is-ancestor', String(commit), 'main'],
+        { encoding: 'utf8' },
+      ),
+    ).not.toThrow();
   });
 
   // T4.2.12: resume asks `gitMergeContract.check`, and a merge that comes to
