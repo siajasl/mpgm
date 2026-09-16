@@ -1,6 +1,7 @@
 # Running mpgm on a cloud-hosted Claude Code instance
 
-**Status:** v0.1 — written against `main` at T4.2.6.
+**Status:** v0.2 — written against `main` at T4.2.15: the trunk push T4.2.12 made non-optional,
+and what an empty log on a fresh instance costs without failing.
 **Upstream:** [CLAUDE.md](CLAUDE.md), [DESIGN.md](DESIGN.md) §4.4/§6, [REQUIREMENTS.md](REQUIREMENTS.md) NFR-2/NFR-6, SAF-2.
 
 This document is about hosting the harness, not about using it. It answers one question: what a
@@ -34,10 +35,30 @@ session that started the process.
 **`gh` authentication.** `GH_TOKEN` / `GITHUB_TOKEN`, or `gh auth login`. Needs pull request
 write and check-run read on the target repository.
 
-**`git` push.** Separate from `gh`. The kernel — never an agent — publishes the branch with
-`git push --force-with-lease origin <branch>` ([src/cli/commands.ts](src/cli/commands.ts)), so a
-credential helper or a tokenised remote must be configured. Without it the push fails, no pull
-request exists, and the loop waits out its grace period for checks nobody asked for.
+**`git` push — to the task branch *and* to the trunk.** Separate from `gh`. The kernel — never an
+agent — publishes the branch with `git push --force-with-lease origin <branch>`
+([src/cli/commands.ts](src/cli/commands.ts)), so a credential helper or a tokenised remote must be
+configured. Without it the push fails, no pull request exists, and the loop waits out its grace
+period for checks nobody asked for.
+
+Since T4.2.12 `mergeBranch` ([src/implement/merge.ts](src/implement/merge.ts)) also fetches the
+remote trunk before merging and pushes it afterwards, so that `ChangeMerged.commit` names a commit
+every clone can resolve. Where a remote by that name is configured the push is **not optional** —
+a project with none (the module's own tests) keeps the old local-only behaviour, but a cloud
+instance pointed at GitHub does not. Two consequences:
+
+- the credential needs push access to the default branch, not only to `mpgm/<taskId>`;
+- **branch protection on `main` breaks the merge path.** The kernel's `--no-ff` merge commit is
+  what carries the `Closes-Task` / `Reviewed-By` trailers the trace index reads (ADR-4), and it
+  is the push landing that makes GitHub mark the pull request merged. A protected branch rejects
+  that push, leaving the merge commit stranded locally. Either exempt the harness's identity, or
+  accept that every task ends needing a hand-merge recorded with `record-merge` (below).
+
+**`record-merge`.** `mpgm record-merge <task> --commit <sha> --by <who>` (T4.2.15) is how a merge
+an operator performed by hand — most often after the loop abandoned the task on a budget — reaches
+the log at all; without it the task reads blocked forever while its code sits on the trunk. It
+fetches the configured remote's trunk and verifies the commit against it before appending
+anything, so the instance needs read access to that remote even when nothing is being pushed.
 
 **`git` identity.** `user.name` and `user.email`, or the loop's merge commit fails.
 
@@ -69,6 +90,15 @@ a different system:
 - `status --metrics` / `--rates` and the dashboard report on an empty history;
 - `mpgm replay` re-derives state from a log that no longer exists.
 
+None of that announces itself. A fresh instance opens an empty database, and `--run` defaults to
+`run-1` either way, so the second run of `run-1` on a new box is a different `run-1` that reports
+confidently on nothing. Nor does the dispatch path object: `implement <task>` runs the task it is
+named regardless of what the log knows, because `readyTasks` is consulted only to list candidates
+in the "no such task" message, never to gate one. So the task implements correctly, and the run's
+cost ledger, success rate, merge-gate and escaped-defect figures, and any `OperatorIntervened`
+redirect note aimed at a future session are simply absent — the OBS-1 failure this project keeps
+filing tasks against, arriving through the deployment rather than through the code.
+
 So `.mpgm/` must sit on a persistent volume, or be synchronised to durable storage between runs.
 The same applies to `.mpgm/worktrees/` while a task is in flight; those are cheap to recreate,
 the log is not.
@@ -76,7 +106,7 @@ the log is not.
 ## 4. Network egress
 
 - `api.anthropic.com` — the sessions.
-- `github.com` / `api.github.com` — `gh`, and the branch push.
+- `github.com` / `api.github.com` — `gh`, the branch push, and the trunk fetch and push (T4.2.12).
 - `registry.npmjs.org` — install.
 
 ## 5. What will not run there
@@ -122,6 +152,8 @@ Node >= 24, git, gh, npm
 ANTHROPIC_API_KEY
 GH_TOKEN                       # PR write + checks read
 git credential helper or tokenised remote
+                               # push to mpgm/<taskId> AND to the default branch (T4.2.12);
+                               # main must not be protected against that identity
 git config user.name / user.email
 persistent volume mounted at .mpgm/
 egress: api.anthropic.com, github.com, registry.npmjs.org
@@ -137,5 +169,10 @@ npm run check:fast                       # no credentials, no daemon needed
 npm run probe:sdk                        # model credentials reachable
 gh auth status && gh api repos/:owner/:repo --silent   # gh authenticated, repo visible
 node ./bin/mpgm.mjs status               # the log opens, and persists across a restart
+git push --dry-run origin HEAD:main      # the trunk push T4.2.12 made non-optional
 node ./bin/mpgm.mjs implement <task> --repo <owner/name>
 ```
+
+`status` is also where an empty log shows itself: on an instance carrying the history it prints the
+run's tasks and rates, and on a fresh one it prints a run that has done nothing. Read it before the
+first `implement`, not after.
