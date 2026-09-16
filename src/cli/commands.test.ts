@@ -1,6 +1,8 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { AgentSessionProvider } from '../agent/session.js';
 import { ArtifactStore } from '../artifact/store.js';
@@ -15,7 +17,7 @@ import { deployFingerprint } from '../policy/deploy-gate.js';
 import type { ReleaseArtifact } from '../release/deliver.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
 import { fileDefect, routeDefect } from '../test/defect.js';
-import { intervene, rollback, status, type CliContext } from './commands.js';
+import { intervene, rollback, status, trace, type CliContext } from './commands.js';
 
 /**
  * `rollback` (T4.1.5), against a fake `env.provision` rather than a real
@@ -40,6 +42,9 @@ const noIo: OperatorIo = {
     throw new Error('rollback never notifies the operator directly');
   },
 };
+
+/** `src/cli/` -> repo root, to read mpgm's own Scope artifact as a fixture. */
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function newContext(root: string, writes: string[]): CliContext {
   return {
@@ -1289,5 +1294,64 @@ describe('intervene redirect — unknown task ids (T4.2.4, CONV-3)', () => {
     expect(output).toContain('could not be consulted');
     expect(output).toContain('has no frontmatter');
     expect(output).not.toContain('or the gated Plan at artifacts/plan/plan.md. Known');
+  });
+});
+
+describe('trace --coverage over mpgm’s own Scope artifact (T4.3.1, SCP-1, TST-2)', () => {
+  /**
+   * Before T4.3.1, `artifacts/` held nothing under the `scope` schema — the
+   * `requirements` list `trace`'s coverage mode assembles (`commands.ts`
+   * above) was empty, so this command reported "0/0 verified", a vacuously
+   * met Test gate (TST-2's completion criterion this file exists to refuse).
+   * This exercises the real fixture at `artifacts/scope/requirements.v1.md`
+   * through the same `trace(..., 'coverage')` the CLI runs, in a temp git
+   * repository rather than this checkout's own history: the history here is
+   * a moving target (a future rework could add or remove a `Verifies:`
+   * trailer), and CI's checkout depth is not this test's to depend on. One
+   * seeded commit reproduces the one relationship this repository's real
+   * history already has to mpgm's own Scope: a `Verifies: NFR-6` trailer
+   * (see `0f374aba` in this repository's own log).
+   */
+  it('names both a verified and unverified requirement, not just a row count', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-trace-coverage-'));
+    mkdirSync(join(root, 'artifacts', 'scope'), { recursive: true });
+    writeFileSync(
+      join(root, 'artifacts', 'scope', 'requirements.v1.md'),
+      readFileSync(join(projectRoot, 'artifacts', 'scope', 'requirements.v1.md'), 'utf8'),
+    );
+
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+    git('init', '--quiet');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('add', '.');
+    git('commit', '--quiet', '-m', 'Seed the Scope artifact');
+    git(
+      'commit',
+      '--quiet',
+      '--allow-empty',
+      '-m',
+      'Measure NFR-6 against a fresh install\n\nVerifies: NFR-6',
+    );
+
+    const writes: string[] = [];
+    const result = trace(newContext(root, writes), undefined, 'coverage');
+    const output = writes.join('\n');
+
+    expect(result.ok).toBe(true);
+    expect(result.detail).toBe('1/84');
+    // Named, not merely counted (CONV-6: a report of 84 rows all reading
+    // unverified would pass a test that only checked the row count).
+    expect(output).toMatch(/verified\s+NFR-6/);
+    expect(output).toContain('UNVERIFIED ORC-1');
+    expect(output).toContain('UNVERIFIED TST-5');
+    expect(output).toContain('UNVERIFIED OBS-4');
+    // Every id REQUIREMENTS.md assigns carries across unchanged (ART-2) —
+    // spot-checked here rather than diffed whole, since the point is that
+    // these specific ids (already cited by commit trailers, ADRs and the
+    // Plan artifact elsewhere in this repository) still resolve.
+    expect(output).toContain('UNVERIFIED SCP-1');
+    expect(output).toContain('UNVERIFIED IMP-3');
   });
 });
