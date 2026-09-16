@@ -9,6 +9,7 @@ import { fold } from '../state/reduce.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
 import { SessionRunner } from '../agent/runner.js';
+import { escalateModel } from '../agent/models.js';
 import { ScriptedProvider, scriptedSuccess } from '../agent/scripted-provider.js';
 import { RoleRegistry } from '../role/loader.js';
 import { projectOutputSchemas } from '../schemas.js';
@@ -1310,6 +1311,114 @@ describe('a review that never approves (NFR-1)', () => {
       log.close();
     }
   });
+
+  it('escalates the last rework round one tier, and no earlier one (T4.2.13, AGT-5)', async () => {
+    // The T4.2.9 case this is measured against: three rework rounds, checks
+    // green every round, three rejections, blocked on `BudgetExceeded`
+    // (kind: 'reviews') — and, before this task, no tier ever moved. Read off
+    // the fixture role rather than hardcoded, so this fails instead of
+    // passing vacuously if the role's own model ever changes.
+    const implementerModel = RoleRegistry.fromDirectory(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+    ).get('implementer').model;
+    const escalated = escalateModel(implementerModel);
+    // If the fixture role already sat at the top tier, every assertion below
+    // would pass whether or not escalation actually ran.
+    expect(escalated).not.toBe(implementerModel);
+
+    const { result, log } = await refusedForever();
+    try {
+      expect(result.rounds).toHaveLength(DEFAULT_REVIEW_ATTEMPTS);
+
+      // Every `TaskDispatched` under the implementer role for this task: the
+      // first implementing session, then one rework per round the review
+      // budget still had a further round to spend the fix on. The final
+      // round's own rejection is what exhausts the budget (`BudgetExceeded`
+      // above), and nothing is dispatched to rework a change no further
+      // review would ever read — so this is asserted in the log, per
+      // T4.2.13, rather than on a return value nothing here exposes.
+      const dispatched = log
+        .read()
+        .filter(
+          (event) =>
+            event.type === 'TaskDispatched' &&
+            (event.payload as { taskId: string; role: string }).taskId === 'T1' &&
+            (event.payload as { taskId: string; role: string }).role === 'implementer',
+        )
+        .map((event) => (event.payload as { model: string }).model);
+
+      expect(dispatched).toHaveLength(DEFAULT_REVIEW_ATTEMPTS);
+      // Every round but the last runs on the role's own model — escalating
+      // every round would spend the stronger one on rounds the weaker model
+      // would have closed by itself.
+      expect(dispatched.slice(0, -1)).toStrictEqual(
+        dispatched.slice(0, -1).map(() => implementerModel),
+      );
+      // The last rework round — and it alone — runs one tier up.
+      expect(dispatched.at(-1)).toBe(escalated);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('never escalates a task the reviewer approves on round one', async () => {
+    // The other half of T4.2.13's test: unconditional escalation would pass
+    // the first assertion above just as well (CONV-6). A task approved on its
+    // first review dispatches no rework at all, so its one implementing
+    // session is the only `TaskDispatched` the implementer role gets, and it
+    // has to be the role's own model.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+      expect(result.status).toBe('merged');
+      expect(result.rounds).toHaveLength(1);
+
+      const implementerModel = RoleRegistry.fromDirectory(
+        join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+      ).get('implementer').model;
+      const dispatched = log
+        .read()
+        .filter(
+          (event) =>
+            event.type === 'TaskDispatched' &&
+            (event.payload as { taskId: string; role: string }).taskId === 'T1' &&
+            (event.payload as { taskId: string; role: string }).role === 'implementer',
+        )
+        .map((event) => (event.payload as { model: string }).model);
+
+      expect(dispatched).toStrictEqual([implementerModel]);
+    } finally {
+      log.close();
+    }
+  });
+
   it('records the commit a reviewer named, not the abbreviation it wrote', async () => {
     // The log is what a later run reads to carry findings forward, and it held
     // whatever string the reviewer typed. T4.1.6's blocking review recorded
