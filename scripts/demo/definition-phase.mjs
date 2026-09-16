@@ -11,6 +11,16 @@
  *
  * The operator's answers are scripted so the run is repeatable; the agents,
  * the gate evaluation and the artifacts are entirely real.
+ *
+ * It also times itself (T4.2.10, NFR-6): a "chat definition → gate approved"
+ * elapsed line, printed unconditionally below, whatever the checks say. That
+ * line is one term of NFR-6's "within one hour", not the whole of it — this
+ * process starts already installed and built, so it cannot see the clone,
+ * `npm install` or `npm run build` a fresh checkout also pays for, and it
+ * times a *scripted* operator answering pre-written questions rather than a
+ * competent engineer improvising them, which is almost certainly faster.
+ * Both are named here so a reader of the printed line knows which of the two
+ * it measures.
  */
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
@@ -51,6 +61,14 @@ function readOrReport(path, label) {
     check(label, false, error instanceof Error ? error.message : String(error));
     return '';
   }
+}
+
+/** `65000` → `"1m 5s"`. Whole seconds only — this is a walk-clock finding, not a profile. */
+function formatDuration(ms) {
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${String(minutes)}m ${String(seconds)}s` : `${String(seconds)}s`;
 }
 
 function check(label, condition, detail = '') {
@@ -118,6 +136,7 @@ try {
     return { result, output };
   };
 
+  const walkStartedAt = Date.now();
   process.stdout.write('\n1. Elicitation dialogue\n\n');
   const chat = await call(
     [
@@ -174,6 +193,13 @@ try {
     'the artifact is tagged (ADR-3)',
     listGateTags(workspace).length > 0,
     listGateTags(workspace).join(', '),
+  );
+
+  const walkMs = Date.now() - walkStartedAt;
+  process.stdout.write(
+    `\nElapsed, chat definition → gate approved: ${formatDuration(walkMs)} ` +
+      '(scripted operator, already-built process — see the file header for what this ' +
+      'does not measure)\n',
   );
 
   process.stdout.write('\n4. Prior art (DEF-3)\n');
