@@ -310,6 +310,11 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
   const runSession = async (step: SessionStep): Promise<StepOutcome<unknown>> => {
     const role = options.roles.get(step.role);
     const upstream = upstreamOf(step);
+    // Timed and logged (T4.2.9, NFR-3): this call happens before
+    // `sessions.runTask`, so it is outside the span `SessionUsage.durationMs`
+    // covers, and would otherwise be invisible to any harness-overhead
+    // figure computed from the log alone.
+    const contextStartedAt = performance.now();
     const context = assembleContext({
       task: step,
       upstream,
@@ -321,6 +326,15 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       }),
       kb: options.kb,
       policy: options.policy,
+    });
+    log.append({
+      runId,
+      type: 'ContextAssembled',
+      payload: {
+        taskId: step.id,
+        site: 'phase',
+        durationMs: performance.now() - contextStartedAt,
+      },
     });
 
     // Written inside `onCompleted`, before `TaskCompleted` is appended,

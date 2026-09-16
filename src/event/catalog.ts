@@ -95,14 +95,49 @@ export const sessionUsage = defineEvent(
     durationMs: z.number().nonnegative().nullable(),
     /**
      * Time actually spent waiting on the model API, in milliseconds. The
-     * narrower of the two SDK durations: `durationMs - apiDurationMs` is the
-     * harness's own overhead for the session — the PreToolUse policy gate,
-     * secret substitution, the `ToolCallLogged` append on every tool call —
-     * which is what NFR-3 bounds and T4.2.9 reports (CONV-7).
+     * narrower of the two SDK durations. `durationMs - apiDurationMs` is
+     * *not* harness overhead as NFR-3 means it, whatever an earlier revision
+     * of this comment said: it comes straight off the SDK's own result
+     * message (`durationsOf`, `src/agent/claude-provider.ts`), so it is
+     * *every* non-API second of the session — every `Bash` command, `npm
+     * test` run, `git` operation and file read the agent itself performs.
+     * That is agent tool-execution time, not harness code running, and
+     * NFR-3 does not bound it (`src/state/overhead.ts`'s own module doc).
+     * `computeHarnessOverhead` records it as `nonApiSessionMs` for whoever
+     * wants it, but keeps it out of `overheadMs`/`ratio` and never compares
+     * it against NFR-3's threshold. What T4.2.9 actually reports against
+     * that threshold is `ContextAssembled.durationMs`, below — the one span
+     * this catalog can bracket that is harness code and not agent work.
      */
     apiDurationMs: z.number().nonnegative().nullable(),
   }),
   [upcastSessionUsageV1],
+);
+
+/**
+ * How long assembling one task's context took (T4.2.9, NFR-3).
+ *
+ * `assembleContext` (`../context/assembler.ts`) runs at two call sites —
+ * `src/phase/runner.ts`'s `runSession` and `src/implement/loop.ts`, the
+ * latter being the path every `mpgm implement` uses — and both call it
+ * *before* `SessionRunner.runTask`, so neither call falls inside the span
+ * `SessionUsage.durationMs` covers, above. Without this event, context
+ * assembly would be invisible to any harness-overhead figure: it is real
+ * CPU time NFR-3 names, spent outside every span the log otherwise records.
+ *
+ * `site` keeps the two call sites apart rather than summing them on
+ * arrival: a reader asking how much of a run's overhead came from
+ * assembling context for a phase-playbook session versus an implement-loop
+ * one needs both counted, not folded into one number neither call site
+ * alone produced.
+ */
+export const contextAssembled = defineEvent(
+  'ContextAssembled',
+  z.object({
+    taskId: nonEmpty,
+    site: z.enum(['phase', 'implement']),
+    durationMs: z.number().nonnegative(),
+  }),
 );
 
 export const toolCallLogged = defineEvent(
@@ -702,6 +737,7 @@ export const kernelEvents = [
   changeMerged,
   changeReviewed,
   checksReported,
+  contextAssembled,
   deployConfirmationSpent,
   destructiveOpConfirmed,
   dryRunRecorded,

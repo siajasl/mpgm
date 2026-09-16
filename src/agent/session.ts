@@ -115,12 +115,20 @@ export interface SessionResult {
   /**
    * Time actually spent waiting on the model API, in milliseconds — the
    * SDK's own `duration_api_ms`. The narrower reading: `durationMs -
-   * apiDurationMs` is the harness's own overhead for the session (T4.2.9,
-   * NFR-3), and charging the whole session as model time would understate
-   * exactly the figure that bounds. Null for the same "unmeasured, not
-   * zero" reasons as {@link durationMs}, and also whenever the harness force-
-   * ended a session before it could say how much of its time was spent in
-   * the API (`runWithWallClock`'s timeout, `src/agent/budget.ts`).
+   * apiDurationMs` is *not* harness overhead as NFR-3 means it, whatever an
+   * earlier revision of this comment said. It is every non-API second of
+   * the session — every `Bash` command, `npm test` run, `git` operation and
+   * file read the agent itself performs — which is agent tool-execution
+   * time, not harness code running, so NFR-3 does not bound it
+   * (`src/state/overhead.ts`'s own module doc). `computeHarnessOverhead`
+   * records it as `nonApiSessionMs` for whoever wants it, but keeps it out
+   * of `overheadMs`/`ratio` and never compares it against NFR-3's
+   * threshold. What T4.2.9 actually reports against that threshold is
+   * `ContextAssembled.durationMs`, populated at both `assembleContext` call
+   * sites. Null for the same "unmeasured, not zero" reasons as
+   * {@link durationMs}, and also whenever the harness force-ended a session
+   * before it could say how much of its time was spent in the API
+   * (`runWithWallClock`'s timeout, `src/agent/budget.ts`).
    */
   readonly apiDurationMs: number | null;
 }

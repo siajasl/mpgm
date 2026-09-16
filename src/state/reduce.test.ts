@@ -46,6 +46,15 @@ describe('reduce', () => {
       { runId: RUN, type: 'PhaseEntered', payload: { phase: 'implement' } },
       {
         runId: RUN,
+        // Appended before `TaskDispatched` in production (`src/phase/
+        // runner.ts`, `src/implement/loop.ts` both call `assembleContext`
+        // before `SessionRunner.runTask`), so the fixture order here is not
+        // an arbitrary choice — the reducer case must not require a task.
+        type: 'ContextAssembled',
+        payload: { taskId: 'T1', site: 'phase', durationMs: 12 },
+      },
+      {
+        runId: RUN,
         type: 'TaskDispatched',
         payload: { taskId: 'T1', role: 'implementer', model: 'claude-opus-5' },
       },

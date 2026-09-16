@@ -502,6 +502,10 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     };
   }
 
+  // Timed and logged (T4.2.9, NFR-3), the same as `phase/runner.ts`'s own
+  // call: this is the path every `mpgm implement` uses, and it runs before
+  // `sessions.runTask` — outside the span `SessionUsage.durationMs` covers.
+  const contextStartedAt = performance.now();
   const context = assembleContext({
     task: {
       description: `${task.id} — ${task.title} (${task.milestone})`,
@@ -513,6 +517,15 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     upstream: [],
     kb: options.kb,
     policy: options.policy,
+  });
+  options.log.append({
+    runId,
+    type: 'ContextAssembled',
+    payload: {
+      taskId: task.id,
+      site: 'implement',
+      durationMs: performance.now() - contextStartedAt,
+    },
   });
 
   const authored = await track('implement', 1, {
