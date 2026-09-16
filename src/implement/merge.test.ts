@@ -396,6 +396,96 @@ describe('mergeChange', () => {
     await mergeChange({ runId: 'run-1', repo, branch, request: request({ ref }) });
     expect(await gitMergeContract.check?.(intent)).toBe(true);
   });
+
+  function newBareRemote(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mpgm-remote-'));
+    tempDirs.push(dir);
+    git(dir, ['init', '--bare', '--initial-branch=main']);
+    return dir;
+  }
+
+  // T4.2.12: `mergeBranch` used to record `git rev-parse HEAD` against the
+  // local trunk alone and stop there, so the sha `ChangeMerged` carried lived
+  // only on the machine that made it. A test asserting merely that *some* sha
+  // came back passes against exactly that defect (CONV-6) — the assertion has
+  // to be that the sha is reachable from a remote's trunk, built fresh here
+  // rather than assumed.
+  it('pushes the merge to the trunk of a remote a clone can reach', async () => {
+    const { repo, branch, ref } = await repoWithBranch();
+    const remote = newBareRemote();
+    git(repo, ['remote', 'add', 'origin', remote]);
+    git(repo, ['push', 'origin', 'main']);
+
+    const result = await mergeChange({
+      runId: 'run-1',
+      repo,
+      branch,
+      request: request({ ref }),
+    });
+
+    expect(result.merged).toBe(true);
+    const commit = result.commit;
+    // Read directly off the bare remote, not off the local repo the kernel
+    // ran in — the whole point is that a *different* clone can resolve it.
+    expect(() =>
+      execFileSync(
+        'git',
+        ['--git-dir', remote, 'merge-base', '--is-ancestor', String(commit), 'main'],
+        { encoding: 'utf8' },
+      ),
+    ).not.toThrow();
+  });
+
+  it('leaves a merge unresolved from the remote, and reports it, when the push fails', async () => {
+    const { repo, branch, ref } = await repoWithBranch();
+    // A remote configured but unreachable — same shape as a network failure
+    // between the local merge landing and the push it depends on.
+    git(repo, ['remote', 'add', 'origin', join(repo, 'does-not-exist')]);
+
+    const result = await mergeChange({
+      runId: 'run-1',
+      repo,
+      branch,
+      request: request({ ref }),
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('pushing');
+    expect(result.reason).toContain('no clone can resolve it');
+    // The local merge is not undone: only the push failed, and there is
+    // nothing to compensate by throwing the merge itself away.
+    expect(git(repo, ['log', '-1', '--pretty=%s'])).toBe(`Merge ${branch}`);
+  });
+
+  // T4.2.12: resume asks `gitMergeContract.check`, and a merge that comes to
+  // depend on a push has to fail closed when the local merge landed but the
+  // push did not — otherwise resume would call it "already-landed" and never
+  // retry the push, leaving the commit permanently unresolvable from a clone.
+  it('fails closed on resume between a local merge landing and its push', async () => {
+    const { repo, branch } = await repoWithBranch();
+    const remote = newBareRemote();
+    git(repo, ['remote', 'add', 'origin', remote]);
+    git(repo, ['push', 'origin', 'main']);
+
+    // Merge locally without going through `mergeChange`'s push, simulating a
+    // crash between the two.
+    git(repo, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch}`, branch]);
+    const tip = git(repo, ['rev-parse', 'HEAD']);
+
+    const intent = {
+      intentId: 'i1',
+      taskId: 'T1',
+      contract: 'git.merge',
+      operation: 'mergeBranch',
+      params: { repo, branch, into: 'main', tip, remote: 'origin' },
+    };
+
+    expect(await gitMergeContract.check?.(intent)).toBe(false);
+
+    git(repo, ['push', 'origin', 'main']);
+
+    expect(await gitMergeContract.check?.(intent)).toBe(true);
+  });
 });
 
 describe('changeReviewed', () => {

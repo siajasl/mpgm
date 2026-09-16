@@ -195,6 +195,36 @@ export interface MergeChangeOptions {
    */
   readonly journal?: EffectJournal;
   readonly emit?: (event: EventInput) => Promise<void> | void;
+  /**
+   * Where the trunk is pushed once the local `--no-ff` merge lands, so the
+   * commit `ChangeMerged` records is one a fresh clone can resolve rather
+   * than one that exists only on the machine that made it (T4.2.12).
+   *
+   * Defaults to `origin` and is used only when a remote by that name is
+   * actually configured — a project with nothing to push to (this module's
+   * own tests that build a bare local repo, or a genuinely local-only
+   * project) keeps exactly today's local-only behaviour. Where a remote
+   * *is* configured, though, the push is not optional: it is what this task
+   * decided between two different claims about where truth lives. Pushing
+   * makes the kernel's local merge the fact and the pull request's closing a
+   * consequence of that push landing — which is what happens: GitHub marks a
+   * pull request merged once it can see the head commit is now an ancestor
+   * of the base branch, no separate API call required. Recording the sha
+   * GitHub's own merge produced instead would make GitHub the fact and the
+   * kernel's merge a rehearsal — but nothing in this codebase calls the
+   * GitHub merge API, so that would mean either adding one, or waiting on an
+   * operator to merge the pull request by hand and reading the result back.
+   * Either way it would silently drop the `--no-ff` shape and the
+   * `Closes-Task`/`Reviewed-By` trailers `mergeMessage` writes the moment a
+   * human squashes or rebases the pull request instead of merging it — the
+   * trace index (ADR-4) reads `Closes-Task` off exactly the commit this
+   * function makes, not off whatever GitHub produces. Pushing keeps the
+   * kernel's own merge as the one everybody, including a fresh clone, agrees
+   * happened, and it is also what ends the operator ritual of resetting a
+   * diverged local `main` back to `origin/main` by hand after every pull
+   * request merge: once the kernel pushes, there is nothing left to diverge.
+   */
+  readonly remote?: string;
 }
 
 export interface MergeResult {
@@ -208,6 +238,16 @@ export interface MergeResult {
 async function git(repo: string, args: readonly string[]): Promise<string> {
   const { stdout } = await run('git', [...args], { cwd: repo, encoding: 'utf8' });
   return stdout.trim();
+}
+
+/** Whether `repo` has a remote by this name configured at all. */
+async function remoteExists(repo: string, remote: string): Promise<boolean> {
+  try {
+    await git(repo, ['remote', 'get-url', remote]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -257,6 +297,16 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
   const tip = await git(options.repo, ['rev-parse', options.branch]);
   const message = mergeMessage(options.request, options.branch);
 
+  // A remote configured by this name is what makes the merge below something
+  // more than a local rehearsal (T4.2.12, see `MergeChangeOptions.remote`).
+  // Its absence is not an error — a project with nothing to push to keeps
+  // exactly today's local-only behaviour — but its presence is not optional:
+  // recorded in the effect's own params so `gitMergeContract.check` below
+  // knows, on resume, whether "landed" has to mean "reachable from the
+  // remote" or merely "reachable from the local trunk".
+  const remoteName = options.remote ?? 'origin';
+  const remote = await remoteExists(options.repo, remoteName) ? remoteName : '';
+
   const perform = async (): Promise<string> => {
     try {
       await git(options.repo, [
@@ -277,7 +327,30 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
         { cause },
       );
     }
-    return git(options.repo, ['rev-parse', 'HEAD']);
+    const commit = await git(options.repo, ['rev-parse', 'HEAD']);
+
+    if (remote !== '') {
+      try {
+        await git(options.repo, ['push', remote, into]);
+      } catch (cause) {
+        // The merge landed locally — it is not aborted, unlike a conflict
+        // above, because there is nothing to undo and undoing a real merge
+        // to paper over a network failure would lose it a second way. But it
+        // has not landed anywhere else yet, which is exactly the state this
+        // task exists to stop `ChangeMerged` from claiming otherwise. A retry
+        // of this same effect re-merges nothing (the branch is already
+        // merged) and simply pushes again, which is the "merge redone rather
+        // than lost" this task asks for.
+        throw new MergeError(
+          `merged ${options.branch} into ${into} locally as ${commit}, but pushing ` +
+            `${remote} failed, so no clone can resolve it yet: ` +
+            (cause instanceof Error ? cause.message : String(cause)),
+          { cause },
+        );
+      }
+    }
+
+    return commit;
   };
 
   const effect = {
@@ -285,7 +358,7 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
     taskId: options.request.taskId,
     contract: GIT_MERGE_CONTRACT,
     operation: GIT_MERGE_OPERATION,
-    params: { repo: options.repo, branch: options.branch, into, tip },
+    params: { repo: options.repo, branch: options.branch, into, tip, remote },
   };
 
   let commit: string;
@@ -323,6 +396,19 @@ export const GIT_MERGE_OPERATION = 'mergeBranch';
 /**
  * Resume can ask git whether the merge landed, which makes this the safest
  * kind of effect there is (DESIGN §6): the repository itself is the record.
+ *
+ * When the intent named a remote (T4.2.12), "landed" has to mean reachable
+ * from *that* remote's `into`, not merely from the local one — a merge whose
+ * local `git merge` succeeded and whose `git push` did not is exactly the
+ * half-finished state this task exists to stop `ChangeMerged` from claiming
+ * as done. Answering `true` from the local repository alone here would tell
+ * resume the effect already landed, and it would never be retried — the
+ * commit would then be permanently local, the very defect this fixes. So a
+ * remote that cannot be reached, or that does not yet have the commit,
+ * answers `false`: not "landed", which sends the effect back through
+ * `perform` for a retried push rather than a redone merge (the local merge
+ * is a no-op the second time; only the push has anything left to do) — a
+ * merge redone rather than a merge lost (CONV-4).
  */
 export const gitMergeContract: EffectContract = {
   contract: GIT_MERGE_CONTRACT,
@@ -332,15 +418,37 @@ export const gitMergeContract: EffectContract = {
     const repo = intent.params.repo;
     const into = intent.params.into;
     const tip = intent.params.tip;
-    if (typeof repo !== 'string' || typeof into !== 'string' || typeof tip !== 'string') {
+    const remote = intent.params.remote;
+    if (
+      typeof repo !== 'string' ||
+      typeof into !== 'string' ||
+      typeof tip !== 'string' ||
+      (remote !== undefined && typeof remote !== 'string')
+    ) {
       return false;
     }
     try {
       await git(repo, ['merge-base', '--is-ancestor', tip, into]);
+    } catch {
+      // Not an ancestor of the local trunk, or the ref is gone. Either way
+      // the merge itself did not land, which is the only answer this may
+      // return with confidence.
+      return false;
+    }
+    if (remote === undefined || remote === '') {
+      // No remote was in play for this merge (T4.2.12) — landing locally is
+      // the whole of what "landed" means for it, same as before this task.
+      return true;
+    }
+    try {
+      await git(repo, ['fetch', remote, into]);
+      await git(repo, ['merge-base', '--is-ancestor', tip, 'FETCH_HEAD']);
       return true;
     } catch {
-      // Not an ancestor, or the ref is gone. Either way the merge did not
-      // land, which is the only answer this may return with confidence.
+      // The local trunk has it; the remote does not (yet), or is
+      // unreachable to ask. Fail closed: say it did not land rather than
+      // guess, since guessing "yes" here is exactly how a commit stays
+      // unresolvable from every clone but this one.
       return false;
     }
   },

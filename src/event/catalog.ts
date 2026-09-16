@@ -520,14 +520,30 @@ export const changeReviewed = defineEvent(
   [upcastChangeReviewedV1],
 );
 
-/** A change reached the trunk, and what authorised it (IMP-1, IMP-3). */
+/**
+ * A change reached the trunk, and what authorised it (IMP-1, IMP-3).
+ *
+ * Every reader of `commit` (T4.2.12): `implement/loop.ts` echoes
+ * `mergeChange`'s own return value into its `TaskResult`, which
+ * `cli/commands.ts`'s `merged as <commit>` line prints straight from the run
+ * that just made it; separately, the folded `MergeState` (`state/reduce.ts`)
+ * reads it back off this event and `dashboard/render.ts`'s task board
+ * displays that. All display, not computation. The escaped-defect rate
+ * (`state/escaped-defect-rate.ts`), the one figure that *is* computed off
+ * `ChangeMerged`, reads only its `ts` and `taskId` and never this field — so
+ * a `commit` a fresh clone cannot resolve leaves every rate correct and only
+ * reconstruction from a clone (OBS-1) broken. Since the log is append-only
+ * (§6), the four events already carrying such a commit (T4.2.2b, T4.2.5,
+ * T4.2.6, T4.2.7) are not rewritten — only new merges are pushed, per
+ * `mergeChange` in `implement/merge.ts`.
+ */
 export const changeMerged = defineEvent(
   'ChangeMerged',
   z.object({
     taskId: nonEmpty,
     branch: nonEmpty,
     into: nonEmpty,
-    /** The merge commit. */
+    /** The merge commit — pushed to the trunk's remote where one is configured (T4.2.12), so this names a commit every clone can resolve rather than only the one the kernel ran on. */
     commit: nonEmpty,
     /** Empty only for a merge no review authorised, which the kernel refuses. */
     reviewTaskId: z.string().default(''),
