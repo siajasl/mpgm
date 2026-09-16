@@ -268,6 +268,40 @@ function stripTrailingPunctuation(value: string): string {
   return value.slice(0, end);
 }
 
+// `(\S.*)` rather than `(.+)`: `.` matches a tab, so with `[ \t]*` in front of
+// it the two alternatives overlap and a line like `A:\t\t\t…` backtracks
+// quadratically (CodeQL js/polynomial-redos).
+const TRAILER_LINE_PATTERN = /^([A-Za-z][A-Za-z-]*):[ \t]*(\S.*)$/;
+
+/**
+ * Split a commit body into paragraphs — runs of non-blank lines separated by
+ * one or more blank lines, each trimmed. A trailer block is a paragraph on
+ * its own (T4.2.11): git trailers sit in the last paragraph of a message, set
+ * apart from prose by the blank line above it, and this is the only signal a
+ * plain-text body carries for "this line means what it says" versus "this
+ * line is part of a sentence that happens to start with a word ending in a
+ * colon".
+ */
+function paragraphsOf(body: string): string[][] {
+  const paragraphs: string[][] = [];
+  let current: string[] = [];
+  for (const raw of body.split('\n')) {
+    const line = raw.trim();
+    if (line === '') {
+      if (current.length > 0) {
+        paragraphs.push(current);
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) {
+    paragraphs.push(current);
+  }
+  return paragraphs;
+}
+
 /**
  * Read the links a commit declares in its trailers.
  *
@@ -275,6 +309,22 @@ function stripTrailingPunctuation(value: string): string {
  * Anything that is not a trailer is ignored: a commit body mentioning LOAN-1
  * in prose has not declared a link, and treating it as one would put entries
  * in the graph that no author could see they had written.
+ *
+ * A `Key: value` shaped line only counts if every other line in its paragraph
+ * is shaped the same way (T4.2.11). Scanning every line regardless of context
+ * misreads a wrapped sentence that happens to start a line with a trailer
+ * key — this history carries "verifies: tracesTo, which
+ * extractArtifactLinks turned into verifies" mid-paragraph in two commits,
+ * which a plain per-line scan reads as a `Verifies:` claim. Git's own
+ * trailer parsing (`git log --format=%(trailers)`) is not the fix: it reads
+ * only the last paragraph of a message, and on this repository it finds a
+ * trailer in none of the commits that spell their claim `Traces:` in a
+ * paragraph of its own above `Co-Authored-By:` — delegating to it would
+ * discard every claim T4.2.5 just made readable. Requiring the *whole*
+ * paragraph to be trailer-shaped is the rule that was measured against this
+ * history before being written: it keeps every recognised-key trailer line
+ * that sits in a paragraph shaped entirely like trailers, and drops only the
+ * two that sit inside prose.
  *
  * A value that does not look like an id after trailing punctuation is
  * stripped is reported rather than turned into a link — the graph gains no
@@ -300,38 +350,44 @@ export function extractCommitLinks(commit: CommitRecord): CommitLinks {
   const unrecognised: UnrecognisedTrailer[] = [];
   const unrecognisedKeysSeen = new Set<string>();
 
-  for (const line of commit.body.split('\n')) {
-    // `(\S.*)` rather than `(.+)`: `.` matches a tab, so with `[ \t]*` in
-    // front of it the two alternatives overlap and a line like `A:\t\t\t…`
-    // backtracks quadratically (CodeQL js/polynomial-redos).
-    const match = /^([A-Za-z][A-Za-z-]*):[ \t]*(\S.*)$/.exec(line.trim());
-    const rawKey = match?.[1];
-    const key = rawKey?.toLowerCase();
-    const values = match?.[2];
-    if (rawKey === undefined || key === undefined || values === undefined) {
+  for (const paragraph of paragraphsOf(commit.body)) {
+    const matches = paragraph.map((line) => TRAILER_LINE_PATTERN.exec(line));
+    // A paragraph counts as trailers only if every line in it is `Key:
+    // value` shaped — one prose line among trailer-shaped ones means the
+    // whole paragraph is prose, not that the other lines are trailers.
+    if (matches.some((match) => match === null)) {
       continue;
     }
-    const relation = TRAILER_RELATIONS[key];
 
-    for (const raw of values.split(',').map((entry) => entry.trim())) {
-      if (raw === '') {
+    for (const match of matches) {
+      const rawKey = match?.[1];
+      const values = match?.[2];
+      if (rawKey === undefined || values === undefined) {
         continue;
       }
-      const stripped = stripTrailingPunctuation(raw);
-      const idShaped = looksLikeId(stripped);
+      const key = rawKey.toLowerCase();
+      const relation = TRAILER_RELATIONS[key];
 
-      if (relation === undefined) {
-        if (idShaped && !unrecognisedKeysSeen.has(key)) {
-          unrecognisedKeysSeen.add(key);
-          unrecognised.push({ key: rawKey, sha: commit.sha });
+      for (const raw of values.split(',').map((entry) => entry.trim())) {
+        if (raw === '') {
+          continue;
         }
-        continue;
-      }
+        const stripped = stripTrailingPunctuation(raw);
+        const idShaped = looksLikeId(stripped);
 
-      if (idShaped) {
-        links.push({ src: commit.sha, dst: stripped, relation, source: commit.sha });
-      } else {
-        unindexed.push({ key: rawKey, value: raw, sha: commit.sha });
+        if (relation === undefined) {
+          if (idShaped && !unrecognisedKeysSeen.has(key)) {
+            unrecognisedKeysSeen.add(key);
+            unrecognised.push({ key: rawKey, sha: commit.sha });
+          }
+          continue;
+        }
+
+        if (idShaped) {
+          links.push({ src: commit.sha, dst: stripped, relation, source: commit.sha });
+        } else {
+          unindexed.push({ key: rawKey, value: raw, sha: commit.sha });
+        }
       }
     }
   }

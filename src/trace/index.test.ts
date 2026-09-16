@@ -282,6 +282,60 @@ describe('extracting links from a commit', () => {
     expect(links).toStrictEqual([]);
     expect(reports.unrecognised).toStrictEqual([{ key: 'Refs', sha: 'abc123' }]);
   });
+
+  it('does not read a wrapped sentence that starts a line with a trailer key (T4.2.11)', () => {
+    // Two commits in this history wrap a sentence so that a line break lands
+    // right after "verifies:" — the prose reads "a verified defect wrote
+    // verifies: tracesTo, which extractArtifactLinks turned into verifies
+    // trace links", and the middle line of that paragraph is
+    // `verifies: tracesTo, which extractArtifactLinks turned into verifies`.
+    // Scanning every line regardless of its paragraph reads that as a
+    // `Verifies:` claim with two comma-separated values — `tracesTo` and
+    // `which extractArtifactLinks turned into verifies` — even though
+    // neither is id-shaped enough to become a link, the key that got through
+    // is the only one TST-2 coverage counts.
+    const { links, reports } = extractCommitLinks({
+      sha: 'abc123',
+      subject: "Stop a closed defect from posing as a requirement's test coverage",
+      body: [
+        'Review of the T3.2.4 change found that a verified defect wrote',
+        'verifies: tracesTo, which extractArtifactLinks turned into',
+        'verifies trace links and TraceIndexStore.coverage() then read',
+        'that as this requirement being verified.',
+        '',
+        'Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>',
+        '',
+      ].join('\n'),
+    });
+
+    expect(links).toStrictEqual([]);
+    // Nothing worth reporting either: the paragraph is prose, not a trailer
+    // that happens to carry a value the id-shape filter refuses.
+    expect(reports.unindexed).toStrictEqual([]);
+    expect(reports.unrecognised).toStrictEqual([]);
+  });
+
+  it('still reads Verifies: when its paragraph is trailers, nothing else', () => {
+    // The other half of the T4.2.11 rule: a paragraph that is entirely
+    // `Key: value` shaped is read, same as before. Without this half, a
+    // parser that reads no trailers at all would also pass the previous
+    // test (CONV-6).
+    const { links } = extractCommitLinks({
+      sha: 'def456',
+      subject: 'Add the ledger',
+      body: [
+        'Some prose explaining the change, on its own paragraph.',
+        '',
+        'Verifies: LOAN-1',
+        'Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>',
+        '',
+      ].join('\n'),
+    });
+
+    expect(links).toStrictEqual([
+      { src: 'def456', dst: 'LOAN-1', relation: 'verifies', source: 'def456' },
+    ]);
+  });
 });
 
 function indexed(): { db: ReturnType<typeof openDatabase>; index: TraceIndex } {
