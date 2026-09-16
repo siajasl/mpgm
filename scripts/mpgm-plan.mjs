@@ -974,6 +974,49 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['AGT-5', 'IMP-3'],
             },
+            {
+              id: 'T4.2.14',
+              title:
+                "A review's findings are a count in the log, so a refusal " +
+                'cannot be reconstructed',
+              completionCriteria: [
+                "A blocked task's refusal can be read back from the log " +
+                  'alone. The review output schema carries findings as an ' +
+                  'array of {file, line?, concern, remedy, severity} ' +
+                  '(src/schemas.ts); ChangeReviewed stores findings as a ' +
+                  'number (src/event/catalog.ts). The implementing session ' +
+                  'sees the detail in its rework prompt and nothing else ' +
+                  'ever does, because transcripts are deliberately not an ' +
+                  'interface — so once a task blocks, why it was refused ' +
+                  'exists nowhere an operator or a later session can read.',
+                'T4.2.10 is the case the change is measured against: its ' +
+                  'third review ends "Two smaller inaccuracies and one ' +
+                  'assertion gap follow" and the log holds findings: 4, so ' +
+                  'the operator redirecting that task could carry only what ' +
+                  'the prose summary happened to name.',
+                'The precedent in the same payload is cited rather than ' +
+                  'rediscovered: deviations, declaredDeviations and ' +
+                  'undeclaredDeviations are all kept as arrays precisely so ' +
+                  'a reader need not infer them. This is OBS-1 — a log ' +
+                  'sufficient for full run reconstruction — failing on the ' +
+                  'event that decides whether work merges.',
+                'CONV-7 followed: a payload only grows, so this is a version ' +
+                  'bump with an upcaster carrying older events, with ' +
+                  'SessionUsage v1 to v2 (T4.2.8) as the worked example.',
+                "Inline or behind a blobRef is the change's call and it " +
+                  'justifies the one it makes against a review returning ' +
+                  'thirty findings on a large diff; ToolCallLogged.outputBlob ' +
+                  'is the existing pattern for payload text that can be big.',
+                'Redaction at log-write is checked against whatever the new ' +
+                  'field carries rather than assumed to cover it, since ' +
+                  'findings quote file paths and code.',
+                'The test blocks a task, replays the log alone, and reads ' +
+                  "back every finding's severity and remedy. Asserting a " +
+                  'non-zero count is what the code already does (CONV-6).',
+              ],
+              dependsOn: [],
+              tracesTo: ['OBS-1', 'IMP-3'],
+            },
           ],
         },
         {
