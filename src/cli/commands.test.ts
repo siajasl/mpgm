@@ -781,6 +781,86 @@ describe('status --metrics', () => {
         'excluded from the ratio); cannot see scheduling, validation)',
     );
   });
+
+  it('renders the measured overhead ratio as a percentage, not only the unmeasured dash', () => {
+    // Every log in this repository today reads `ratio: null`, so both tests
+    // above exercise `formatOverhead`'s null branch alone, and its measured
+    // branch would first run unchecked on the operator's first instrumented
+    // run. Mutating `ratio * 100` to `ratio * 0.001` leaves those two green;
+    // it fails this one.
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-measured-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      // `ContextAssembled` at 10s backdates the round's start by its own
+      // 1000ms (`../state/overhead.ts`: the assembly ran in
+      // `[ts - durationMs, ts)`), so the round opens at 9s. `SessionUsage`
+      // and `TaskCompleted` share 29s for the same reason the fixture above
+      // shares an offset: `closeRound` ends a round at its last real
+      // activity, not at the terminal event. Span [9s, 29s) = 20,000ms
+      // against a 1000ms numerator, so the ratio is exactly 5.0%.
+      const offsetsSeconds = [0, 10, 11, 29, 29];
+      let i = 0;
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => {
+          const offset = offsetsSeconds[i];
+          if (offset === undefined) throw new Error('offsetsSeconds shorter than inputs');
+          const ts = new Date(2026_01_01_00_00_00 + offset * 1000).toISOString();
+          i += 1;
+          return ts;
+        },
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'ContextAssembled',
+          payload: { taskId: 'T1', site: 'implement', durationMs: 1000 },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 0.25,
+            durationMs: 1500,
+            apiDurationMs: 1200,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      "  overhead 5.0% of NFR-3's 10% threshold (1000ms context-assembly / 20000ms " +
+        'instrumented task span, coverage 1/1 tasks (100%); run busy span 20000ms; ' +
+        'context-assembly 1000ms over 1 calls; non-API session time 300ms over 1 sessions ' +
+        '(agent tool execution, not harness — excluded from the ratio); cannot see ' +
+        'scheduling, validation)',
+    );
+  });
 });
 
 /**

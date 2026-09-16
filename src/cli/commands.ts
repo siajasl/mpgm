@@ -293,8 +293,8 @@ function formatMetric(label: string, metric: AggregateMetric): string {
  * much as a slow scheduler would — so it does not measure NFR-3 despite
  * that task's `tracesTo` naming it. This line, not that one, is what does
  * (`../state/overhead.ts`'s module doc has the formula, why the denominator
- * is population-matched to it rather than merged, and the null discipline
- * this renders).
+ * is the merged union of the rounds that produced it rather than their sum,
+ * and the null discipline this renders).
  *
  * `coverage` renders next to `ratio` rather than being left for a reader to
  * infer: a ratio built from one instrumented task out of two hundred looks
