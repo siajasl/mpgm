@@ -738,13 +738,14 @@ gate:
     // `consumes` field (`NfrStep`) — nothing downstream of the schema could
     // ever honour a declared consumption, so the schema refuses it rather
     // than accepting and silently dropping it at expansion.
-    expect(() =>
-      load(
-        body.replace(
-          'requirements: gather',
-          'requirements: gather\n    consumes: [coverage]',
+    expect(
+      () =>
+        load(
+          body.replace(
+            'requirements: gather',
+            'requirements: gather\n    consumes: [coverage]',
+          ),
         ),
-      ),
       // The key itself is named, not merely "something was wrong": a
       // `.strict()` refusal that did not say which key it refused would pass
       // a laxer assertion just as well.
