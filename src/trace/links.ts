@@ -83,8 +83,10 @@ export function looksLikeId(value: string): boolean {
  * A convention id (`CONV-6`), shaped exactly like the numbered rules in
  * `kb/conventions.md`.
  *
- * The Conventions section (CLAUDE.md, `kb/conventions.md`) states the rule
- * this exists to apply: "a convention id is never a trace target" — a
+ * DESIGN.md §4.3 (IMP-4, ART-2, DSG-4) states the rule this exists to
+ * apply, enforced by `conventionTraceIssues`
+ * (`src/context/conventions.ts`): "a convention id is never a trace
+ * target" — a
  * convention is a rule about how work is done, not something an element
  * serves, so a `tracesTo`/`Traces:` citation of one puts an id in the graph
  * that nothing was ever going to declare. `danglingReferences` uses this to

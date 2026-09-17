@@ -1365,8 +1365,10 @@ export function trace(
 
       // Printed after the dangling count, not folded into it: T4.2.16 — a
       // convention id cited via Traces:/tracesTo is excluded on purpose
-      // (kb/conventions.md's own rule is that a convention is never a trace
-      // target), and the exclusion is reported rather than made invisible.
+      // (DESIGN.md §4.3, IMP-4/ART-2/DSG-4 — enforced by
+      // conventionTraceIssues, src/context/conventions.ts — states that a
+      // convention is never a trace target), and the exclusion is reported
+      // rather than made invisible.
       const excluded = index.excludedReferences();
       if (excluded.length > 0) {
         context.write(

@@ -452,8 +452,9 @@ describe('the index', () => {
   /**
    * T4.2.16: a convention id cited via `Traces:`/`tracesTo` is excluded from
    * `danglingReferences` on purpose, not because it resolved — nothing ever
-   * declares a `CONV-` id (kb/conventions.md's own rule is that a convention
-   * is never a trace target) — and `excludedReferences` says so rather than
+   * declares a `CONV-` id (DESIGN.md §4.3, IMP-4/ART-2/DSG-4's rule, enforced
+   * by `conventionTraceIssues`, is that a convention is never a trace
+   * target) — and `excludedReferences` says so rather than
    * making the citation disappear. Reproduces the real citation this history
    * carries: commit `7b09783` trailers `Traces: NFR-6, CONV-6.`, an id-shaped
    * requirement citation next to an id-shaped convention citation in the same

@@ -64,10 +64,11 @@ export interface ExcludedReference extends DanglingReference {
  * folded into a template string at the call site.
  */
 export const CONVENTION_CITATION_REASON =
-  'a convention id is never a trace target (kb/conventions.md): a convention ' +
-  'is a rule about how work is done, not something an element serves, so no ' +
-  'artifact will ever declare one and this citation is not waiting on one to ' +
-  'appear.';
+  'a convention id is never a trace target (DESIGN.md §4.3, IMP-4/ART-2/DSG-4; ' +
+  'enforced by conventionTraceIssues, src/context/conventions.ts): a ' +
+  'convention is a rule about how work is done, not something an element ' +
+  'serves, so no artifact will ever declare one and this citation is not ' +
+  'waiting on one to appear.';
 
 export class TraceIndex {
   readonly #db: DatabaseSync;
@@ -255,8 +256,10 @@ export class TraceIndex {
    * Citations excluded from {@link danglingReferences} on purpose, with why.
    *
    * A convention id cited via `tracesTo`/`Traces:` is the one case today
-   * (T4.2.16): `kb/conventions.md`'s own rule is that a convention id is
-   * never a trace target, so no artifact will declare `CONV-6` and this
+   * (T4.2.16): the project's own rule, stated in DESIGN.md §4.3 (IMP-4,
+   * ART-2, DSG-4) and enforced by `conventionTraceIssues`
+   * (`src/context/conventions.ts`), is that a convention id is never a
+   * trace target, so no artifact will declare `CONV-6` and this
    * citation is not a gap in the index to close, it is a citation the
    * trailer vocabulary was never meant to carry. Reported rather than
    * silently dropped, so the exclusion is a decision a reader can see and

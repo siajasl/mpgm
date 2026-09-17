@@ -19,6 +19,7 @@ import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
 import { computeEscapedDefectRate } from '../state/escaped-defect-rate.js';
 import { fold } from '../state/reduce.js';
 import { fileDefect, routeDefect } from '../test/defect.js';
+import { CONVENTION_CITATION_REASON } from '../trace/index-store.js';
 import {
   intervene,
   recordMerge,
@@ -1698,5 +1699,46 @@ describe('trace --coverage over mpgm’s own Scope artifact (T4.3.1, SCP-1, TST-
     // Plan artifact elsewhere in this repository) still resolve.
     expect(output).toContain('UNVERIFIED SCP-1');
     expect(output).toContain('UNVERIFIED IMP-3');
+  });
+});
+
+describe('trace --dangling names an excluded convention citation (T4.2.16)', () => {
+  /**
+   * The exclusion block in `trace(..., 'dangling')` (`commands.ts`, printed
+   * after the dangling count) is the only operator-facing half of "the
+   * report states which do not and why that is deliberate" — the CLI
+   * demo (`scripts/demo/cli-e2e.mjs`) only ever runs against a clean
+   * fixture with no `CONV-` citation, so deleting the block entirely left
+   * every existing test and demo green while `mpgm trace --dangling` would
+   * silently drop `CONV-6` again. This seeds a commit trailer citing one,
+   * the same shape `7b09783` in this repository's own history has, and
+   * asserts the exclusion line by id and by reason rather than merely by
+   * count (CONV-6: a count alone would pass with the wrong id reported).
+   */
+  it('reports a CONV- citation as excluded, not as dangling, with the reason', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-trace-excluded-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+    git('init', '--quiet');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('commit', '--quiet', '--allow-empty', '-m', 'Seed history');
+    git(
+      'commit',
+      '--quiet',
+      '--allow-empty',
+      '-m',
+      'Cite a convention the trailer vocabulary was never meant to carry\n\nTraces: CONV-6',
+    );
+
+    const writes: string[] = [];
+    const result = trace(newContext(root, writes), undefined, 'dangling');
+    const output = writes.join('\n');
+
+    expect(result.ok).toBe(true);
+    expect(output).toContain('No citation resolves to nothing.');
+    expect(output).toContain('1 citation(s) excluded (not counted above):');
+    expect(output).toContain('-> CONV-6');
+    expect(output).toContain(CONVENTION_CITATION_REASON);
   });
 });
