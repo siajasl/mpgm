@@ -9,6 +9,30 @@ import type {
 } from './definition.js';
 
 /**
+ * A step kind that invokes a bound capability contract, versus a verb that
+ * drives a phase the way `mpgm implement` drives one task (T4.3.2, DESIGN
+ * §4.7, §9 decision 15).
+ *
+ * The implement loop is deliberately a function and not a playbook: it runs
+ * once per plan task, parameterises worktree paths and branch names that are
+ * literal everywhere downstream, and its artifact is a commit rather than a
+ * named output — none of that fits the fixed set of declared artifacts a
+ * playbook describes. The Test phase is not that shape. It is one phase over
+ * one set of already-produced artifacts, the same as Scope, Design and Plan,
+ * and T4.3.3 gives it `phases/test.yaml` and `mpgm run test` on that basis —
+ * so a verb here would duplicate `runPhase`'s scheduling, context assembly
+ * and gate presentation in a second, phase-specific place for no reason this
+ * phase has that the others don't.
+ *
+ * `NfrStep` and `SuiteStep` below are the step-kind answer: they extend
+ * `GraphStep` exactly as `TallyStep` already does for a panel's arithmetic,
+ * so `runPhase` schedules and dispatches them like any other step, their
+ * results land in `outputs` and, where declared, in a written artifact — and
+ * from there in `GateEvidence` — without a second execution path alongside
+ * the one every other phase already uses.
+ */
+
+/**
  * Pattern expansion (ORC-4, DESIGN §4.1).
  *
  * Pattern nodes are declarations. This turns them into an ordinary task graph
@@ -54,7 +78,49 @@ export interface TallyStep {
   readonly produces?: string;
 }
 
-export type GraphStep = SessionStep | TallyStep;
+/**
+ * A step the kernel computes itself: measuring every quantified NFR
+ * requirement another step produced, against the bound `test.nfr` capability
+ * (TST-3, T4.3.2, `src/test/nfr.ts`).
+ *
+ * Like `TallyStep`, it has no role and no prompt — `runNfrSuite` already
+ * knows how to call `test.nfr#run` once per requirement and fold the
+ * results, so there is no judgment call left for a session to make once the
+ * requirements are in hand.
+ */
+export interface NfrStep {
+  readonly kind: 'nfr';
+  readonly id: string;
+  readonly node: string;
+  readonly description: string;
+  readonly dependsOn: readonly string[];
+  /** Step whose result is the `NfrRequirement[]` to measure. */
+  readonly requirements: string;
+  readonly produces?: string;
+}
+
+/**
+ * A step the kernel computes itself: running an `AdversarialSuite` another
+ * step produced (TST-4, T4.3.2, `src/test/adversarial.ts`).
+ *
+ * Where that suite executes is stated at dispatch, not defaulted: `runPhase`
+ * refuses this step rather than assume a project directory, because a
+ * generated case is model-authored code that reaches whatever the harness
+ * reaches (`nodeTestExecutor`'s own trust assumption) — running it over this
+ * repository is a decision a caller makes, not a default this step supplies.
+ */
+export interface SuiteStep {
+  readonly kind: 'suite';
+  readonly id: string;
+  readonly node: string;
+  readonly description: string;
+  readonly dependsOn: readonly string[];
+  /** Step whose result is the `AdversarialSuite` to run. */
+  readonly suite: string;
+  readonly produces?: string;
+}
+
+export type GraphStep = SessionStep | TallyStep | NfrStep | SuiteStep;
 
 export interface TaskGraph {
   readonly steps: readonly GraphStep[];
@@ -174,6 +240,10 @@ function terminalIds(
       case 'panel':
         terminal[node.id] = `${node.id}-tally`;
         break;
+      case 'nfr':
+      case 'suite':
+        terminal[node.id] = node.id;
+        break;
       case 'pipeline': {
         const last = node.stages.at(-1);
         if (last === undefined) {
@@ -265,6 +335,20 @@ export function expandPlaybook(
         sourcePath,
         `critic '${node.id}' targets '${node.target}', which is not a task in this ` +
           `playbook`,
+      );
+    }
+    if (node.kind === 'nfr' && !declared.has(node.requirements)) {
+      throw new PlaybookLoadError(
+        sourcePath,
+        `nfr '${node.id}' reads requirements from '${node.requirements}', which is ` +
+          `not a task in this playbook`,
+      );
+    }
+    if (node.kind === 'suite' && !declared.has(node.suite)) {
+      throw new PlaybookLoadError(
+        sourcePath,
+        `suite '${node.id}' runs the suite from '${node.suite}', which is not a task ` +
+          `in this playbook`,
       );
     }
   }
@@ -456,6 +540,34 @@ export function expandPlaybook(
           dependsOn: judgeIds,
           ballot: node.ballot,
           vote: node.vote,
+          ...(node.produces === undefined ? {} : { produces: node.produces }),
+        });
+        break;
+      }
+
+      case 'nfr': {
+        const requirements = terminal[node.requirements] ?? node.requirements;
+        emit({
+          kind: 'nfr',
+          id: node.id,
+          node: node.id,
+          description: node.description,
+          dependsOn: [...new Set([requirements, ...inherited])],
+          requirements,
+          ...(node.produces === undefined ? {} : { produces: node.produces }),
+        });
+        break;
+      }
+
+      case 'suite': {
+        const suite = terminal[node.suite] ?? node.suite;
+        emit({
+          kind: 'suite',
+          id: node.id,
+          node: node.id,
+          description: node.description,
+          dependsOn: [...new Set([suite, ...inherited])],
+          suite,
           ...(node.produces === undefined ? {} : { produces: node.produces }),
         });
         break;

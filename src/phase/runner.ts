@@ -7,6 +7,7 @@ import { collectDecisions, relevantDecisions } from '../context/decisions.js';
 import { kbUpdatesOf, writeKbDocument } from '../context/kb-writer.js';
 import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
+import type { CapabilityRegistry } from '../contract/capability.js';
 import type { ArtifactRef } from '../event/catalog.js';
 import type { EventLog } from '../event/store.js';
 import type { ApprovalPacket, GateEvidence, GateManager } from '../gate/manager.js';
@@ -21,7 +22,14 @@ import type { GraphStep, Playbook, SessionStep } from '../playbook/graph.js';
 import type { RoleRegistry } from '../role/loader.js';
 import type { Projector } from '../state/projector.js';
 import { runControl } from '../state/reduce.js';
+import {
+  nodeTestExecutor,
+  runAdversarialSuite,
+  adversarialSuiteSchema,
+} from '../test/adversarial.js';
+import { nfrRequirementSchema, runNfrSuite } from '../test/nfr.js';
 import type { TraceIndex } from '../trace/index-store.js';
+import { z } from 'zod';
 
 /**
  * Executes one phase from its playbook (DESIGN §4.1).
@@ -63,6 +71,26 @@ export interface PhaseRunOptions {
    * reaches its gate — and the gate is what wants to know what traces to what.
    */
   readonly traces?: TraceIndex;
+  /**
+   * Bound MCP capability contracts an `nfr` step invokes (T4.3.2, DESIGN
+   * §4.7, EXT-1). Absent means a playbook declaring an `nfr` node blocks
+   * rather than silently skipping the measurement — the same fail-closed
+   * reading `CapabilityRegistry.require` already gives a caller reaching for
+   * an unbound capability by name.
+   */
+  readonly capabilities?: CapabilityRegistry;
+  /** `repo`/`ref` an `nfr` step's `test.nfr#run` calls are measured against. */
+  readonly repo?: string;
+  readonly ref?: string;
+  /**
+   * Where a `suite` step's generated `node:test` file is written and run
+   * (T4.3.2, `nodeTestExecutor`). Deliberately not defaulted to this
+   * project's own root: a generated case is model-authored code run with the
+   * kernel's own privileges wherever it executes, and choosing that target is
+   * a decision a caller makes explicitly, never a fallback this option
+   * supplies on its own.
+   */
+  readonly testProjectDir?: string;
 }
 
 export type PhaseOutcome =
@@ -101,6 +129,27 @@ function blockedOutcome(blocked: readonly BlockedStep[]): PhaseOutcome {
     reason: `${first.reason}${also}`,
     blocked,
   };
+}
+
+/**
+ * The `NfrRequirement[]` an `nfr` step measures, read off its upstream
+ * node's result.
+ *
+ * A session's structured output is always an object at its top level — the
+ * SDK's own structured-output tool refuses a bare array there — so the array
+ * an `nfr` step needs typically lives under a `requirements` field, mirroring
+ * the Scope artifact's own `requirements` field (`scopeSchema`,
+ * `src/schemas.ts`). A kernel-computed upstream result that already is an
+ * array — another `nfr` step's own coverage rows, chained — is read as-is.
+ */
+function nfrRequirementsSourceOf(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null && 'requirements' in value) {
+    return value.requirements;
+  }
+  return value;
 }
 
 export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
@@ -440,6 +489,109 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     return { status: 'completed', value: counted };
   };
 
+  const runNfr = async (
+    step: GraphStep & { kind: 'nfr' },
+  ): Promise<StepOutcome<unknown>> => {
+    const parsedRequirements = z
+      .array(nfrRequirementSchema)
+      .safeParse(nfrRequirementsSourceOf(outputs[step.requirements]));
+    if (!parsedRequirements.success) {
+      return {
+        status: 'blocked',
+        reason:
+          `nfr '${step.id}' expected '${step.requirements}' to hold an array of ` +
+          `quantified NFR requirements, and it did not: ` +
+          parsedRequirements.error.message,
+      };
+    }
+
+    if (!options.capabilities?.has('test.nfr')) {
+      return {
+        status: 'blocked',
+        reason:
+          `nfr '${step.id}' needs the 'test.nfr' capability bound (TST-3, DESIGN ` +
+          `§4.7), and this run bound none. Bind a provider via ` +
+          `PhaseRunOptions.capabilities before running a phase that declares an ` +
+          `'nfr' node — an unbound capability is refused rather than read as ` +
+          `nothing to measure (CONV-4).`,
+      };
+    }
+    if (options.repo === undefined || options.ref === undefined) {
+      return {
+        status: 'blocked',
+        reason:
+          `nfr '${step.id}' has no 'repo'/'ref' to measure against. Pass both on ` +
+          `PhaseRunOptions — 'test.nfr#run' reports against a specific repo and ` +
+          `ref, and neither is guessed.`,
+      };
+    }
+
+    const contract = options.capabilities.require('test.nfr');
+    let rows;
+    try {
+      rows = await runNfrSuite({
+        repo: options.repo,
+        ref: options.ref,
+        requirements: parsedRequirements.data,
+        run: (input) => contract.invoke('run', input),
+      });
+    } catch (cause) {
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+
+    record(step, rows);
+    // The kernel measured it, so the kernel is the producer of record — the
+    // same reasoning `runTally` already gives its own written artifact.
+    writeArtifact(step, 'kernel', '(none)', rows);
+    return { status: 'completed', value: rows };
+  };
+
+  const runSuite = async (
+    step: GraphStep & { kind: 'suite' },
+  ): Promise<StepOutcome<unknown>> => {
+    const parsedSuite = adversarialSuiteSchema.safeParse(outputs[step.suite]);
+    if (!parsedSuite.success) {
+      return {
+        status: 'blocked',
+        reason:
+          `suite '${step.id}' expected '${step.suite}' to hold an AdversarialSuite, ` +
+          `and it did not: ${parsedSuite.error.message}`,
+      };
+    }
+    if (options.testProjectDir === undefined) {
+      return {
+        status: 'blocked',
+        reason:
+          `suite '${step.id}' has no project directory to run against. Running a ` +
+          `generated suite executes model-authored code with the privileges ` +
+          `wherever it runs — nodeTestExecutor's subject restriction is not a ` +
+          `confinement boundary (src/test/adversarial.ts) — so pass ` +
+          `'testProjectDir' on PhaseRunOptions explicitly; it is a decision, not a ` +
+          `default this phase supplies on its own.`,
+      };
+    }
+
+    let verdict;
+    try {
+      verdict = await runAdversarialSuite({
+        suite: parsedSuite.data,
+        execute: nodeTestExecutor({ projectDir: options.testProjectDir }),
+      });
+    } catch (cause) {
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+
+    record(step, verdict);
+    writeArtifact(step, 'kernel', '(none)', verdict);
+    return { status: 'completed', value: verdict };
+  };
+
   const report = await schedule<GraphStep, unknown>({
     steps: graph.steps,
     concurrency,
@@ -452,8 +604,18 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
         ? { proceed: true }
         : { proceed: false, reason: control };
     },
-    run: (step) =>
-      step.kind === 'tally' ? Promise.resolve(runTally(step)) : runSession(step),
+    run: (step) => {
+      switch (step.kind) {
+        case 'tally':
+          return Promise.resolve(runTally(step));
+        case 'nfr':
+          return runNfr(step);
+        case 'suite':
+          return runSuite(step);
+        default:
+          return runSession(step);
+      }
+    },
   });
 
   if (report.status === 'blocked') {

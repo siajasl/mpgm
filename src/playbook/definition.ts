@@ -14,6 +14,13 @@ import { egressClassSchema } from '../context/egress.js';
  * expands into ordinary tasks before scheduling (DESIGN §4.1). The patterns
  * are declarations, not machinery: nothing downstream of expansion knows a
  * task came from a panel rather than being written out by hand.
+ *
+ * `nfr` and `suite` are a different shape of declaration: not another agent
+ * pattern, but a way of saying a phase's work *is* code rather than a session
+ * (T4.3.2). Each expands to a step the kernel runs itself — `nfr` against the
+ * bound `test.nfr` capability, `suite` against an `AdversarialSuite` another
+ * node produced — the same way `panel` already says a tally is arithmetic
+ * over validated ballots and not a further opinion.
  */
 
 const identifier = z
@@ -236,6 +243,46 @@ export const panelNodeSchema = z
   .strict();
 
 /**
+ * `nfr` — measure every quantified NFR requirement another node produced,
+ * against the bound `test.nfr` capability (TST-3, T4.3.2, `src/test/nfr.ts`).
+ *
+ * A phase's work is not always a session: `runNfrSuite` already knows how to
+ * call `test.nfr#run` once per requirement and fold the results, so the node
+ * this expands to is kernel-computed, the same way a panel's tally is — no
+ * role, no prompt, because there is no judgment call left for a session to
+ * make once the requirements are in hand.
+ */
+export const nfrNodeSchema = z
+  .object({
+    ...nodeCommon,
+    kind: z.literal('nfr'),
+    /** Node whose result holds the `NfrRequirement[]` to measure. */
+    requirements: identifier,
+    /** Artifact written from the coverage rows, if the phase wants one. */
+    produces: identifier.optional(),
+  })
+  .strict();
+
+/**
+ * `suite` — run an `AdversarialSuite` another node produced (TST-4, T4.3.2,
+ * `src/test/adversarial.ts`).
+ *
+ * Kernel-computed for the same reason `nfr` is: the suite is already
+ * validated data by the time this node sees it, and running it is
+ * `runAdversarialSuite` and a verdict, not a session.
+ */
+export const suiteNodeSchema = z
+  .object({
+    ...nodeCommon,
+    kind: z.literal('suite'),
+    /** Node whose result is the `AdversarialSuite` to run. */
+    suite: identifier,
+    /** Artifact written from the verdict, if the phase wants one. */
+    produces: identifier.optional(),
+  })
+  .strict();
+
+/**
  * A node with no `kind` is an ordinary task.
  *
  * Defaulted rather than required so that a playbook using no pattern reads as
@@ -252,6 +299,8 @@ export const playbookNodeSchema = z.preprocess(
     pipelineNodeSchema,
     criticNodeSchema,
     panelNodeSchema,
+    nfrNodeSchema,
+    suiteNodeSchema,
   ]),
 );
 
@@ -348,6 +397,8 @@ export type PipelineNode = z.infer<typeof pipelineNodeSchema>;
 export type PipelineStage = z.infer<typeof pipelineStageSchema>;
 export type CriticNode = z.infer<typeof criticNodeSchema>;
 export type PanelNode = z.infer<typeof panelNodeSchema>;
+export type NfrNode = z.infer<typeof nfrNodeSchema>;
+export type SuiteNode = z.infer<typeof suiteNodeSchema>;
 export type Ballot = z.infer<typeof ballotSchema>;
 export type VoteRule = z.infer<typeof voteRuleSchema>;
 export type PlaybookNode = z.infer<typeof playbookNodeSchema>;

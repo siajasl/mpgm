@@ -119,6 +119,20 @@ export interface NfrRequirement {
   readonly measuredBy: string;
 }
 
+/**
+ * Runtime counterpart of {@link NfrRequirement}, for a caller that reads one
+ * off data it did not itself produce — an `nfr` playbook step's upstream
+ * result (T4.3.2, `src/playbook/graph.ts`), rather than something already
+ * typed as `NfrRequirement[]` at compile time.
+ */
+export const nfrRequirementSchema = z.object({
+  id: z.string().min(1),
+  metric: z.string().min(1),
+  value: z.number(),
+  unit: z.string().min(1),
+  measuredBy: z.string().min(1),
+});
+
 /** Why a quantified NFR is not verified. */
 export type NfrProblem = 'not-run' | 'below-threshold';
 
