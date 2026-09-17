@@ -745,7 +745,10 @@ gate:
           'requirements: gather\n    consumes: [coverage]',
         ),
       ),
-    ).toThrow(/invalid playbook/);
+      // The key itself is named, not merely "something was wrong": a
+      // `.strict()` refusal that did not say which key it refused would pass
+      // a laxer assertion just as well.
+    ).toThrow(/Unrecognized key[\s\S]*consumes/);
   });
 });
 
@@ -817,6 +820,6 @@ gate:
     // can only discard.
     expect(() =>
       load(body.replace('suite: attack', 'suite: attack\n    consumes: [verdict]')),
-    ).toThrow(/invalid playbook/);
+    ).toThrow(/Unrecognized key[\s\S]*consumes/);
   });
 });

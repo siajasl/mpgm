@@ -130,12 +130,59 @@ trusts — coverage drops, it does not silently stay put. A requirement a
 second, non-quarantined source still verifies is unaffected: quarantine
 removes one test's standing as evidence, not the requirement's.
 
+## Reference provider
+
+[`commandNfrProvider`](../src/test/nfr-provider.ts) is what `mpgm run <phase>`
+binds this capability to (`src/cli/commands.ts`), so a playbook's `nfr` node
+reaches a real measurement from the entry point an operator actually uses —
+before T4.3.2 the contract had a specification, a runner and no provider at
+all.
+
+It runs what the project declares in `test/nfr.yaml`:
+
+```yaml
+measurements:
+  - requirement: PERF-1
+    metric: p95-latency
+    unit: ms
+    direction: at-most       # or at-least; no default
+    command: npm
+    args: ['run', 'bench:latency']
+    evidence: reports/latency.json   # optional
+```
+
+One entry per quantified requirement. The command is run in the project root
+and the last non-empty line of its stdout is the measurement; `direction` is
+what turns that number into `passed`, and it is required rather than defaulted
+because this contract says in as many words that only the provider knows which
+way a threshold reads (CONV-5).
+
+Four things it refuses rather than answers, all for the reason this contract
+gives above — a measurement that did not happen is never reported as one that
+held (CONV-4):
+
+- a requirement the manifest does not declare (the provider must not invent a
+  measurement for a requirement it did not run);
+- an entry whose `metric`/`unit` disagree with the threshold the kernel sent,
+  which is a manifest that has drifted from the requirement it names and is
+  measuring something else under the right id;
+- a command that failed, timed out, or printed nothing — `Number('')` is `0`,
+  and zero is inside every ceiling there is;
+- a last line that is not a number.
+
+Each throws, which blocks the step; `nfrCoverage` then reports the requirement
+as `not-run`, which is what an unmeasured threshold is.
+
 ## Consumers
 
 - [`src/test/nfr.ts`](../src/test/nfr.ts) — `runNfrSuite` (the orchestration:
   call `run` once per quantified NFR), `nfrCoverage` (TST-3 verdict) and
   `requirementCoverageReport` (the combined TST-2/TST-3 report this contract
   exists to produce).
+- [`src/phase/runner.ts`](../src/phase/runner.ts) — the `nfr` playbook step
+  (T4.3.2), which folds `runNfrSuite` against whatever this capability is
+  bound to and blocks rather than treating an unbound one as nothing to
+  measure.
 - [`src/test/quarantine.ts`](../src/test/quarantine.ts) — `detectFlaky`,
   `quarantineFlaky`/`detectAndQuarantine` (TST-6's ledger) and
   `withoutQuarantined` (the exclusion `requirementCoverageReport` applies).

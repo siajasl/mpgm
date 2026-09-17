@@ -41,6 +41,8 @@ import {
 } from '../release/deliver.js';
 import { dockerReleaseProvider } from '../release/docker-provider.js';
 import { RoleRegistry } from '../role/loader.js';
+import { commandNfrProvider } from '../test/nfr-provider.js';
+import { testNfrContract } from '../test/nfr.js';
 import {
   approvalKey,
   assertRolesFrozen,
@@ -170,11 +172,51 @@ function targetFacts(path: string): TargetFacts {
   };
 }
 
-/** `mpgm run <phase>` — execute a phase and present its gate. */
+/**
+ * What a phase's kernel-computed steps need and a playbook cannot supply
+ * (T4.3.2).
+ *
+ * All optional, and every one of them blocks the step that needs it rather
+ * than being guessed at: a phase with no `nfr` or `suite` node — which is
+ * every phase before the Test phase — runs exactly as it did before, and one
+ * that has them refuses to measure the wrong repo or to execute
+ * model-authored code somewhere nobody named.
+ */
+export interface RunOptions {
+  /** `owner/name` an `nfr` step's `test.nfr#run` calls report against. */
+  readonly repo?: string;
+  /** The ref measured — a sha or a branch. Never inferred from the checkout. */
+  readonly ref?: string;
+  /**
+   * Where a `suite` step's generated `node:test` file is written and run.
+   *
+   * There is no default on purpose, here least of all: defaulting it to
+   * `context.root` would run agent-authored test bodies inside the operator's
+   * own project with the kernel's privileges, and `nodeTestExecutor`'s
+   * subject restriction is not a confinement boundary
+   * (`src/test/adversarial.ts`).
+   */
+  readonly testProjectDir?: string;
+}
+
+/**
+ * `mpgm run <phase>` — execute a phase and present its gate.
+ *
+ * `test.nfr` is bound here, to {@link commandNfrProvider} over the project's
+ * own `test/nfr.yaml`, the same way `rollback` binds `env.provision` to the
+ * real `composeProvider`: the capability is bound from the entry point an
+ * operator actually uses, not only from a test. The provider reads that
+ * manifest when it is invoked rather than when it is bound, so a project
+ * with no NFR measurements to declare — every project running a phase with no
+ * `nfr` node — is unaffected, and one that declares an `nfr` node without the
+ * manifest blocks with a message naming the file and the fields it wants
+ * (CONV-3).
+ */
 export async function run(
   context: CliContext,
   runId: string,
   phase: string,
+  options: RunOptions = {},
 ): Promise<CommandResult> {
   const { db, log, projector } = open(context);
   try {
@@ -197,11 +239,20 @@ export async function run(
       gates: gateOracleFromState(projector.project(), runId),
     });
 
+    const capabilities = new CapabilityRegistry();
+    capabilities.bind(testNfrContract, commandNfrProvider({ root: context.root }));
+
     const result = await runPhase({
       runId,
       playbook,
       roles,
       artifacts,
+      capabilities,
+      ...(options.repo === undefined ? {} : { repo: options.repo }),
+      ...(options.ref === undefined ? {} : { ref: options.ref }),
+      ...(options.testProjectDir === undefined
+        ? {}
+        : { testProjectDir: options.testProjectDir }),
       sessions: new SessionRunner({
         log,
         provider: context.provider,

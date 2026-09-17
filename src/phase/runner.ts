@@ -27,9 +27,12 @@ import {
   runAdversarialSuite,
   adversarialSuiteSchema,
 } from '../test/adversarial.js';
-import { nfrRequirementSchema, runNfrSuite } from '../test/nfr.js';
+import {
+  nfrRequirementSourceSchema,
+  quantifiedRequirements,
+} from '../test/nfr-source.js';
+import { runNfrSuite } from '../test/nfr.js';
 import type { TraceIndex } from '../trace/index-store.js';
-import { z } from 'zod';
 
 /**
  * Executes one phase from its playbook (DESIGN §4.1).
@@ -137,10 +140,12 @@ function blockedOutcome(blocked: readonly BlockedStep[]): PhaseOutcome {
  *
  * A session's structured output is always an object at its top level — the
  * SDK's own structured-output tool refuses a bare array there — so the array
- * an `nfr` step needs typically lives under a `requirements` field, mirroring
- * the Scope artifact's own `requirements` field (`scopeSchema`,
- * `src/schemas.ts`). A kernel-computed upstream result that already is an
- * array — another `nfr` step's own coverage rows, chained — is read as-is.
+ * an `nfr` step needs lives under a `requirements` field: the field the Scope
+ * artifact itself uses (`scopeSchema`, `src/schemas.ts`), whose elements this
+ * step parses with `nfrRequirementSourceSchema` so that a real, mixed Scope
+ * list is what it reads rather than a flat shape nothing in this project
+ * produces. A kernel-computed upstream result that already is an array is read
+ * as-is.
  */
 function nfrRequirementsSourceOf(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -492,16 +497,34 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
   const runNfr = async (
     step: GraphStep & { kind: 'nfr' },
   ): Promise<StepOutcome<unknown>> => {
-    const parsedRequirements = z
-      .array(nfrRequirementSchema)
-      .safeParse(nfrRequirementsSourceOf(outputs[step.requirements]));
+    const parsedRequirements = nfrRequirementSourceSchema.safeParse(
+      nfrRequirementsSourceOf(outputs[step.requirements]),
+    );
     if (!parsedRequirements.success) {
       return {
         status: 'blocked',
         reason:
-          `nfr '${step.id}' expected '${step.requirements}' to hold an array of ` +
-          `quantified NFR requirements, and it did not: ` +
+          `nfr '${step.id}' expected '${step.requirements}' to hold a non-empty ` +
+          `array of requirements — Scope's own elements (a 'non-functional' entry ` +
+          `carrying its 'threshold', a 'functional' one carrying none) or the flat ` +
+          `{id, metric, value, unit, measuredBy} shape — and it did not: ` +
           parsedRequirements.error.message,
+      };
+    }
+
+    const requirements = quantifiedRequirements(parsedRequirements.data);
+    if (requirements.length === 0) {
+      return {
+        status: 'blocked',
+        reason:
+          `nfr '${step.id}' found nothing to measure in '${step.requirements}': ` +
+          `${String(parsedRequirements.data.length)} requirement(s), none of them ` +
+          `quantified. TST-3 binds every quantified NFR Scope declares to a suite, ` +
+          `so a step that measured none of them is refused here rather than ` +
+          `completing with a coverage report of no rows — absence read as success ` +
+          `is exactly what 'nfrCoverage' refuses one level down (CONV-4). Either ` +
+          `the upstream step declared no non-functional requirement, or it declared ` +
+          `them somewhere this step does not read.`,
       };
     }
 
@@ -513,7 +536,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
           `§4.7), and this run bound none. Bind a provider via ` +
           `PhaseRunOptions.capabilities before running a phase that declares an ` +
           `'nfr' node — an unbound capability is refused rather than read as ` +
-          `nothing to measure (CONV-4).`,
+          `nothing to measure (CONV-4). 'mpgm run' binds 'commandNfrProvider' ` +
+          `(src/test/nfr-provider.ts), which measures what 'test/nfr.yaml' ` +
+          `declares.`,
       };
     }
     if (options.repo === undefined || options.ref === undefined) {
@@ -521,8 +546,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
         status: 'blocked',
         reason:
           `nfr '${step.id}' has no 'repo'/'ref' to measure against. Pass both on ` +
-          `PhaseRunOptions — 'test.nfr#run' reports against a specific repo and ` +
-          `ref, and neither is guessed.`,
+          `PhaseRunOptions — from the CLI, 'mpgm run <phase> --repo <owner/name> ` +
+          `--ref <ref>'. 'test.nfr#run' reports against a specific repo and ref, ` +
+          `and neither is guessed.`,
       };
     }
 
@@ -532,7 +558,7 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       rows = await runNfrSuite({
         repo: options.repo,
         ref: options.ref,
-        requirements: parsedRequirements.data,
+        requirements,
         run: (input) => contract.invoke('run', input),
       });
     } catch (cause) {
@@ -569,7 +595,8 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
           `generated suite executes model-authored code with the privileges ` +
           `wherever it runs — nodeTestExecutor's subject restriction is not a ` +
           `confinement boundary (src/test/adversarial.ts) — so pass ` +
-          `'testProjectDir' on PhaseRunOptions explicitly; it is a decision, not a ` +
+          `'testProjectDir' on PhaseRunOptions explicitly — from the CLI, ` +
+          `'mpgm run <phase> --test-project-dir <path>'; it is a decision, not a ` +
           `default this phase supplies on its own.`,
       };
     }
