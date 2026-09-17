@@ -1093,6 +1093,72 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['OBS-1', 'OBS-4', 'HIL-5'],
             },
+            {
+              id: 'T4.2.16',
+              title:
+                'Seven ADR citations and one convention resolve to nothing, ' +
+                'so the dangling report has a permanent floor',
+              completionCriteria: [
+                'Every id a commit trailer or an artifact cites resolves to ' +
+                  'a node in the trace index, or the report states which do ' +
+                  'not and why that is deliberate. Measured, not asserted: ' +
+                  'mpgm trace --dangling names eight citations today — ADR-4 ' +
+                  'from commits 65e0f32, 73bd2db and e5a8212 and from plan ' +
+                  'tasks T4.2.11 and T4.2.5, ADR-5 from T3.1.1, ADR-6 from ' +
+                  'T3.1.5, and CONV-6 from commit 7b09783 — against an index ' +
+                  'holding 268 commit nodes, 150 element nodes, 2 artifact ' +
+                  'nodes and no node whose id begins ADR- or CONV-.',
+                'The cause is named rather than guessed at: an element node ' +
+                  "exists only where an artifact's data declares an id " +
+                  '(extractArtifactLinks, src/trace/links.ts), which is why ' +
+                  'the 84 requirement ids resolve at all — T4.3.1 filed the ' +
+                  'Scope artifact that declares them. ADR-1 to ADR-7 live in ' +
+                  'DESIGN.md and the conventions in kb/conventions.md, and ' +
+                  'neither document is an artifact, so nothing declares ' +
+                  "those ids anywhere the index reads. This is T4.3.1's own " +
+                  'finding one document over, and the same OBS-1 shape as ' +
+                  'T4.2.12 and T4.2.14: a claim written in good faith that ' +
+                  'cannot be read back.',
+                "This is what M4.2's own verification asks for and does not " +
+                  "get — a coverage run over this repository's history that " +
+                  'names every commit whose trace claim it could not read ' +
+                  'and names none. It names eight, so the milestone cannot ' +
+                  'be signed off on that leg until the count is zero or the ' +
+                  'remainder is a stated, deliberate exclusion.',
+                'The design schema already fits the citations rather than ' +
+                  "needing to be bent to them: adrSchema's id is " +
+                  '^ADR-[0-9]+$, exactly the form the eight citations use, ' +
+                  "and 'design' is registered in projectArtifactSchemas. But " +
+                  'designSchema also requires components, interfaces, ' +
+                  'dataModel, technologies and crossCutting at min(1) each, ' +
+                  'with a refine over every concern DSG-2 names, so filing ' +
+                  'DESIGN.md is more than transcribing its ADRs. What the ' +
+                  'change carried and what it left out is stated, rather ' +
+                  'than design elements being invented to satisfy min(1) — ' +
+                  'an artifact padded to pass its own schema is a worse ' +
+                  'source of truth than the prose it replaced.',
+                'CONV-6 is decided explicitly rather than left to fall out: ' +
+                  'conventions live in kb/conventions.md, which no ' +
+                  'registered schema covers. Either they become declarable ' +
+                  'somewhere the index reads, or the change states that ' +
+                  'CONV- citations are deliberately unresolvable and what ' +
+                  'that costs — a report with a permanent non-zero floor is ' +
+                  'one nobody reads, which is how these eight survived this ' +
+                  'long.',
+                'Ids carry across unchanged — ADR-1 to ADR-7 as DESIGN.md ' +
+                  'already spells them — since three foundation documents ' +
+                  'and the commit trailers cite them that way and ' +
+                  'renumbering would dangle the citations it was meant to ' +
+                  'resolve.',
+                'The test asserts the dangling report over this ' +
+                  "repository's own history is empty, or contains exactly " +
+                  'the exclusions the change stated and nothing else. A test ' +
+                  'over a synthetic fixture passes while the real history ' +
+                  'still dangles, which is the reading CONV-6 refuses.',
+              ],
+              dependsOn: [],
+              tracesTo: ['ART-2', 'TST-2', 'OBS-1'],
+            },
           ],
         },
         {
