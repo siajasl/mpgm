@@ -1174,7 +1174,10 @@ export const MPGM_PLAN = {
             'not meet: a coverage run over this repository own history names every ' +
             'commit whose trace claim it could not read on a warm index and not only ' +
             'on a cold one; and no task the gated Plan artifact has stopped ' +
-            'declaring is counted as a failure or shown in flight.',
+            'declaring is counted as a failure or shown in flight. And a rework ' +
+            'round escalated to a stronger tier is funded or refused before it ' +
+            'starts, with work a budget kill interrupts never left where only a ' +
+            'local worktree can see it.',
           validatesRisk: null,
           tasks: [
             {
@@ -1570,6 +1573,82 @@ export const MPGM_PLAN = {
               ],
               dependsOn: [],
               tracesTo: ['PLN-4', 'OBS-1', 'OBS-4'],
+            },
+            {
+              id: 'T4.3.8',
+              title: 'The escalated rework round is the one least able to afford itself',
+              completionCriteria: [
+                'A round dispatched on a stronger tier is either funded or ' +
+                  'refused before it starts, never started and killed ' +
+                  'part-way. Measured rather than asserted: T4.3.2 blocked on ' +
+                  'BudgetExceeded kind=cost limit=8 observed=8.0142675, in the ' +
+                  'rework session dispatched on claude-opus-5 at ' +
+                  '2026-09-17T15:08:22Z. Its two Sonnet rounds cost $5.64 and ' +
+                  '$1.06; the Opus round cost $8.01 against the implementer ' +
+                  "role's costUsd: 8 and was terminated at the cap.",
+                "T4.2.13's premise is what fails, and the change says so " +
+                  'rather than treating the cap as the defect. That task ' +
+                  'argued escalation costs nothing beyond the round that was ' +
+                  'going to be spent regardless -- true of the round count ' +
+                  'and false of the money, since the same round on a stronger ' +
+                  'tier cost roughly eight times its predecessors against an ' +
+                  'unchanged allowance. The escalation itself is not in ' +
+                  'question: it fires at round === attempts - 1 of 3 and is ' +
+                  'what T4.2.13 delivered.',
+                'The guard that was supposed to prevent this is named ' +
+                  'precisely. src/implement/loop.ts states that no separate ' +
+                  'cost check guards the escalated round because a round ' +
+                  'exceeding what is left "is refused there" by ' +
+                  'SessionRunner. It is not refused: src/agent/runner.ts ' +
+                  'refuses only when remainingCostUsd <= 0, and otherwise ' +
+                  'dispatches with maxBudgetUsd: ledger.remainingCostUsd. ' +
+                  'Nothing asks whether what remains can fund the tier about ' +
+                  'to run, so a round with the full allowance left always ' +
+                  'starts and is truncated at the cap. The comment is ' +
+                  'corrected in whichever direction the change settles.',
+                'What the kill actually cost is stated, because it is not the ' +
+                  'round. The Opus session had already committed twice -- ' +
+                  '663ff50 and e9dcb4b in .mpgm/worktrees/T4.3.2, 1,278 ' +
+                  'insertions over 16 files, answering all three of the ' +
+                  "second review's blocking findings and passing the full " +
+                  'check at 1315 tests -- and was killed before it pushed. So ' +
+                  'a budget kill this late strands finished work outside the ' +
+                  'branch, where no review and no CI can see it and only the ' +
+                  'local worktree holds it. Whether the loop pushes what a ' +
+                  'killed session committed, or reports it and leaves it, is ' +
+                  'part of this change and not a separate one.',
+                'The budget being spent is per dispatch, not per task, and ' +
+                  'the change says which it means. BudgetLedger is ' +
+                  'constructed inside runTask, so its "one ledger per task: ' +
+                  'retries share the budget" is about the validation retries ' +
+                  'inside one dispatch; every review round is a fresh call ' +
+                  'and a fresh allowance. T4.3.2 spent $21.62 over five ' +
+                  'sessions -- $14.71 implementer, $6.91 reviewer -- against ' +
+                  'a role budget of $8, and no figure anywhere was breached. ' +
+                  'A change that reads the cap as a task bound would be ' +
+                  'wrong about every task in this log.',
+                'The change picks among guarding escalation on an estimate of ' +
+                  'what the stronger tier needs, making the allowance ' +
+                  'tier-relative, and refusing the escalated round outright ' +
+                  'when the budget is sized for the weaker tier -- and says ' +
+                  'which and why. An estimate is measured from this log ' +
+                  'rather than invented. A tier-relative allowance means ' +
+                  'editing roles/freeze.json in the same commit with who ' +
+                  'approved it and why. A refusal is logged as a decision: ' +
+                  'T4.2.13 already forbids silently dropping back a tier, and ' +
+                  'a refusal nobody can read is the same thing with extra ' +
+                  'steps. Raising 8 to a number that happens to fit T4.3.2 is ' +
+                  'not one of the three.',
+                'The test drives a task to its final rework round with an ' +
+                  'allowance that cannot fund the escalated tier, and asserts ' +
+                  'from the log that the outcome distinguishes a round ' +
+                  'refused before dispatch from a round killed part-way, and ' +
+                  'that work a killed session committed is not left where ' +
+                  'only the worktree can see it. A test asserting only that ' +
+                  'BudgetExceeded was appended passes against today.',
+              ],
+              dependsOn: [],
+              tracesTo: ['AGT-4', 'AGT-5', 'OBS-1', 'IMP-3'],
             },
           ],
         },
