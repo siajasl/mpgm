@@ -67,9 +67,18 @@ check(
 process.stdout.write('\n2. It agrees with PLAN.md\n');
 
 // The only drift a machine can catch. The wording is on whoever edits them.
+//
+// Read from the id cell of a task row, not from anywhere the id appears: a
+// task is *declared* by having a row, and prose cites ids it does not declare.
+// A whole-document scan read T4.1.4 — retired when T4.3.7 was filed about it,
+// and named in that task's own criteria — as a task the artifact was missing.
+// Every genuine addition to PLAN.md still gets a row, so real drift is caught:
+// over this document the two readings differ by that one retired citation.
 const planDoc = readFileSync(join(projectRoot, 'PLAN.md'), 'utf8');
 const documented = new Set(
-  [...planDoc.matchAll(/\bT([345])\.[0-9]+\.[0-9]+[a-z]?\b/g)].map((match) => match[0]),
+  [...planDoc.matchAll(/^\| \*{0,2}(T[345]\.[0-9]+\.[0-9]+[a-z]?)[ :*]/gm)].map(
+    (match) => match[1],
+  ),
 );
 const ingested = new Set(tasks.map((task) => task.id));
 
