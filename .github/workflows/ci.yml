@@ -69,7 +69,15 @@ jobs:
         # 24.x is Active LTS, 26.x is Current. Both are supported by engines.
         node-version: ['24.x', '26.x']
     steps:
+      # fetch-depth: 0 rather than the default 1 — src/trace/index.test.ts's
+      # "this repository's own history (T4.2.16)" test walks this checkout's
+      # full commit history through the real trace indexer, and a shallow
+      # checkout would make that assertion trivially true (nothing to read)
+      # rather than a check of anything, the same trap T4.2.5 and T4.2.11
+      # route around by building their own repository instead.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}

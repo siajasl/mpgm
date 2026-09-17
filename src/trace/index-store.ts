@@ -4,6 +4,7 @@ import { TRACE_DDL } from './ddl.js';
 import {
   extractArtifactLinks,
   extractCommitLinks,
+  looksLikeConventionId,
   looksLikeId,
   type CommitLinks,
   type CommitRecord,
@@ -42,6 +43,31 @@ export interface DanglingReference {
   readonly dst: string;
   readonly source: string;
 }
+
+/**
+ * A citation excluded from the dangling count on purpose, with why.
+ *
+ * Distinct from {@link DanglingReference}: an excluded reference is not a
+ * broken link waiting on a node the index will eventually gain, it is a
+ * citation of a kind the graph was never meant to resolve — reported so the
+ * exclusion is visible rather than making the citation disappear the way
+ * `looksLikeId` already makes prose disappear.
+ */
+export interface ExcludedReference extends DanglingReference {
+  readonly reason: string;
+}
+
+/**
+ * Why a convention citation is excluded rather than counted as dangling.
+ *
+ * Kept as a value the caller can compare against in a test, not just prose
+ * folded into a template string at the call site.
+ */
+export const CONVENTION_CITATION_REASON =
+  'a convention id is never a trace target (kb/conventions.md): a convention ' +
+  'is a rule about how work is done, not something an element serves, so no ' +
+  'artifact will ever declare one and this citation is not waiting on one to ' +
+  'appear.';
 
 export class TraceIndex {
   readonly #db: DatabaseSync;
@@ -207,15 +233,44 @@ export class TraceIndex {
   }
 
   /**
-   * Citations that resolve to nothing.
+   * Citations that resolve to nothing, other than the ones excluded on
+   * purpose — see {@link excludedReferences}.
    *
    * Filtered to strings that look like ids, because a `tracesTo` entry may
    * legitimately be prose — "goal: lend books" was never going to resolve, and
    * reporting it as dangling would bury the citation of `LOAN-9`, a
-   * requirement that does not exist.
+   * requirement that does not exist. A convention id (`CONV-6`) looks like an
+   * id and is filtered out for a different reason: nothing will ever declare
+   * one (T4.2.16), so it is reported by {@link excludedReferences} instead of
+   * counted here — counting it would give this report a floor no amount of
+   * filing a missing artifact could bring to zero.
    */
   danglingReferences(): readonly DanglingReference[] {
-    const rows = this.#db
+    return this.#unresolvedReferences().filter(
+      (row) => looksLikeId(row.dst) && !looksLikeConventionId(row.dst),
+    );
+  }
+
+  /**
+   * Citations excluded from {@link danglingReferences} on purpose, with why.
+   *
+   * A convention id cited via `tracesTo`/`Traces:` is the one case today
+   * (T4.2.16): `kb/conventions.md`'s own rule is that a convention id is
+   * never a trace target, so no artifact will declare `CONV-6` and this
+   * citation is not a gap in the index to close, it is a citation the
+   * trailer vocabulary was never meant to carry. Reported rather than
+   * silently dropped, so the exclusion is a decision a reader can see and
+   * check, not an absence they have to notice on their own.
+   */
+  excludedReferences(): readonly ExcludedReference[] {
+    return this.#unresolvedReferences()
+      .filter((row) => looksLikeConventionId(row.dst))
+      .map((row) => ({ ...row, reason: CONVENTION_CITATION_REASON }));
+  }
+
+  /** Citations naming a node the index does not have, whatever they look like. */
+  #unresolvedReferences(): readonly DanglingReference[] {
+    return this.#db
       .prepare(
         `SELECT l.src AS src, l.dst AS dst, l.source AS source
            FROM trace_links l
@@ -224,7 +279,6 @@ export class TraceIndex {
           ORDER BY l.dst, l.src, l.source`,
       )
       .all() as unknown as DanglingReference[];
-    return rows.filter((row) => looksLikeId(row.dst));
   }
 
   /** Elements some artifact declares, with what declared them. */

@@ -79,6 +79,27 @@ export function looksLikeId(value: string): boolean {
   return TRACE_ID_PATTERN.test(value);
 }
 
+/**
+ * A convention id (`CONV-6`), shaped exactly like the numbered rules in
+ * `kb/conventions.md`.
+ *
+ * The Conventions section (CLAUDE.md, `kb/conventions.md`) states the rule
+ * this exists to apply: "a convention id is never a trace target" — a
+ * convention is a rule about how work is done, not something an element
+ * serves, so a `tracesTo`/`Traces:` citation of one puts an id in the graph
+ * that nothing was ever going to declare. `danglingReferences` uses this to
+ * tell that citation apart from a genuine dangling reference: `CONV-6` cited
+ * by a commit trailer (`7b09783`) is not a broken link waiting on a node
+ * nobody has written yet, it is a citation of a kind the graph was never
+ * meant to resolve, and is reported as a stated, deliberate exclusion
+ * instead of counted toward the dangling total.
+ */
+export const CONVENTION_ID_PATTERN = /^CONV-[0-9]+$/;
+
+export function looksLikeConventionId(value: string): boolean {
+  return CONVENTION_ID_PATTERN.test(value);
+}
+
 /** The node id for an artifact version. */
 export function artifactNodeId(id: string, version: number): string {
   return `${id}@${String(version)}`;

@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -10,9 +11,13 @@ import {
 } from '../artifact/schema-registry.js';
 import { ArtifactStore, type Artifact } from '../artifact/store.js';
 import { MEMORY, openDatabase } from '../database.js';
+import { projectArtifactSchemas } from '../schemas.js';
 import { TraceIndex } from './index-store.js';
 import { TraceIndexer } from './indexer.js';
 import { extractArtifactLinks, extractCommitLinks } from './links.js';
+
+/** `src/trace/` -> repo root, to walk mpgm's own history and artifacts (T4.2.16). */
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const tempDirs: string[] = [];
 
@@ -443,6 +448,47 @@ describe('the index', () => {
       db.close();
     }
   });
+
+  /**
+   * T4.2.16: a convention id cited via `Traces:`/`tracesTo` is excluded from
+   * `danglingReferences` on purpose, not because it resolved — nothing ever
+   * declares a `CONV-` id (kb/conventions.md's own rule is that a convention
+   * is never a trace target) — and `excludedReferences` says so rather than
+   * making the citation disappear. Reproduces the real citation this history
+   * carries: commit `7b09783` trailers `Traces: NFR-6, CONV-6.`, an id-shaped
+   * requirement citation next to an id-shaped convention citation in the same
+   * trailer.
+   */
+  it('excludes a convention citation from dangling rather than resolving or hiding it', () => {
+    const { db, index } = indexed();
+    try {
+      index.indexArtifactAs(
+        artifact({ id: 'scope', schema: 'scope', data: SCOPE }),
+        'artifacts/scope/requirements.v1.md',
+      );
+      index.indexCommit({
+        sha: '7b09783',
+        subject: 'Make the tag undo non-destructive',
+        body: 'Traces: NFR-6, CONV-6.\n',
+      });
+
+      // NFR-1 exists, CONV-6 does not — but CONV-6 is not "dangling" the way
+      // a missing NFR-6 declaration would be: NFR-6 is a real requirement id
+      // this fixture happens not to declare, and CONV-6 is a convention id no
+      // artifact was ever going to declare. Both fail to resolve; only one
+      // is a gap in the index.
+      const dangling = index.danglingReferences();
+      expect(dangling.map((entry) => entry.dst)).toStrictEqual(['NFR-6']);
+
+      const excluded = index.excludedReferences();
+      expect(excluded).toHaveLength(1);
+      expect(excluded[0]?.dst).toBe('CONV-6');
+      expect(excluded[0]?.src).toBe('7b09783');
+      expect(excluded[0]?.reason).toMatch(/never a trace target/);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe('dangling citations from one artifact', () => {
@@ -772,6 +818,69 @@ describe('rebuild and incremental update agree', () => {
 
       expect(report.artifacts).toBe(1);
       expect(index.tracesTo('LOAN-1')).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * T4.2.16: measured against this checkout's own history, not a fixture the
+ * test builds.
+ *
+ * Every other real-history claim in this file (T4.2.5, T4.2.11) is
+ * deliberately tested against a repository the test constructs instead,
+ * because CI's default checkout is depth one and a test reading commits here
+ * would find nothing to read regardless of whether the defect it exists to
+ * catch is still live — passing either way is exactly the CONV-6 failure
+ * this task exists to refuse (see the block comment above `describe('a
+ * Traces: trailer against a repository the test builds (T4.2.5)')`). T4.2.16
+ * accepts that trade the other way: mpgm trace --dangling naming eight
+ * citations is a measurement over this repository's own log, not over a
+ * fixture, and a fix proven only against a fixture would leave that
+ * measurement unchanged. The CI workflow's `test` job checkout is widened to
+ * full history (`fetch-depth: 0`, `.github/workflows/ci.yml`) in the same
+ * change, so this assertion is load-bearing there rather than trivially true
+ * on a single shallow commit.
+ *
+ * Read-only against the checkout: the index lives in an in-memory database
+ * (`MEMORY`), and `ArtifactStore`/`readCommits` only read `context.root` —
+ * nothing here writes `.mpgm/state.db` into this working tree the way the
+ * `mpgm` binary itself would.
+ */
+describe("this repository's own history (T4.2.16)", () => {
+  it('names no dangling citation other than the convention citation it declares deliberate', () => {
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      const artifacts = new ArtifactStore({
+        root: projectRoot,
+        schemas: projectArtifactSchemas(),
+      });
+      new TraceIndexer({ repo: projectRoot, index, artifacts }).rebuild();
+
+      // The measured floor this task exists to close: ADR-4, ADR-5, ADR-6
+      // and CONV-6 all resolved to nothing against this same history before
+      // the design artifact existed and before CONV- citations were reported
+      // as a deliberate exclusion rather than counted.
+      expect(index.danglingReferences()).toStrictEqual([]);
+
+      // The one citation this change declares deliberately unresolvable, and
+      // no other — a test asserting only `danglingReferences` is empty would
+      // still pass if excluding *every* citation, however unrelated, were
+      // the mechanism (CONV-6).
+      const excluded = index.excludedReferences();
+      expect(excluded).toHaveLength(1);
+      expect(excluded[0]?.dst).toBe('CONV-6');
+      expect(excluded[0]?.src).toBe('7b09783647eb1ae76d63a5329f125759ce538292');
+      expect(excluded[0]?.reason).toMatch(/never a trace target/);
+
+      // ADR-1 through ADR-7 all resolve, not merely the three this history
+      // happens to cite today — DESIGN.md's own ids carried across
+      // unchanged, per the design artifact's own summary.
+      for (const id of ['ADR-1', 'ADR-2', 'ADR-3', 'ADR-4', 'ADR-5', 'ADR-6', 'ADR-7']) {
+        expect(index.declarationsOf(id).length).toBeGreaterThan(0);
+      }
     } finally {
       db.close();
     }
