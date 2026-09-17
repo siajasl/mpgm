@@ -1,6 +1,6 @@
 # DESIGN — mpgm Agentic SDLC Harness
 
-**Status:** v0.35 — §4.4's CLI list describes `rollback` as §9.11 already did: keyed on an environment (§4.4) · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-11
+**Status:** v0.36 — §9 decision 15: a phase's work reaches a bound capability through a new step kind (`nfr`/`suite`), not a second `mpgm implement`-shaped verb (T4.3.2) (§9) · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-17
 **Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4. Requirement IDs (`ORC-1`, `SAF-2`, …) are cited throughout; every component traces to at least one requirement (DSG-4).
 
 ## 1. Context & Goals

@@ -81,6 +81,28 @@ const nodeCommon = {
   consumes: z.array(identifier).default([]),
 };
 
+/**
+ * Fields every node shares, for a node kind that reads nothing beyond its
+ * `dependsOn` — no session ever runs for it that `consumes` could hand
+ * anything to.
+ *
+ * `nfr` and `suite` expand to exactly one kernel-computed step apiece
+ * (`NfrStep`/`SuiteStep`, `src/playbook/graph.ts`), neither of which carries a
+ * `consumes` field — the same way `TallyStep` carries none for a panel's
+ * tally. A `panel` node's own `consumes` has somewhere to go: expansion
+ * copies it onto every judge session it emits (`graph.ts`'s `'panel'` case),
+ * because a judge reads what the node declares. An `nfr`/`suite` node has no
+ * session to copy it onto, so accepting the key here would validate a
+ * declaration expansion can only discard silently — CONV-5 asks that this be
+ * unrepresentable rather than checked and dropped, and both schemas are
+ * `.strict()`, so omitting the key refuses it at load instead.
+ */
+const nodeCommonNoConsumes = {
+  id: identifier,
+  description: nonEmpty,
+  dependsOn: z.array(identifier).default([]),
+};
+
 /** One ordinary task the phase dispatches: one role, one session. */
 export const taskTemplateSchema = z
   .object({
@@ -254,7 +276,7 @@ export const panelNodeSchema = z
  */
 export const nfrNodeSchema = z
   .object({
-    ...nodeCommon,
+    ...nodeCommonNoConsumes,
     kind: z.literal('nfr'),
     /** Node whose result holds the `NfrRequirement[]` to measure. */
     requirements: identifier,
@@ -273,7 +295,7 @@ export const nfrNodeSchema = z
  */
 export const suiteNodeSchema = z
   .object({
-    ...nodeCommon,
+    ...nodeCommonNoConsumes,
     kind: z.literal('suite'),
     /** Node whose result is the `AdversarialSuite` to run. */
     suite: identifier,

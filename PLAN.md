@@ -1,7 +1,7 @@
 # PLAN — mpgm Build Plan
 
 **Status:** v0.21 — M4.2's legs verified and two folded into M4.3: T4.3.6, the unread trace claims named on a cold index and never again, and T4.3.7, a task the plan no longer declares counted as a failure forever · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-17
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.35. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.36. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 

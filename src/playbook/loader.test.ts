@@ -260,7 +260,8 @@ artifacts:`,
 
     expect(Object.keys(playbook.inputs)).toStrictEqual(['elicitation']);
     // Inputs need no producer: the phase reads them, it does not write them.
-    expect(playbook.tasks[0]?.consumes).toStrictEqual(['elicitation']);
+    const task = playbook.tasks[0];
+    expect(task?.kind === 'task' && task.consumes).toStrictEqual(['elicitation']);
   });
 
   it('rejects an artifact nothing produces, which the gate would wait on forever', () => {

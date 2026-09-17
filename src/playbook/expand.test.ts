@@ -732,6 +732,21 @@ gate:
       ),
     ).toThrow(/measured by\s+the bound 'test.nfr' capability, not asserted by an agent/);
   });
+
+  it('refuses a "consumes" declared on an nfr node (CONV-5): no session ever runs for it to reach', () => {
+    // An `nfr` node expands to exactly one kernel-computed step with no
+    // `consumes` field (`NfrStep`) — nothing downstream of the schema could
+    // ever honour a declared consumption, so the schema refuses it rather
+    // than accepting and silently dropping it at expansion.
+    expect(() =>
+      load(
+        body.replace(
+          'requirements: gather',
+          'requirements: gather\n    consumes: [coverage]',
+        ),
+      ),
+    ).toThrow(/invalid playbook/);
+  });
 });
 
 describe('suite expansion (T4.3.2)', () => {
@@ -794,5 +809,14 @@ gate:
         ),
       ),
     ).toThrow(/a verdict\s+folded from a test run, not asserted by an agent/);
+  });
+
+  it('refuses a "consumes" declared on a suite node (CONV-5): no session ever runs for it to reach', () => {
+    // Same reasoning as the nfr node above: `SuiteStep` carries no `consumes`
+    // field, so declaring one here would validate a consumption expansion
+    // can only discard.
+    expect(() =>
+      load(body.replace('suite: attack', 'suite: attack\n    consumes: [verdict]')),
+    ).toThrow(/invalid playbook/);
   });
 });
