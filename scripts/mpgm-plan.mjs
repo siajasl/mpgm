@@ -1170,7 +1170,11 @@ export const MPGM_PLAN = {
             'exists, an adversarial suite that catches a planted defect, that defect ' +
             'filed as a Defect artifact and round-tripped through route, fix and ' +
             're-test, and a Test gate presented over what was found rather than over ' +
-            'an empty set.',
+            'an empty set. Carried from M4.2, whose verification these two legs did ' +
+            'not meet: a coverage run over this repository own history names every ' +
+            'commit whose trace claim it could not read on a warm index and not only ' +
+            'on a cold one; and no task the gated Plan artifact has stopped ' +
+            'declaring is counted as a failure or shown in flight.',
           validatesRisk: null,
           tasks: [
             {
@@ -1439,6 +1443,133 @@ export const MPGM_PLAN = {
               ],
               dependsOn: ['T4.3.1', 'T4.3.4'],
               tracesTo: ['TST-1', 'TST-2', 'TST-5'],
+            },
+            {
+              id: 'T4.3.6',
+              title: 'An unread trace claim is named once and never again',
+              completionCriteria: [
+                'A trace claim the index could not read is named on every ' +
+                  'invocation, not only on the one that first read it. ' +
+                  'Measured rather than asserted: over this repository, ' +
+                  'mpgm trace --dangling against the working index prints no ' +
+                  'NOTE line, while the same command against a full rebuild ' +
+                  'prints 17, naming 16 commits whose Traces: value is a ' +
+                  'section number rather than an id (DESIGN §4.7, DESIGN §6, ' +
+                  'PLAN M1.1 verification and twelve more). Neither report ' +
+                  'is wrong about the history; they disagree because one was ' +
+                  'asked to read it and the other was not.',
+                'The cause is named rather than guessed. The unread claims ' +
+                  'are the per-call return of TraceIndexer.update() — ' +
+                  'unrecognisedTrailers and unindexedTrailerValues, printed ' +
+                  'by trace() in src/cli/commands.ts ahead of whichever mode ' +
+                  'was asked for — and nothing persists them. When the ' +
+                  'recorded commit equals HEAD the method returns both arrays ' +
+                  'empty (src/trace/indexer.ts), and on the incremental path ' +
+                  'it accumulates reports only for commits in from..head, so ' +
+                  'a claim read at T4.2.5 is never mentioned again. ' +
+                  'trace_nodes, trace_links and trace_meta hold no row for ' +
+                  'an unread claim.',
+                'This is the M4.2 verification leg that does not hold. That ' +
+                  "milestone asks for a coverage run over this repository's " +
+                  'own history that names every commit whose trace claim it ' +
+                  'could not read, and names none dangling. The dangling ' +
+                  'half holds identically cold and warm — no citation ' +
+                  'resolves to nothing, one stated CONV-6 exclusion (T4.2.16) ' +
+                  '— and the naming half holds only on a first index. The ' +
+                  'same OBS-1 shape as T4.2.12, T4.2.14 and T4.2.16: a claim ' +
+                  'written in good faith that cannot be read back.',
+                'The change picks between persisting the unread claims as ' +
+                  'rows keyed by the source commit that carried them and ' +
+                  'recomputing the report over full history on every trace ' +
+                  'invocation, says which and why, and prices the one it ' +
+                  'refused: recomputing walks the whole history on a command ' +
+                  'that is otherwise incremental, and persisting adds a ' +
+                  'derived table that must be forgotten when its source is. ' +
+                  'Keying by source is what CLAUDE.md already requires of ' +
+                  'this index and is what makes an incremental update equal ' +
+                  'a full rebuild, so a persisted row inherits the forget ' +
+                  'path update() already reports as forgotten rather than ' +
+                  'outliving a rewritten history.',
+                'Nothing here raises a coverage figure. An unread claim is ' +
+                  'reported precisely because it was not indexed, and T4.2.5 ' +
+                  'already settled that a value which is not id-shaped is ' +
+                  'reported rather than indexed; making the report durable ' +
+                  'must not quietly make the claim count. The 16 commits are ' +
+                  'not rewritten — the history is what it is, and the section ' +
+                  'numbers they cite are true sentences that simply do not ' +
+                  'resolve to a node.',
+                'The test indexes a repository the test builds, indexes it ' +
+                  'again with no new commits, and asserts the second call ' +
+                  'still names every unread claim the first did. A test that ' +
+                  'rebuilds from an empty index passes today and is the test ' +
+                  'this defect survived.',
+              ],
+              dependsOn: [],
+              tracesTo: ['ADR-4', 'TST-2', 'OBS-1'],
+            },
+            {
+              id: 'T4.3.7',
+              title: 'A task the plan no longer declares reads blocked forever',
+              completionCriteria: [
+                'A task id the gated Plan artifact no longer declares is ' +
+                  'reported as superseded rather than counted as a failure. ' +
+                  'Measured rather than asserted: folded state holds T4.1.4 ' +
+                  'at status blocked with blocked true, and T4.1.4-review-2 ' +
+                  'at dispatched, while PLAN.md and the Plan artifact declare ' +
+                  'T4.1.4a, T4.1.4b and T4.1.4c and no T4.1.4 at all. The ' +
+                  'split was a PLN-4 adjustment — that requirement names ' +
+                  'splitting tasks within a milestone as the autonomous, ' +
+                  'logged case — applied as a document revision, and nothing ' +
+                  'told the log.',
+                'What that costs is named rather than inferred, because every ' +
+                  'figure below is wrong today and reads plausible. The ' +
+                  'dashboard shows blocked 1 on a run whose work is done. ' +
+                  'The run success rate reads 99% (116/117) and the ' +
+                  'implementer rate 97% (33/34), where in both cases T4.1.4 ' +
+                  'is the sole failure — aggregate() settles a task as ' +
+                  'completed plus blocked (src/state/metrics.ts), so a ' +
+                  'superseded id is a permanent denominator entry that can ' +
+                  'never complete. The 19 sessions it spent, $50.84, stay in ' +
+                  'the ledger and should: the work was really done and its ' +
+                  'successors carry it.',
+                'The two shapes are distinguished rather than fixed as one. ' +
+                  'T4.1.4 ended on TaskBlocked after BudgetExceeded steps ' +
+                  '(max_turns, 2026-09-06), which is a terminal event about a ' +
+                  'task that no longer exists. T4.1.4-review-2 was dispatched ' +
+                  'at 2026-09-06T15:27:55Z and has no terminal event at all, ' +
+                  'so it reads dispatched three weeks later — a fold with no ' +
+                  'way to close it, counted in tasks 128 and excluded from ' +
+                  'the success denominator. A change closing only the first ' +
+                  'leaves the dashboard listing a task in flight that is not.',
+                "T4.2.15's record-merge is not the answer and the change " +
+                  'says why rather than reaching for it: there is no merge to ' +
+                  'record, verifyOperatorMerge would rightly refuse a sha, ' +
+                  "and T4.1.4's work landed under three other ids. " +
+                  'TaskAttested is equally wrong — the catalog defines it as ' +
+                  'a plan task completed outside the harness, and these ' +
+                  'sessions ran inside it. Whatever verb or rule this adds is ' +
+                  'a third thing and is named as such.',
+                'The change picks between an operator verb and the kernel ' +
+                  'noticing a folded task id the gated Plan artifact does not ' +
+                  'declare, says which and why, and fails closed. A task id ' +
+                  'absent from the plan is equally the signature of a ' +
+                  'mistyped dispatch or a plan regression, so a rule that ' +
+                  'silently retires anything it cannot find would hide the ' +
+                  'defect it is meant to surface: what is recorded says which ' +
+                  'was decided and on whose authority (HIL-5).',
+                'The events of T4.1.4 and T4.1.4-review-2 are not rewritten ' +
+                  '(§6). Anything recorded now is appended with its own later ' +
+                  'timestamp, and the change says what that does to any ' +
+                  'figure reading ts ordering.',
+                'The test folds a run holding a blocked task and a dispatched ' +
+                  'task under ids the Plan artifact does not declare, and ' +
+                  'asserts from the log alone that both read superseded, that ' +
+                  'the blocked count falls to zero, and that the success ' +
+                  'denominator moves. A test asserting only that an event was ' +
+                  'appended passes against a record nothing checked.',
+              ],
+              dependsOn: [],
+              tracesTo: ['PLN-4', 'OBS-1', 'OBS-4'],
             },
           ],
         },
