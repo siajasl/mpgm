@@ -1072,8 +1072,16 @@ export function clamp(value, min, max) {
     // only the test can produce.
     const artifacts = new ArtifactStore({ root, schemas: projectArtifactSchemas() });
 
+    // Tracked rather than only mocked: the pre-dispatch precondition check
+    // (src/phase/runner.ts) is supposed to refuse an 'nfr'/'suite' step
+    // before the scheduler pays for a single upstream session, and a test
+    // that only reads the blocked reason cannot tell that apart from the
+    // in-step check catching the same problem after every session already
+    // ran.
+    const invocations: string[] = [];
     const provider: AgentSessionProvider = {
       run: (request: SessionRequest) => {
+        invocations.push(request.prompt);
         if (request.prompt.includes('MARK-NFR')) {
           return Promise.resolve(scriptedSuccess(SCOPE));
         }
@@ -1131,6 +1139,7 @@ export function clamp(value, min, max) {
       log,
       projector,
       projectDir,
+      invocations,
       common: {
         runId: 'run-1',
         roles: testRoles,
@@ -1205,7 +1214,7 @@ export function clamp(value, min, max) {
   }, 20_000);
 
   it('blocks a suite step rather than defaulting to a project directory (decision, not a default)', async () => {
-    const { db, common } = testHarness();
+    const { db, common, invocations } = testHarness();
     try {
       const result = await runPhase({
         ...common,
@@ -1217,6 +1226,9 @@ export function clamp(value, min, max) {
       expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
         /decision, not a/,
       );
+      // Caught before dispatch, not after the scope/suite-writing sessions
+      // already ran and were paid for: the provider was never invoked.
+      expect(invocations).toStrictEqual([]);
     } finally {
       db.close();
     }
@@ -1244,7 +1256,7 @@ export function clamp(value, min, max) {
   });
 
   it('blocks an nfr step rather than reading an unbound capability as nothing to measure (CONV-4)', async () => {
-    const { db, common, projectDir } = testHarness();
+    const { db, common, projectDir, invocations } = testHarness();
     const { capabilities: _unused, ...withoutCapabilities } = common;
     try {
       const result = await runPhase({
@@ -1257,6 +1269,29 @@ export function clamp(value, min, max) {
       expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
         /needs the 'test\.nfr' capability bound/,
       );
+      // Caught before dispatch: an unbound capability blocks the whole phase
+      // before the scope-enumeration session that would otherwise run first.
+      expect(invocations).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks an nfr step missing repo/ref before dispatch, without running its upstream session', async () => {
+    const { db, common, projectDir, invocations } = testHarness();
+    const { repo: _repo, ref: _ref, ...withoutRepoRef } = common;
+    try {
+      const result = await runPhase({
+        ...withoutRepoRef,
+        playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+        testProjectDir: projectDir,
+      });
+
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /has no 'repo'\/'ref' to measure against/,
+      );
+      expect(invocations).toStrictEqual([]);
     } finally {
       db.close();
     }

@@ -157,6 +157,47 @@ function nfrRequirementsSourceOf(value: unknown): unknown {
   return value;
 }
 
+/**
+ * Reasons an `nfr`/`suite` step blocks on a precondition that is a run
+ * option, not anything a step's own upstream produces — shared between the
+ * pre-dispatch check below (which refuses before any session runs) and the
+ * in-step check inside `runNfr`/`runSuite` (kept as well, so a step reached
+ * some other way still fails closed), so the two can never say something
+ * different about the same missing option.
+ */
+function nfrCapabilityMissingReason(stepId: string): string {
+  return (
+    `nfr '${stepId}' needs the 'test.nfr' capability bound (TST-3, DESIGN ` +
+    `§4.7), and this run bound none. Bind a provider via ` +
+    `PhaseRunOptions.capabilities before running a phase that declares an ` +
+    `'nfr' node — an unbound capability is refused rather than read as ` +
+    `nothing to measure (CONV-4). 'mpgm run' binds 'commandNfrProvider' ` +
+    `(src/test/nfr-provider.ts), which measures what 'test/nfr.yaml' ` +
+    `declares.`
+  );
+}
+
+function nfrRepoRefMissingReason(stepId: string): string {
+  return (
+    `nfr '${stepId}' has no 'repo'/'ref' to measure against. Pass both on ` +
+    `PhaseRunOptions — from the CLI, 'mpgm run <phase> --repo <owner/name> ` +
+    `--ref <ref>'. 'test.nfr#run' reports against a specific repo and ref, ` +
+    `and neither is guessed.`
+  );
+}
+
+function suiteProjectDirMissingReason(stepId: string): string {
+  return (
+    `suite '${stepId}' has no project directory to run against. Running a ` +
+    `generated suite executes model-authored code with the privileges ` +
+    `wherever it runs — nodeTestExecutor's subject restriction is not a ` +
+    `confinement boundary (src/test/adversarial.ts) — so pass ` +
+    `'testProjectDir' on PhaseRunOptions explicitly — from the CLI, ` +
+    `'mpgm run <phase> --test-project-dir <path>'; it is a decision, not a ` +
+    `default this phase supplies on its own.`
+  );
+}
+
 export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
   const { runId, playbook, log } = options;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
@@ -529,27 +570,10 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     }
 
     if (!options.capabilities?.has('test.nfr')) {
-      return {
-        status: 'blocked',
-        reason:
-          `nfr '${step.id}' needs the 'test.nfr' capability bound (TST-3, DESIGN ` +
-          `§4.7), and this run bound none. Bind a provider via ` +
-          `PhaseRunOptions.capabilities before running a phase that declares an ` +
-          `'nfr' node — an unbound capability is refused rather than read as ` +
-          `nothing to measure (CONV-4). 'mpgm run' binds 'commandNfrProvider' ` +
-          `(src/test/nfr-provider.ts), which measures what 'test/nfr.yaml' ` +
-          `declares.`,
-      };
+      return { status: 'blocked', reason: nfrCapabilityMissingReason(step.id) };
     }
     if (options.repo === undefined || options.ref === undefined) {
-      return {
-        status: 'blocked',
-        reason:
-          `nfr '${step.id}' has no 'repo'/'ref' to measure against. Pass both on ` +
-          `PhaseRunOptions — from the CLI, 'mpgm run <phase> --repo <owner/name> ` +
-          `--ref <ref>'. 'test.nfr#run' reports against a specific repo and ref, ` +
-          `and neither is guessed.`,
-      };
+      return { status: 'blocked', reason: nfrRepoRefMissingReason(step.id) };
     }
 
     const contract = options.capabilities.require('test.nfr');
@@ -588,17 +612,7 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       };
     }
     if (options.testProjectDir === undefined) {
-      return {
-        status: 'blocked',
-        reason:
-          `suite '${step.id}' has no project directory to run against. Running a ` +
-          `generated suite executes model-authored code with the privileges ` +
-          `wherever it runs — nodeTestExecutor's subject restriction is not a ` +
-          `confinement boundary (src/test/adversarial.ts) — so pass ` +
-          `'testProjectDir' on PhaseRunOptions explicitly — from the CLI, ` +
-          `'mpgm run <phase> --test-project-dir <path>'; it is a decision, not a ` +
-          `default this phase supplies on its own.`,
-      };
+      return { status: 'blocked', reason: suiteProjectDirMissingReason(step.id) };
     }
 
     let verdict;
@@ -618,6 +632,58 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     writeArtifact(step, 'kernel', '(none)', verdict);
     return { status: 'completed', value: verdict };
   };
+
+  // Whether an 'nfr' or 'suite' step can possibly run is decidable before the
+  // scheduler dispatches anything: capabilities/repo/ref/testProjectDir are
+  // run options, not playbook content, so none of them can appear or change
+  // partway through a phase. Checked here rather than left to `runNfr`/
+  // `runSuite` alone, because the scheduler only reaches those after every
+  // upstream step the 'nfr'/'suite' node depends on has already run and been
+  // paid for — the same "failing at dispatch costs whatever the phase already
+  // spent getting there" `checkReferences` refuses for a dangling playbook
+  // reference, and the same pre-dispatch shape the missing-required-input
+  // check above already gives a phase that would otherwise run every session
+  // before discovering the one thing it needed was never passed in.
+  for (const step of graph.steps) {
+    if (step.kind === 'nfr') {
+      if (!options.capabilities?.has('test.nfr')) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: step.id,
+            reason: nfrCapabilityMissingReason(step.id),
+            blocked: [],
+          },
+          produced,
+          outputs,
+        };
+      }
+      if (options.repo === undefined || options.ref === undefined) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: step.id,
+            reason: nfrRepoRefMissingReason(step.id),
+            blocked: [],
+          },
+          produced,
+          outputs,
+        };
+      }
+    }
+    if (step.kind === 'suite' && options.testProjectDir === undefined) {
+      return {
+        outcome: {
+          status: 'blocked',
+          taskId: step.id,
+          reason: suiteProjectDirMissingReason(step.id),
+          blocked: [],
+        },
+        produced,
+        outputs,
+      };
+    }
+  }
 
   const report = await schedule<GraphStep, unknown>({
     steps: graph.steps,
