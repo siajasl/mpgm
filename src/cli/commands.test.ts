@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1824,7 +1824,13 @@ gate:
     outOfScope: [{ item: 'authentication', why: 'a later milestone' }],
   };
 
-  function project(measurement: string): string {
+  /**
+   * A project the verb can actually measure: a git checkout, because the
+   * bound provider refuses to measure a directory whose commit it cannot read
+   * or which is not at the `--ref` the operator named. The ref this returns is
+   * that commit, so the run below reports the checkout it measured.
+   */
+  function project(measurement: string): { root: string; ref: string } {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-run-nfr-'));
     mkdirSync(join(root, 'phases'), { recursive: true });
     mkdirSync(join(root, 'roles'), { recursive: true });
@@ -1842,7 +1848,19 @@ gate:
         `    args: ['-e', 'console.log(${measurement})']\n`,
       'utf8',
     );
-    return root;
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+    git('init', '--quiet');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    git('add', '.');
+    git('commit', '--quiet', '-m', 'Declare what measures PERF-1');
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim();
+    return { root, ref };
   }
 
   function contextFor(root: string, writes: string[]): CliContext {
@@ -1854,11 +1872,11 @@ gate:
 
   it('measures the project’s own declared command and writes the coverage it produced', async () => {
     const writes: string[] = [];
-    const root = project('250');
+    const { root, ref } = project('250');
 
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
-      ref: 'abc123',
+      ref,
     });
 
     expect(result.ok).toBe(true);
@@ -1868,16 +1886,19 @@ gate:
     expect(coverage).toMatch(/PERF-1/);
     expect(coverage).toMatch(/"?measured"?:\s*250/);
     expect(coverage).toMatch(/"?verified"?:\s*true/);
+    // And the row says which checkout produced the number, so the artifact is
+    // not a measurement of one commit filed against another.
+    expect(coverage).toContain(`measured siajasl/library-loans@${ref}`);
     expect(writes.join('\n')).toMatch(/met\s+c1: coverage v1/);
   });
 
   it('carries a real failure through: the same wiring, a measurement over threshold', async () => {
     const writes: string[] = [];
-    const root = project('900');
+    const { root, ref } = project('900');
 
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
-      ref: 'abc123',
+      ref,
     });
 
     expect(result.ok).toBe(true);
@@ -1886,9 +1907,28 @@ gate:
     expect(coverage).toMatch(/below-threshold/);
   });
 
+  it('blocks rather than reporting this checkout as a measurement of some other ref', async () => {
+    const writes: string[] = [];
+    const { root } = project('250');
+
+    // A ref the checkout is not at — the operator's most ordinary mistake,
+    // running the phase from a working tree that has moved on. Before the
+    // provider read `input.ref` this wrote a coverage artifact whose rows
+    // were measurements of the working tree, offered as measurements of a
+    // commit nothing measured (CONV-4).
+    const result = await run(contextFor(root, writes), 'run-1', 'test', {
+      repo: 'siajasl/library-loans',
+      ref: '0000000000000000000000000000000000000000',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/refusing to measure/);
+    expect(existsSync(join(root, 'artifacts', 'coverage.v1.md'))).toBe(false);
+  });
+
   it('blocks rather than measuring a repo nobody named', async () => {
     const writes: string[] = [];
-    const root = project('250');
+    const { root } = project('250');
 
     // No --repo/--ref: `test.nfr#run` reports against a specific repo and
     // ref, and the verb refuses to guess one from the checkout it happens to

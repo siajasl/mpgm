@@ -185,7 +185,13 @@ function targetFacts(path: string): TargetFacts {
 export interface RunOptions {
   /** `owner/name` an `nfr` step's `test.nfr#run` calls report against. */
   readonly repo?: string;
-  /** The ref measured — a sha or a branch. Never inferred from the checkout. */
+  /**
+   * The ref measured — a sha or a branch. Never inferred from the checkout,
+   * and never merely recorded against it either: `commandNfrProvider`
+   * measures the checkout at `context.root` and refuses to run unless that is
+   * the commit this names, so a coverage row cannot report one commit's
+   * numbers under another commit's name.
+   */
   readonly ref?: string;
   /**
    * Where a `suite` step's generated `node:test` file is written and run.

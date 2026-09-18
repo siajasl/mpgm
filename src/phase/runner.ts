@@ -182,7 +182,10 @@ function nfrRepoRefMissingReason(stepId: string): string {
     `nfr '${stepId}' has no 'repo'/'ref' to measure against. Pass both on ` +
     `PhaseRunOptions — from the CLI, 'mpgm run <phase> --repo <owner/name> ` +
     `--ref <ref>'. 'test.nfr#run' reports against a specific repo and ref, ` +
-    `and neither is guessed.`
+    `and neither is guessed. Nor is either taken on trust: the provider ` +
+    `'mpgm run' binds refuses to measure a checkout that is not at the ref ` +
+    `it was given, and names in its evidence the commit it did measure ` +
+    `(src/test/nfr-provider.ts).`
   );
 }
 

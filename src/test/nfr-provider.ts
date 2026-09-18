@@ -19,7 +19,27 @@ import type { NfrRunInput, NfrRunOutput } from './nfr.js';
  * `nfrCoverage` in `./nfr.ts`, and it is the same decision whichever provider
  * answered.
  *
- * Two things it deliberately does not do. It does not infer the command from
+ * What it measures is the checkout at `root`, and it refuses to measure one
+ * that is not at the `ref` it was asked about. `test.nfr#run` carries a repo
+ * and a ref, `runPhase` blocks a whole phase rather than guess either, and
+ * until that reached here the two travelled as labels: a `mpgm run test
+ * --ref <sha>` from a working tree at any other commit would have measured
+ * the working tree and filed the numbers as measurements of `<sha>`, with
+ * nothing recording that anything disagreed. That is the same measured-X-
+ * labelled-Y ambiguity this provider already refuses for a drifted
+ * `metric`/`unit` and `runNfrSuite` refuses for a mislabelled requirement id,
+ * so it is refused the same way (CONV-4): `git rev-parse HEAD` must be the
+ * commit `ref` names, and a root that is not a git checkout at all is refused
+ * rather than measured under a ref nothing can corroborate.
+ *
+ * The guarantee is at commit granularity, deliberately and not silently: a
+ * modified working tree is *reported*, in `evidence`, rather than refused,
+ * because a phase writes its own artifacts into the project root as it runs
+ * and would otherwise block on its own output. Every result carries
+ * `repo@<head sha>` in `evidence` for the same reason — the row says what was
+ * measured, not only what it was asked about.
+ *
+ * Two further things it deliberately does not do. It does not infer the command from
  * SCP-1's `measuredBy`: that field is prose a human wrote ("k6 load test"),
  * and turning prose into an argv is guessing. And it does not infer whether a
  * threshold is a ceiling or a floor — the contract says in as many words that
@@ -167,6 +187,85 @@ function measurementFrom(
   return measured;
 }
 
+async function git(root: string, args: readonly string[]): Promise<string> {
+  const { stdout } = await run('git', ['-C', root, ...args], { encoding: 'utf8' });
+  return stdout.trim();
+}
+
+/**
+ * The commit the checkout at `root` is on, refused when `ref` does not name
+ * it (CONV-4).
+ *
+ * `ref` is matched as the caller wrote it — a full sha, an abbreviation, a
+ * branch or a tag all resolve through `git rev-parse`, because the kernel
+ * takes `--ref` from an operator and an operator writes whichever of those
+ * they have. What is *not* accepted is a ref this checkout cannot resolve at
+ * all: that is either a ref from another repository or one this clone has
+ * never fetched, and in both cases the commit about to be measured is not
+ * the commit named.
+ */
+async function headCommitAt(root: string, ref: string): Promise<string> {
+  let head: string;
+  try {
+    head = await git(root, ['rev-parse', 'HEAD']);
+  } catch (cause) {
+    throw new NfrProviderError(
+      `cannot establish which commit '${root}' is at — 'git -C ${root} rev-parse ` +
+        `HEAD' failed: ${cause instanceof Error ? cause.message : String(cause)}. ` +
+        `This provider measures that checkout and reports the result against ` +
+        `ref '${ref}', so a root whose commit cannot be read is refused rather ` +
+        `than measured and labelled with a ref nothing can corroborate ` +
+        `(CONV-4). Run the phase from a git checkout of the repository being ` +
+        `measured.`,
+      { cause },
+    );
+  }
+  if (head === ref) {
+    return head;
+  }
+  let resolved: string | undefined;
+  try {
+    resolved = await git(root, [
+      'rev-parse',
+      '--verify',
+      '--end-of-options',
+      `${ref}^{commit}`,
+    ]);
+  } catch {
+    resolved = undefined;
+  }
+  if (resolved === head) {
+    return head;
+  }
+  throw new NfrProviderError(
+    `refusing to measure '${root}': it is at commit ${head}` +
+      (resolved === undefined
+        ? `, and ref '${ref}' does not resolve in it at all`
+        : `, and ref '${ref}' is commit ${resolved}`) +
+      `. A measurement of one commit reported against another is a number ` +
+      `nobody measured (CONV-4). Either check '${root}' out at '${ref}', or ` +
+      `run with '--ref ${head}' — the ref is what the coverage report claims ` +
+      `was measured, so it is corroborated here rather than taken on trust.`,
+  );
+}
+
+/**
+ * Whether the checkout has uncommitted changes — reported in `evidence`, not
+ * refused. See the module doc: a phase writes artifacts into the root it is
+ * running over, so refusing a dirty tree would block a phase on its own
+ * output; saying so in the row is what keeps the disagreement visible.
+ */
+async function workingTreeModified(root: string): Promise<boolean> {
+  try {
+    return (await git(root, ['status', '--porcelain'])) !== '';
+  } catch {
+    // The commit was already established above; an unreadable status is not
+    // grounds to discard a measurement, only to stop claiming the tree was
+    // clean — which `undefined` here would, so it says modified.
+    return true;
+  }
+}
+
 /**
  * Bind `test.nfr` to the commands a project declares in its own manifest.
  *
@@ -180,8 +279,11 @@ function measurementFrom(
  * wanting: reporting `passed: false` for it would put a below-threshold row
  * in the coverage report for a threshold nothing ever ran, and reporting
  * `passed: true` is worse. Throwing blocks the step, which is how the kernel
- * already treats a capability it cannot reach (CONV-4), and `nfrCoverage`
- * reports a requirement nothing reported on as `not-run`.
+ * already treats a capability it cannot reach (CONV-4) — a blocked step
+ * writes no coverage artifact at all, which is the point: `nfrCoverage`'s
+ * `not-run` row is what a *completed* run says about a requirement nothing
+ * reported on, and it is not a softer landing this provider's refusals fall
+ * into.
  */
 export function commandNfrProvider(options: CommandNfrProviderOptions): Provider {
   return {
@@ -208,6 +310,11 @@ export function commandNfrProvider(options: CommandNfrProviderOptions): Provider
             `something else under the right id (CONV-4).`,
         );
       }
+
+      // Before anything is run, not after: a measurement of the wrong commit
+      // costs whatever the command costs and then has to be thrown away.
+      const head = await headCommitAt(options.root, input.ref);
+      const modified = await workingTreeModified(options.root);
 
       const commandLine = [measurement.command, ...measurement.args].join(' ');
       let stdout: string;
@@ -237,7 +344,7 @@ export function commandNfrProvider(options: CommandNfrProviderOptions): Provider
           measurement.direction === 'at-most'
             ? measured <= input.value
             : measured >= input.value,
-        evidence: measurement.evidence ?? `${commandLine} (in ${options.root})`,
+        evidence: `${measurement.evidence ?? `${commandLine} (in ${options.root})`} — measured ${input.repo}@${head}${modified ? ', working tree modified' : ''}`,
       };
     },
   };

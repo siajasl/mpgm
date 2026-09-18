@@ -157,7 +157,27 @@ what turns that number into `passed`, and it is required rather than defaulted
 because this contract says in as many words that only the provider knows which
 way a threshold reads (CONV-5).
 
-Four things it refuses rather than answers, all for the reason this contract
+**What it measures is the checkout at that root, and it says so.** `run`
+carries a `repo` and a `ref`, and the kernel blocks a whole phase rather than
+guess either; this provider therefore corroborates the ref instead of
+accepting it as a label. `git rev-parse HEAD` must be the commit `ref` names —
+a full sha, an abbreviation, a branch or a tag, whichever the operator passed,
+resolved in that checkout — and a root that is not a readable git checkout is
+refused outright. Running `mpgm run test --ref <sha>` from a working tree at
+any other commit would otherwise measure the working tree and file the numbers
+as measurements of `<sha>`: the same measured-one-thing-labelled-another
+ambiguity this contract already refuses for a drifted `metric`/`unit` and for
+a mislabelled `requirementId`. Every result's `evidence` names
+`repo@<head sha>` for the same reason, so a row records what was measured and
+not only what it was asked about.
+
+The guarantee is at commit granularity, and the limit is stated rather than
+implied: a *modified* working tree is reported — `evidence` gains `working
+tree modified` — not refused, because a phase writes its own artifacts into
+the project root as it runs and refusing would block a phase on its own
+output.
+
+Six things it refuses rather than answers, all for the reason this contract
 gives above — a measurement that did not happen is never reported as one that
 held (CONV-4):
 
@@ -166,12 +186,16 @@ held (CONV-4):
 - an entry whose `metric`/`unit` disagree with the threshold the kernel sent,
   which is a manifest that has drifted from the requirement it names and is
   measuring something else under the right id;
+- a root whose commit cannot be read at all;
+- a root at a commit other than the one `ref` names;
 - a command that failed, timed out, or printed nothing — `Number('')` is `0`,
   and zero is inside every ceiling there is;
 - a last line that is not a number.
 
-Each throws, which blocks the step; `nfrCoverage` then reports the requirement
-as `not-run`, which is what an unmeasured threshold is.
+Each throws, which blocks the step — and a blocked step writes no coverage
+artifact at all, which is the point. `nfrCoverage`'s `not-run` row is what a
+*completed* run says about a requirement nothing reported on; it is not a
+softer landing these refusals fall into.
 
 ## Consumers
 
