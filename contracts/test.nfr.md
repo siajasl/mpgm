@@ -206,7 +206,14 @@ softer landing these refusals fall into.
 - [`src/phase/runner.ts`](../src/phase/runner.ts) — the `nfr` playbook step
   (T4.3.2), which folds `runNfrSuite` against whatever this capability is
   bound to and blocks rather than treating an unbound one as nothing to
-  measure.
+  measure. It produces `nfrCoverage`'s rows and stops there:
+  `requirementCoverageReport` — the fold of those rows with the trace graph
+  and the quarantine ledger — has **no caller yet**, because it needs a
+  `TraceIndex` and a ledger on `PhaseRunOptions` that nothing passes. That is
+  the Test phase's own wiring (T4.3.3, which already records
+  `RequirementCoverageReport` as an interface in neither schema registry), and
+  it is named here rather than left to be discovered: until it lands, a Test
+  run reports NFR coverage and not the combined TST-2/TST-3 report.
 - [`src/test/quarantine.ts`](../src/test/quarantine.ts) — `detectFlaky`,
   `quarantineFlaky`/`detectAndQuarantine` (TST-6's ledger) and
   `withoutQuarantined` (the exclusion `requirementCoverageReport` applies).
