@@ -119,23 +119,69 @@ export interface NfrRequirement {
   readonly measuredBy: string;
 }
 
+/**
+ * Runtime counterpart of {@link NfrRequirement}, for a caller that reads one
+ * off data it did not itself produce — an `nfr` playbook step's upstream
+ * result (T4.3.2, `src/playbook/graph.ts`), rather than something already
+ * typed as `NfrRequirement[]` at compile time.
+ */
+export const nfrRequirementSchema = z.object({
+  id: z.string().min(1),
+  metric: z.string().min(1),
+  value: z.number(),
+  unit: z.string().min(1),
+  measuredBy: z.string().min(1),
+});
+
 /** Why a quantified NFR is not verified. */
 export type NfrProblem = 'not-run' | 'below-threshold';
 
-export interface NfrCoverageRow {
-  readonly id: string;
-  readonly verified: boolean;
-  readonly problem?: NfrProblem;
-  readonly measured?: number;
-  readonly evidence?: string;
+/**
+ * One row of the TST-3 coverage report: what a quantified NFR's measurement
+ * came back as, or that nothing measured it.
+ *
+ * Defined from its schema rather than beside one, the way `AdversarialSuite`
+ * and `ReleaseOutcome` already are: an `nfr` playbook step writes these rows
+ * as an artifact when its node declares `produces`
+ * (`projectArtifactSchemas`, `src/schemas.ts`, T4.3.2), and a type and a
+ * schema maintained separately drift the first time a field is added to one
+ * of them — silently dropping that field out of every artifact written.
+ */
+export const nfrCoverageRowSchema = z.object({
+  id: z.string().min(1),
+  verified: z.boolean(),
+  /** Why it is not verified. Absent exactly when `verified` is true. */
+  problem: z.enum(['not-run', 'below-threshold']).optional(),
+  measured: z.number().optional(),
+  evidence: z.string().optional(),
   /**
    * What verified it — the test Scope recorded for this NFR (SCP-1's
    * `measuredBy`), the same "by which tests" attribution TST-2 asks the
    * general coverage report for. Empty where nothing verified it, mirroring
    * `CoverageRow.verifiedBy` (`src/trace/index-store.ts`).
    */
-  readonly verifiedBy: readonly string[];
-}
+  verifiedBy: z.array(z.string().min(1)),
+});
+
+export type NfrCoverageRow = Readonly<z.infer<typeof nfrCoverageRowSchema>>;
+
+/**
+ * The coverage report an `nfr` step writes: one row per quantified NFR it
+ * measured.
+ *
+ * `.min(1)` for the reason {@link nfrCoverage} refuses to read silence as
+ * success — a coverage artifact with no rows is not a phase that verified
+ * everything asked of it, it is a phase that measured nothing, and the two
+ * must not render identically to whoever reads the artifact at the gate
+ * (CONV-4, CONV-5).
+ */
+export const nfrCoverageReportSchema = z
+  .array(nfrCoverageRowSchema)
+  .min(
+    1,
+    'a coverage report with no rows measured nothing; it is refused rather than ' +
+      'written as though everything held (CONV-4)',
+  );
 
 /**
  * Decide, per quantified NFR, whether a suite ran for it and came back within

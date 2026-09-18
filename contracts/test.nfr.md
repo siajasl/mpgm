@@ -130,12 +130,90 @@ trusts — coverage drops, it does not silently stay put. A requirement a
 second, non-quarantined source still verifies is unaffected: quarantine
 removes one test's standing as evidence, not the requirement's.
 
+## Reference provider
+
+[`commandNfrProvider`](../src/test/nfr-provider.ts) is what `mpgm run <phase>`
+binds this capability to (`src/cli/commands.ts`), so a playbook's `nfr` node
+reaches a real measurement from the entry point an operator actually uses —
+before T4.3.2 the contract had a specification, a runner and no provider at
+all.
+
+It runs what the project declares in `test/nfr.yaml`:
+
+```yaml
+measurements:
+  - requirement: PERF-1
+    metric: p95-latency
+    unit: ms
+    direction: at-most       # or at-least; no default
+    command: npm
+    args: ['run', 'bench:latency']
+    evidence: reports/latency.json   # optional
+```
+
+One entry per quantified requirement. The command is run in the project root
+and the last non-empty line of its stdout is the measurement; `direction` is
+what turns that number into `passed`, and it is required rather than defaulted
+because this contract says in as many words that only the provider knows which
+way a threshold reads (CONV-5).
+
+**What it measures is the checkout at that root, and it says so.** `run`
+carries a `repo` and a `ref`, and the kernel blocks a whole phase rather than
+guess either; this provider therefore corroborates the ref instead of
+accepting it as a label. `git rev-parse HEAD` must be the commit `ref` names —
+a full sha, an abbreviation, a branch or a tag, whichever the operator passed,
+resolved in that checkout — and a root that is not a readable git checkout is
+refused outright. Running `mpgm run test --ref <sha>` from a working tree at
+any other commit would otherwise measure the working tree and file the numbers
+as measurements of `<sha>`: the same measured-one-thing-labelled-another
+ambiguity this contract already refuses for a drifted `metric`/`unit` and for
+a mislabelled `requirementId`. Every result's `evidence` names
+`repo@<head sha>` for the same reason, so a row records what was measured and
+not only what it was asked about.
+
+The guarantee is at commit granularity, and the limit is stated rather than
+implied: a *modified* working tree is reported — `evidence` gains `working
+tree modified` — not refused, because a phase writes its own artifacts into
+the project root as it runs and refusing would block a phase on its own
+output.
+
+Six things it refuses rather than answers, all for the reason this contract
+gives above — a measurement that did not happen is never reported as one that
+held (CONV-4):
+
+- a requirement the manifest does not declare (the provider must not invent a
+  measurement for a requirement it did not run);
+- an entry whose `metric`/`unit` disagree with the threshold the kernel sent,
+  which is a manifest that has drifted from the requirement it names and is
+  measuring something else under the right id;
+- a root whose commit cannot be read at all;
+- a root at a commit other than the one `ref` names;
+- a command that failed, timed out, or printed nothing — `Number('')` is `0`,
+  and zero is inside every ceiling there is;
+- a last line that is not a number.
+
+Each throws, which blocks the step — and a blocked step writes no coverage
+artifact at all, which is the point. `nfrCoverage`'s `not-run` row is what a
+*completed* run says about a requirement nothing reported on; it is not a
+softer landing these refusals fall into.
+
 ## Consumers
 
 - [`src/test/nfr.ts`](../src/test/nfr.ts) — `runNfrSuite` (the orchestration:
   call `run` once per quantified NFR), `nfrCoverage` (TST-3 verdict) and
   `requirementCoverageReport` (the combined TST-2/TST-3 report this contract
   exists to produce).
+- [`src/phase/runner.ts`](../src/phase/runner.ts) — the `nfr` playbook step
+  (T4.3.2), which folds `runNfrSuite` against whatever this capability is
+  bound to and blocks rather than treating an unbound one as nothing to
+  measure. It produces `nfrCoverage`'s rows and stops there:
+  `requirementCoverageReport` — the fold of those rows with the trace graph
+  and the quarantine ledger — has **no caller yet**, because it needs a
+  `TraceIndex` and a ledger on `PhaseRunOptions` that nothing passes. That is
+  the Test phase's own wiring (T4.3.3, which already records
+  `RequirementCoverageReport` as an interface in neither schema registry), and
+  it is named here rather than left to be discovered: until it lands, a Test
+  run reports NFR coverage and not the combined TST-2/TST-3 report.
 - [`src/test/quarantine.ts`](../src/test/quarantine.ts) — `detectFlaky`,
   `quarantineFlaky`/`detectAndQuarantine` (TST-6's ledger) and
   `withoutQuarantined` (the exclusion `requirementCoverageReport` applies).

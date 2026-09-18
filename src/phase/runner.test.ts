@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,6 +17,7 @@ import {
 } from '../artifact/schema-registry.js';
 import { ArtifactStore } from '../artifact/store.js';
 import { TraceIndex } from '../trace/index-store.js';
+import { CapabilityRegistry } from '../contract/capability.js';
 import { DEFAULT_EGRESS_POLICY } from '../context/egress.js';
 import { MEMORY, openDatabase } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
@@ -25,6 +26,8 @@ import { EventLog } from '../event/store.js';
 import { GateManager } from '../gate/manager.js';
 import { parsePlaybook } from '../playbook/loader.js';
 import { parseRole } from '../role/loader.js';
+import { testNfrContract, type NfrRunInput } from '../test/nfr.js';
+import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
 import { Projector } from '../state/projector.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
 import { RoleRegistry } from '../role/loader.js';
@@ -831,6 +834,464 @@ describe('runPhase over a pipeline', () => {
         }
         expect(assembled).toBeLessThan(dispatched);
       }
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * T4.3.2 — a phase's work can be code, and `nfr`/`suite` steps are how the
+ * Test phase reaches `runNfrSuite`/`runAdversarialSuite` from a playbook.
+ *
+ * Both suites here run for real: `test.nfr` is bound to a provider that does
+ * arithmetic on what it is asked to measure rather than returning a fixed
+ * passing result (a stub in that shape satisfies any test asserting the
+ * phase completed, and proves nothing about the wiring — CONV-6), and the
+ * adversarial suite is rendered and executed by the real
+ * `nodeTestExecutor`, `node --test` and all, against a subject module
+ * written to a real temporary directory. Nothing here stands in for either
+ * executor.
+ */
+describe('runPhase over nfr and suite steps (T4.3.2)', () => {
+  const TEST_PLAYBOOK = `
+phase: test
+description: run the suites M3.2 delivered
+artifacts:
+  coverage:
+    schema: nfr-coverage
+    path: artifacts/coverage.md
+    description: nfr coverage
+  verdict:
+    schema: adversarial-verdict
+    path: artifacts/verdict.md
+    description: adversarial verdict
+tasks:
+  - id: scope-nfrs
+    role: nfr-scoper
+    description: state the quantified NFRs to measure
+    prompt: MARK-NFR list the quantified requirements
+  - kind: nfr
+    id: measure
+    description: measure them against test.nfr
+    requirements: scope-nfrs
+    produces: coverage
+  - id: write-suite
+    role: suite-writer
+    description: write an adversarial suite for clamp
+    prompt: MARK-SUITE attack clamp
+  - kind: suite
+    id: run-suite
+    description: run the generated suite
+    suite: write-suite
+    produces: verdict
+gate:
+  id: test-gate
+  description: coverage and verdict exist
+  criteria:
+    - id: c1
+      kind: artifact-exists
+      description: coverage exists
+      artifact: coverage
+    - id: c2
+      kind: artifact-exists
+      description: verdict exists
+      artifact: verdict
+`;
+
+  /**
+   * A real Scope artifact, which is what the step above an `nfr` node
+   * actually produces in this project: a mixed list whose non-functional
+   * entries nest their threshold and whose functional entry has none. The
+   * flat `{id, metric, value, unit, measuredBy}` shape is a shape nothing
+   * here emits, so a step that could only read that one could never measure
+   * a real Scope.
+   */
+  const SCOPE = {
+    summary: 'what the service must do and how fast',
+    requirements: [
+      {
+        kind: 'functional',
+        id: 'FUN-1',
+        statement: 'the service answers GET /health',
+        rationale: 'the deploy gate reads it',
+        priority: 'must',
+        acceptanceCriteria: ['200 with a body'],
+        tracesTo: ['GOAL-1'],
+      },
+      {
+        kind: 'non-functional',
+        id: 'PERF-1',
+        statement: 'p95 latency stays under 300ms',
+        rationale: 'the operator notices anything slower',
+        priority: 'must',
+        acceptanceCriteria: ['a load test reports p95 under 300ms'],
+        tracesTo: ['GOAL-2'],
+        // Within threshold: the provider below measures 250ms against a
+        // 300ms ceiling, so this one verifies.
+        threshold: { metric: 'p95-latency', value: 300, unit: 'ms', measuredBy: 'k6' },
+      },
+      {
+        kind: 'non-functional',
+        id: 'PERF-2',
+        statement: 'p99 latency stays under 500ms',
+        rationale: 'the tail is what pages someone',
+        priority: 'should',
+        acceptanceCriteria: ['a load test reports p99 under 500ms'],
+        tracesTo: ['GOAL-2'],
+        // Over threshold: the provider measures 900ms against a 500ms
+        // ceiling, so this one does not — proving the wiring carries a real
+        // failure through, not just a real pass.
+        threshold: { metric: 'p99-latency', value: 500, unit: 'ms', measuredBy: 'k6' },
+      },
+    ],
+    outOfScope: [{ item: 'authentication', why: 'a later milestone' }],
+  };
+
+  /**
+   * A Scope that declares requirements but nothing quantified — the case an
+   * all-or-nothing parse of the flat shape could never reach, and the one
+   * that must not complete as a clean, zero-row coverage report.
+   */
+  const FUNCTIONAL_ONLY_SCOPE = {
+    summary: 'what the service must do, with nothing measured',
+    requirements: [
+      {
+        kind: 'functional',
+        id: 'FUN-1',
+        statement: 'the service answers GET /health',
+        rationale: 'the deploy gate reads it',
+        priority: 'must',
+        acceptanceCriteria: ['200 with a body'],
+        tracesTo: ['GOAL-1'],
+      },
+    ],
+    outOfScope: [{ item: 'authentication', why: 'a later milestone' }],
+  };
+
+  const NOTHING_TO_MEASURE_PLAYBOOK = `
+phase: test
+description: measure a scope that quantifies nothing
+artifacts:
+  coverage:
+    schema: nfr-coverage
+    path: artifacts/coverage.md
+    description: nfr coverage
+tasks:
+  - id: scope-nfrs
+    role: nfr-scoper
+    description: state the quantified NFRs to measure
+    prompt: MARK-NO-NFR list the requirements
+  - kind: nfr
+    id: measure
+    description: measure them against test.nfr
+    requirements: scope-nfrs
+    produces: coverage
+gate:
+  id: test-gate
+  description: coverage exists
+  criteria:
+    - id: c1
+      kind: artifact-exists
+      description: coverage exists
+      artifact: coverage
+`;
+
+  const CLAMP_SOURCE = `
+export function clamp(value, min, max) {
+  if (min > max) {
+    throw new RangeError('min is greater than max');
+  }
+  return Math.min(Math.max(value, min), max);
+}
+`;
+
+  const SUITE = {
+    subject: './clamp.mjs',
+    summary: 'attacks on clamp',
+    cases: [
+      {
+        id: 'refuses-a-swapped-range',
+        kind: 'negative',
+        about: 'min greater than max',
+        defect: 'clamp should refuse rather than silently swap the bounds',
+        body: 'assert.throws(() => subject.clamp(5, 10, 0), RangeError);',
+      },
+      {
+        id: 'clamps-at-the-upper-bound',
+        kind: 'boundary',
+        about: 'a value exactly at max',
+        defect: 'the upper bound is inclusive and clamp must return it unchanged',
+        body: 'assert.equal(subject.clamp(10, 0, 10), 10);',
+      },
+      {
+        id: 'result-always-within-range',
+        kind: 'property',
+        about: 'the result is always within [min, max]',
+        defect: 'a clamped value escaping its own range is the whole point of clamp',
+        body:
+          'for (const value of [-5, 0, 3, 7, 50]) {\n' +
+          '  const result = subject.clamp(value, 0, 10);\n' +
+          '  assert.ok(result >= 0 && result <= 10);\n' +
+          '}',
+      },
+    ],
+  };
+
+  function roleFile(name: string, schema: string): string {
+    return [
+      '---',
+      `name: ${name}`,
+      `description: ${name} for the Test phase`,
+      'model: claude-sonnet-5',
+      'tools: { allow: [Read] }',
+      'budgets: { tokens: 100000, costUsd: 5, steps: 10, wallClockSeconds: 600 }',
+      `output: { schema: ${schema} }`,
+      '---',
+      `You are the ${name}.`,
+    ].join('\n');
+  }
+
+  function testHarness() {
+    const db = openDatabase(MEMORY);
+    const log = EventLog.attach(db, { registry: kernelRegistry() });
+    const projector = new Projector({
+      log,
+      snapshots: SnapshotStore.attach(db),
+      interval: 50,
+    });
+    const root = newRoot();
+    const projectDir = newRoot();
+    writeFileSync(join(projectDir, 'clamp.mjs'), CLAMP_SOURCE, 'utf8');
+
+    // The project's own registries, not a bespoke pair: an `nfr` step's
+    // coverage report and a `suite` step's verdict are registered artifact
+    // schemas ('nfr-coverage', 'adversarial-verdict'), and the requirements
+    // it reads come from the registered 'scope' output schema. A test that
+    // brought its own schemas would prove the wiring works against shapes
+    // only the test can produce.
+    const artifacts = new ArtifactStore({ root, schemas: projectArtifactSchemas() });
+
+    // Tracked rather than only mocked: the pre-dispatch precondition check
+    // (src/phase/runner.ts) is supposed to refuse an 'nfr'/'suite' step
+    // before the scheduler pays for a single upstream session, and a test
+    // that only reads the blocked reason cannot tell that apart from the
+    // in-step check catching the same problem after every session already
+    // ran.
+    const invocations: string[] = [];
+    const provider: AgentSessionProvider = {
+      run: (request: SessionRequest) => {
+        invocations.push(request.prompt);
+        if (request.prompt.includes('MARK-NFR')) {
+          return Promise.resolve(scriptedSuccess(SCOPE));
+        }
+        if (request.prompt.includes('MARK-NO-NFR')) {
+          return Promise.resolve(scriptedSuccess(FUNCTIONAL_ONLY_SCOPE));
+        }
+        if (request.prompt.includes('MARK-SUITE')) {
+          return Promise.resolve(scriptedSuccess(SUITE));
+        }
+        throw new Error(`unexpected prompt: ${request.prompt}`);
+      },
+    };
+
+    const sessions = new SessionRunner({
+      log,
+      provider,
+      schemas: projectOutputSchemas(),
+    });
+
+    const testRoles = new RoleRegistry([
+      // `scope`, the registered schema: a Scope result is an object with a
+      // `requirements` field, which is exactly why an `nfr` step reads that
+      // field rather than assuming the whole result is an array
+      // (`nfrRequirementsSourceOf`, src/phase/runner.ts).
+      parseRole('nfr-scoper.md', roleFile('nfr-scoper', 'scope')),
+      parseRole('suite-writer.md', roleFile('suite-writer', 'adversarial-suite')),
+    ]);
+
+    const registry = new CapabilityRegistry();
+    registry.bind(testNfrContract, {
+      run: (input: NfrRunInput) => {
+        // Real arithmetic against what was asked, not a fixed verdict: a
+        // ceiling metric passes only when the measurement is at or under the
+        // threshold, which is what makes PERF-2 below fail for a real reason.
+        const measured = input.requirementId === 'PERF-1' ? 250 : 900;
+        return Promise.resolve({
+          requirementId: input.requirementId,
+          metric: input.metric,
+          measured,
+          unit: input.unit,
+          passed: measured <= input.value,
+          evidence: `measured by ${input.measuredBy}`,
+        });
+      },
+    });
+
+    log.append({
+      runId: 'run-1',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    return {
+      db,
+      log,
+      projector,
+      projectDir,
+      invocations,
+      common: {
+        runId: 'run-1',
+        roles: testRoles,
+        artifacts,
+        sessions,
+        gates: new GateManager({ log, projector }),
+        log,
+        projector,
+        kb: [],
+        policy: DEFAULT_EGRESS_POLICY,
+        capabilities: registry,
+        repo: 'mpgm',
+        ref: 'abc123',
+      },
+    };
+  }
+
+  it('runs a real nfr measurement and a real adversarial suite, end to end', async () => {
+    const { db, common, projectDir } = testHarness();
+    try {
+      const result = await runPhase({
+        ...common,
+        playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+        testProjectDir: projectDir,
+      });
+
+      expect(result.outcome.status).toBe('gate-presented');
+      const packet = result.outcome.status === 'gate-presented' && result.outcome.packet;
+      expect(packet && packet.criteria).toMatchObject([
+        { id: 'c1', met: true },
+        { id: 'c2', met: true },
+      ]);
+
+      // The nfr step's own result: one requirement verified, one not — a
+      // fixed passing stub could not have produced this split.
+      expect(result.outputs.measure).toStrictEqual([
+        {
+          id: 'PERF-1',
+          verified: true,
+          measured: 250,
+          evidence: 'measured by k6',
+          verifiedBy: ['k6'],
+        },
+        {
+          id: 'PERF-2',
+          verified: false,
+          problem: 'below-threshold',
+          measured: 900,
+          evidence: 'measured by k6',
+          verifiedBy: [],
+        },
+      ]);
+
+      // The suite step's own result: every declared case actually ran under
+      // node --test and passed against the real subject module.
+      expect(result.outputs['run-suite']).toMatchObject({
+        clean: true,
+        defects: [],
+        notReported: [],
+      });
+      const rows = (
+        result.outputs['run-suite'] as { rows: readonly { id: string }[] }
+      ).rows.map((row) => row.id);
+      expect(rows).toStrictEqual([
+        'refuses-a-swapped-range',
+        'clamps-at-the-upper-bound',
+        'result-always-within-range',
+      ]);
+    } finally {
+      db.close();
+    }
+  }, 20_000);
+
+  it('blocks a suite step rather than defaulting to a project directory (decision, not a default)', async () => {
+    const { db, common, invocations } = testHarness();
+    try {
+      const result = await runPhase({
+        ...common,
+        playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+        // testProjectDir deliberately omitted.
+      });
+
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /decision, not a/,
+      );
+      // Caught before dispatch, not after the scope/suite-writing sessions
+      // already ran and were paid for: the provider was never invoked.
+      expect(invocations).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks an nfr step that measured nothing rather than writing a clean report of no rows (CONV-4)', async () => {
+    const { db, common } = testHarness();
+    try {
+      const result = await runPhase({
+        ...common,
+        playbook: parsePlaybook('test.yaml', NOTHING_TO_MEASURE_PLAYBOOK),
+      });
+
+      // Not "completed with an empty coverage report, gate criterion met":
+      // a phase whose NFR enumeration came back with nothing quantified has
+      // measured nothing, and nothing measured is not everything verified.
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /found nothing to measure in 'scope-nfrs': 1 requirement\(s\), none of them quantified/,
+      );
+      expect(result.produced.coverage).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks an nfr step rather than reading an unbound capability as nothing to measure (CONV-4)', async () => {
+    const { db, common, projectDir, invocations } = testHarness();
+    const { capabilities: _unused, ...withoutCapabilities } = common;
+    try {
+      const result = await runPhase({
+        ...withoutCapabilities,
+        playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+        testProjectDir: projectDir,
+      });
+
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /needs the 'test\.nfr' capability bound/,
+      );
+      // Caught before dispatch: an unbound capability blocks the whole phase
+      // before the scope-enumeration session that would otherwise run first.
+      expect(invocations).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks an nfr step missing repo/ref before dispatch, without running its upstream session', async () => {
+    const { db, common, projectDir, invocations } = testHarness();
+    const { repo: _repo, ref: _ref, ...withoutRepoRef } = common;
+    try {
+      const result = await runPhase({
+        ...withoutRepoRef,
+        playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+        testProjectDir: projectDir,
+      });
+
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /has no 'repo'\/'ref' to measure against/,
+      );
+      expect(invocations).toStrictEqual([]);
     } finally {
       db.close();
     }

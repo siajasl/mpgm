@@ -11,8 +11,9 @@ import {
   exchangeSchema,
 } from './elicit/session.js';
 import { releaseOutcomeSchema } from './release/verify.js';
-import { adversarialSuiteSchema } from './test/adversarial.js';
+import { adversarialSuiteSchema, adversarialVerdictSchema } from './test/adversarial.js';
 import { defectSchema } from './test/defect.js';
+import { nfrCoverageReportSchema } from './test/nfr.js';
 
 /**
  * The project's own schemas.
@@ -684,6 +685,15 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
  * agent session — but it is still DEP-5's "release artifact" (DESIGN
  * §9.12), so it goes through the same versioned-markdown-in-git store as
  * everything else `write()`s (`src/release/outcome-log.ts`).
+ *
+ * `nfr-coverage` and `adversarial-verdict` are registered here only for the
+ * same reason again: both are computed by the kernel from a run that actually
+ * happened — `nfrCoverage` over what the bound `test.nfr` provider measured,
+ * `adversarialVerdict` over what the executor reported — and neither is ever
+ * a session's structured output. They are what an `nfr` or `suite` playbook
+ * node writes when it declares `produces` (T4.3.2, `src/phase/runner.ts`);
+ * without them registered, that half of both node kinds is reachable only
+ * from a test that brings its own registry.
  */
 export function projectArtifactSchemas(): ArtifactSchemaRegistry {
   return new ArtifactSchemaRegistry([
@@ -697,5 +707,7 @@ export function projectArtifactSchemas(): ArtifactSchemaRegistry {
     defineArtifactSchema('elicitation', elicitationSchema),
     defineArtifactSchema('defect', defectSchema),
     defineArtifactSchema('release-outcome', releaseOutcomeSchema),
+    defineArtifactSchema('nfr-coverage', nfrCoverageReportSchema),
+    defineArtifactSchema('adversarial-verdict', adversarialVerdictSchema),
   ]);
 }

@@ -104,11 +104,13 @@ export type {
   GateDefinition,
   InputTemplate,
   MemberSpec,
+  NfrNode,
   PanelNode,
   PipelineNode,
   PipelineStage,
   PlaybookDefinition,
   PlaybookNode,
+  SuiteNode,
   TaskTemplate,
   VoteRule,
 } from './playbook/definition.js';
@@ -120,18 +122,22 @@ export {
   gateCriterionSchema,
   gateSchema,
   inputTemplateSchema,
+  nfrNodeSchema,
   panelNodeSchema,
   pipelineNodeSchema,
   pipelineStageSchema,
   playbookNodeSchema,
   playbookSchema,
+  suiteNodeSchema,
   taskTemplateSchema,
   voteRuleSchema,
 } from './playbook/definition.js';
 export type {
   GraphStep,
+  NfrStep,
   Playbook,
   SessionStep,
+  SuiteStep,
   TallyStep,
   TaskGraph,
 } from './playbook/graph.js';
@@ -299,7 +305,12 @@ export {
 } from './schemas.js';
 export type { PhaseOutcome, PhaseResult, PhaseRunOptions } from './phase/runner.js';
 export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
-export type { CliContext, CommandResult, RollbackDeps } from './cli/commands.js';
+export type {
+  CliContext,
+  CommandResult,
+  RollbackDeps,
+  RunOptions,
+} from './cli/commands.js';
 export {
   approve,
   approveRole,
@@ -619,6 +630,7 @@ export {
   AdversarialRunError,
   adversarialSuiteSchema,
   adversarialVerdict,
+  adversarialVerdictSchema,
   executionsFromRun,
   nodeTestExecutor,
   parseTapResults,
@@ -641,12 +653,23 @@ export type {
 export {
   NfrMismatchError,
   nfrCoverage,
+  nfrCoverageReportSchema,
+  nfrCoverageRowSchema,
+  nfrRequirementSchema,
   nfrRunInput,
   nfrRunOutput,
   requirementCoverageReport,
   runNfrSuite,
   testNfrContract,
 } from './test/nfr.js';
+export type { NfrRequirementSource } from './test/nfr-source.js';
+export { nfrRequirementSourceSchema, quantifiedRequirements } from './test/nfr-source.js';
+export type { CommandNfrProviderOptions, NfrMeasurement } from './test/nfr-provider.js';
+export {
+  commandNfrProvider,
+  DEFAULT_NFR_MANIFEST_PATH,
+  NfrProviderError,
+} from './test/nfr-provider.js';
 export type {
   DetectAndQuarantineOptions,
   DetectAndQuarantineResult,

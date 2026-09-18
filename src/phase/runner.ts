@@ -7,6 +7,7 @@ import { collectDecisions, relevantDecisions } from '../context/decisions.js';
 import { kbUpdatesOf, writeKbDocument } from '../context/kb-writer.js';
 import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
+import type { CapabilityRegistry } from '../contract/capability.js';
 import type { ArtifactRef } from '../event/catalog.js';
 import type { EventLog } from '../event/store.js';
 import type { ApprovalPacket, GateEvidence, GateManager } from '../gate/manager.js';
@@ -21,6 +22,16 @@ import type { GraphStep, Playbook, SessionStep } from '../playbook/graph.js';
 import type { RoleRegistry } from '../role/loader.js';
 import type { Projector } from '../state/projector.js';
 import { runControl } from '../state/reduce.js';
+import {
+  nodeTestExecutor,
+  runAdversarialSuite,
+  adversarialSuiteSchema,
+} from '../test/adversarial.js';
+import {
+  nfrRequirementSourceSchema,
+  quantifiedRequirements,
+} from '../test/nfr-source.js';
+import { runNfrSuite } from '../test/nfr.js';
 import type { TraceIndex } from '../trace/index-store.js';
 
 /**
@@ -63,6 +74,26 @@ export interface PhaseRunOptions {
    * reaches its gate — and the gate is what wants to know what traces to what.
    */
   readonly traces?: TraceIndex;
+  /**
+   * Bound MCP capability contracts an `nfr` step invokes (T4.3.2, DESIGN
+   * §4.7, EXT-1). Absent means a playbook declaring an `nfr` node blocks
+   * rather than silently skipping the measurement — the same fail-closed
+   * reading `CapabilityRegistry.require` already gives a caller reaching for
+   * an unbound capability by name.
+   */
+  readonly capabilities?: CapabilityRegistry;
+  /** `repo`/`ref` an `nfr` step's `test.nfr#run` calls are measured against. */
+  readonly repo?: string;
+  readonly ref?: string;
+  /**
+   * Where a `suite` step's generated `node:test` file is written and run
+   * (T4.3.2, `nodeTestExecutor`). Deliberately not defaulted to this
+   * project's own root: a generated case is model-authored code run with the
+   * kernel's own privileges wherever it executes, and choosing that target is
+   * a decision a caller makes explicitly, never a fallback this option
+   * supplies on its own.
+   */
+  readonly testProjectDir?: string;
 }
 
 export type PhaseOutcome =
@@ -101,6 +132,73 @@ function blockedOutcome(blocked: readonly BlockedStep[]): PhaseOutcome {
     reason: `${first.reason}${also}`,
     blocked,
   };
+}
+
+/**
+ * The `NfrRequirement[]` an `nfr` step measures, read off its upstream
+ * node's result.
+ *
+ * A session's structured output is always an object at its top level — the
+ * SDK's own structured-output tool refuses a bare array there — so the array
+ * an `nfr` step needs lives under a `requirements` field: the field the Scope
+ * artifact itself uses (`scopeSchema`, `src/schemas.ts`), whose elements this
+ * step parses with `nfrRequirementSourceSchema` so that a real, mixed Scope
+ * list is what it reads rather than a flat shape nothing in this project
+ * produces. A kernel-computed upstream result that already is an array is read
+ * as-is.
+ */
+function nfrRequirementsSourceOf(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null && 'requirements' in value) {
+    return value.requirements;
+  }
+  return value;
+}
+
+/**
+ * Reasons an `nfr`/`suite` step blocks on a precondition that is a run
+ * option, not anything a step's own upstream produces — shared between the
+ * pre-dispatch check below (which refuses before any session runs) and the
+ * in-step check inside `runNfr`/`runSuite` (kept as well, so a step reached
+ * some other way still fails closed), so the two can never say something
+ * different about the same missing option.
+ */
+function nfrCapabilityMissingReason(stepId: string): string {
+  return (
+    `nfr '${stepId}' needs the 'test.nfr' capability bound (TST-3, DESIGN ` +
+    `§4.7), and this run bound none. Bind a provider via ` +
+    `PhaseRunOptions.capabilities before running a phase that declares an ` +
+    `'nfr' node — an unbound capability is refused rather than read as ` +
+    `nothing to measure (CONV-4). 'mpgm run' binds 'commandNfrProvider' ` +
+    `(src/test/nfr-provider.ts), which measures what 'test/nfr.yaml' ` +
+    `declares.`
+  );
+}
+
+function nfrRepoRefMissingReason(stepId: string): string {
+  return (
+    `nfr '${stepId}' has no 'repo'/'ref' to measure against. Pass both on ` +
+    `PhaseRunOptions — from the CLI, 'mpgm run <phase> --repo <owner/name> ` +
+    `--ref <ref>'. 'test.nfr#run' reports against a specific repo and ref, ` +
+    `and neither is guessed. Nor is either taken on trust: the provider ` +
+    `'mpgm run' binds refuses to measure a checkout that is not at the ref ` +
+    `it was given, and names in its evidence the commit it did measure ` +
+    `(src/test/nfr-provider.ts).`
+  );
+}
+
+function suiteProjectDirMissingReason(stepId: string): string {
+  return (
+    `suite '${stepId}' has no project directory to run against. Running a ` +
+    `generated suite executes model-authored code with the privileges ` +
+    `wherever it runs — nodeTestExecutor's subject restriction is not a ` +
+    `confinement boundary (src/test/adversarial.ts) — so pass ` +
+    `'testProjectDir' on PhaseRunOptions explicitly — from the CLI, ` +
+    `'mpgm run <phase> --test-project-dir <path>'; it is a decision, not a ` +
+    `default this phase supplies on its own.`
+  );
 }
 
 export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
@@ -440,6 +538,156 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     return { status: 'completed', value: counted };
   };
 
+  const runNfr = async (
+    step: GraphStep & { kind: 'nfr' },
+  ): Promise<StepOutcome<unknown>> => {
+    const parsedRequirements = nfrRequirementSourceSchema.safeParse(
+      nfrRequirementsSourceOf(outputs[step.requirements]),
+    );
+    if (!parsedRequirements.success) {
+      return {
+        status: 'blocked',
+        reason:
+          `nfr '${step.id}' expected '${step.requirements}' to hold a non-empty ` +
+          `array of requirements — Scope's own elements (a 'non-functional' entry ` +
+          `carrying its 'threshold', a 'functional' one carrying none) or the flat ` +
+          `{id, metric, value, unit, measuredBy} shape — and it did not: ` +
+          parsedRequirements.error.message,
+      };
+    }
+
+    const requirements = quantifiedRequirements(parsedRequirements.data);
+    if (requirements.length === 0) {
+      return {
+        status: 'blocked',
+        reason:
+          `nfr '${step.id}' found nothing to measure in '${step.requirements}': ` +
+          `${String(parsedRequirements.data.length)} requirement(s), none of them ` +
+          `quantified. TST-3 binds every quantified NFR Scope declares to a suite, ` +
+          `so a step that measured none of them is refused here rather than ` +
+          `completing with a coverage report of no rows — absence read as success ` +
+          `is exactly what 'nfrCoverage' refuses one level down (CONV-4). Either ` +
+          `the upstream step declared no non-functional requirement, or it declared ` +
+          `them somewhere this step does not read.`,
+      };
+    }
+
+    if (!options.capabilities?.has('test.nfr')) {
+      return { status: 'blocked', reason: nfrCapabilityMissingReason(step.id) };
+    }
+    if (options.repo === undefined || options.ref === undefined) {
+      return { status: 'blocked', reason: nfrRepoRefMissingReason(step.id) };
+    }
+
+    const contract = options.capabilities.require('test.nfr');
+    let rows;
+    try {
+      rows = await runNfrSuite({
+        repo: options.repo,
+        ref: options.ref,
+        requirements,
+        run: (input) => contract.invoke('run', input),
+      });
+    } catch (cause) {
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+
+    record(step, rows);
+    // The kernel measured it, so the kernel is the producer of record — the
+    // same reasoning `runTally` already gives its own written artifact.
+    writeArtifact(step, 'kernel', '(none)', rows);
+    return { status: 'completed', value: rows };
+  };
+
+  const runSuite = async (
+    step: GraphStep & { kind: 'suite' },
+  ): Promise<StepOutcome<unknown>> => {
+    const parsedSuite = adversarialSuiteSchema.safeParse(outputs[step.suite]);
+    if (!parsedSuite.success) {
+      return {
+        status: 'blocked',
+        reason:
+          `suite '${step.id}' expected '${step.suite}' to hold an AdversarialSuite, ` +
+          `and it did not: ${parsedSuite.error.message}`,
+      };
+    }
+    if (options.testProjectDir === undefined) {
+      return { status: 'blocked', reason: suiteProjectDirMissingReason(step.id) };
+    }
+
+    let verdict;
+    try {
+      verdict = await runAdversarialSuite({
+        suite: parsedSuite.data,
+        execute: nodeTestExecutor({ projectDir: options.testProjectDir }),
+      });
+    } catch (cause) {
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+
+    record(step, verdict);
+    writeArtifact(step, 'kernel', '(none)', verdict);
+    return { status: 'completed', value: verdict };
+  };
+
+  // Whether an 'nfr' or 'suite' step can possibly run is decidable before the
+  // scheduler dispatches anything: capabilities/repo/ref/testProjectDir are
+  // run options, not playbook content, so none of them can appear or change
+  // partway through a phase. Checked here rather than left to `runNfr`/
+  // `runSuite` alone, because the scheduler only reaches those after every
+  // upstream step the 'nfr'/'suite' node depends on has already run and been
+  // paid for — the same "failing at dispatch costs whatever the phase already
+  // spent getting there" `checkReferences` refuses for a dangling playbook
+  // reference, and the same pre-dispatch shape the missing-required-input
+  // check above already gives a phase that would otherwise run every session
+  // before discovering the one thing it needed was never passed in.
+  for (const step of graph.steps) {
+    if (step.kind === 'nfr') {
+      if (!options.capabilities?.has('test.nfr')) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: step.id,
+            reason: nfrCapabilityMissingReason(step.id),
+            blocked: [],
+          },
+          produced,
+          outputs,
+        };
+      }
+      if (options.repo === undefined || options.ref === undefined) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: step.id,
+            reason: nfrRepoRefMissingReason(step.id),
+            blocked: [],
+          },
+          produced,
+          outputs,
+        };
+      }
+    }
+    if (step.kind === 'suite' && options.testProjectDir === undefined) {
+      return {
+        outcome: {
+          status: 'blocked',
+          taskId: step.id,
+          reason: suiteProjectDirMissingReason(step.id),
+          blocked: [],
+        },
+        produced,
+        outputs,
+      };
+    }
+  }
+
   const report = await schedule<GraphStep, unknown>({
     steps: graph.steps,
     concurrency,
@@ -452,8 +700,18 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
         ? { proceed: true }
         : { proceed: false, reason: control };
     },
-    run: (step) =>
-      step.kind === 'tally' ? Promise.resolve(runTally(step)) : runSession(step),
+    run: (step) => {
+      switch (step.kind) {
+        case 'tally':
+          return Promise.resolve(runTally(step));
+        case 'nfr':
+          return runNfr(step);
+        case 'suite':
+          return runSuite(step);
+        default:
+          return runSession(step);
+      }
+    },
   });
 
   if (report.status === 'blocked') {

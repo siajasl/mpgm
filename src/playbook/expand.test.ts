@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PlaybookLoadError } from './errors.js';
-import type { SessionStep, TallyStep } from './graph.js';
+import type { GraphStep, SessionStep } from './graph.js';
 import { parsePlaybook } from './loader.js';
 
 /**
@@ -14,9 +14,7 @@ function playbook(body: string): string {
 
 const load = (body: string) => parsePlaybook('scope.yaml', playbook(body));
 
-const sessions = (graph: {
-  steps: readonly (SessionStep | TallyStep)[];
-}): SessionStep[] =>
+const sessions = (graph: { steps: readonly GraphStep[] }): SessionStep[] =>
   graph.steps.filter((step): step is SessionStep => step.kind === 'session');
 
 describe('ordinary tasks', () => {
@@ -669,5 +667,160 @@ gate:
       artifact: brief
 `),
     ).toThrow(/produced by more than one task \(derive-a, derive-b\)/);
+  });
+});
+
+describe('nfr expansion (T4.3.2)', () => {
+  const body = `
+artifacts:
+  coverage:
+    schema: findings
+    path: artifacts/coverage.md
+    description: nfr coverage
+tasks:
+  - id: gather
+    role: analyst
+    description: gather the quantified requirements
+    prompt: list them
+  - kind: nfr
+    id: measure
+    description: measure them against test.nfr
+    requirements: gather
+    produces: coverage
+gate:
+  id: g
+  description: done
+  criteria:
+    - id: c
+      kind: artifact-exists
+      description: coverage exists
+      artifact: coverage
+`;
+
+  it('expands to a single kernel step depending on its requirements node', () => {
+    const { graph } = load(body);
+
+    expect(graph.steps.map((step) => step.id)).toStrictEqual(['gather', 'measure']);
+    const measureStep = graph.steps.at(-1);
+    // Kernel-computed like a tally: no role, no prompt, no model call.
+    expect(measureStep?.kind).toBe('nfr');
+    expect(measureStep).not.toHaveProperty('role');
+    expect(measureStep?.dependsOn).toStrictEqual(['gather']);
+    expect(graph.terminal.measure).toBe('measure');
+  });
+
+  it('refuses an nfr node whose requirements node is not declared', () => {
+    expect(() =>
+      load(body.replace('requirements: gather', 'requirements: nowhere')),
+    ).toThrow(/reads requirements from 'nowhere', which is not a task/);
+  });
+
+  it('refuses to read an nfr coverage report as an agent assertion', () => {
+    expect(() =>
+      load(
+        body.replace(
+          `    - id: c
+      kind: artifact-exists
+      description: coverage exists
+      artifact: coverage`,
+          `    - id: c
+      kind: agent-assertion
+      description: coverage exists
+      fromTask: measure
+      field: verified`,
+        ),
+      ),
+    ).toThrow(/measured by\s+the bound 'test.nfr' capability, not asserted by an agent/);
+  });
+
+  it('refuses a "consumes" declared on an nfr node (CONV-5): no session ever runs for it to reach', () => {
+    // An `nfr` node expands to exactly one kernel-computed step with no
+    // `consumes` field (`NfrStep`) — nothing downstream of the schema could
+    // ever honour a declared consumption, so the schema refuses it rather
+    // than accepting and silently dropping it at expansion.
+    expect(
+      () =>
+        load(
+          body.replace(
+            'requirements: gather',
+            'requirements: gather\n    consumes: [coverage]',
+          ),
+        ),
+      // The key itself is named, not merely "something was wrong": a
+      // `.strict()` refusal that did not say which key it refused would pass
+      // a laxer assertion just as well.
+    ).toThrow(/Unrecognized key[\s\S]*consumes/);
+  });
+});
+
+describe('suite expansion (T4.3.2)', () => {
+  const body = `
+artifacts:
+  verdict:
+    schema: findings
+    path: artifacts/verdict.md
+    description: the verdict
+tasks:
+  - id: attack
+    role: researcher
+    description: write an adversarial suite
+    prompt: attack the subject
+  - kind: suite
+    id: run-suite
+    description: run the generated suite
+    suite: attack
+    produces: verdict
+gate:
+  id: g
+  description: done
+  criteria:
+    - id: c
+      kind: artifact-exists
+      description: verdict exists
+      artifact: verdict
+`;
+
+  it('expands to a single kernel step depending on its suite node', () => {
+    const { graph } = load(body);
+
+    expect(graph.steps.map((step) => step.id)).toStrictEqual(['attack', 'run-suite']);
+    const suiteStep = graph.steps.at(-1);
+    expect(suiteStep?.kind).toBe('suite');
+    expect(suiteStep).not.toHaveProperty('role');
+    expect(suiteStep?.dependsOn).toStrictEqual(['attack']);
+    expect(graph.terminal['run-suite']).toBe('run-suite');
+  });
+
+  it('refuses a suite node whose suite node is not declared', () => {
+    expect(() => load(body.replace('suite: attack', 'suite: nowhere'))).toThrow(
+      /runs the suite from 'nowhere', which is not a task/,
+    );
+  });
+
+  it('refuses to read a suite verdict as an agent assertion', () => {
+    expect(() =>
+      load(
+        body.replace(
+          `    - id: c
+      kind: artifact-exists
+      description: verdict exists
+      artifact: verdict`,
+          `    - id: c
+      kind: agent-assertion
+      description: verdict exists
+      fromTask: run-suite
+      field: clean`,
+        ),
+      ),
+    ).toThrow(/a verdict\s+folded from a test run, not asserted by an agent/);
+  });
+
+  it('refuses a "consumes" declared on a suite node (CONV-5): no session ever runs for it to reach', () => {
+    // Same reasoning as the nfr node above: `SuiteStep` carries no `consumes`
+    // field, so declaring one here would validate a consumption expansion
+    // can only discard.
+    expect(() =>
+      load(body.replace('suite: attack', 'suite: attack\n    consumes: [verdict]')),
+    ).toThrow(/Unrecognized key[\s\S]*consumes/);
   });
 });

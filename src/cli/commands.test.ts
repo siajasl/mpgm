@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { AgentSessionProvider } from '../agent/session.js';
+import { scriptedSuccess } from '../agent/scripted-provider.js';
 import { ArtifactStore } from '../artifact/store.js';
 import { CapabilityRegistry } from '../contract/capability.js';
 import { openDatabase } from '../database.js';
@@ -24,6 +25,7 @@ import {
   intervene,
   recordMerge,
   rollback,
+  run,
   status,
   trace,
   type CliContext,
@@ -1740,5 +1742,200 @@ describe('trace --dangling names an excluded convention citation (T4.2.16)', () 
     expect(output).toContain('1 citation(s) excluded (not counted above):');
     expect(output).toContain('-> CONV-6');
     expect(output).toContain(CONVENTION_CITATION_REASON);
+  });
+});
+
+/**
+ * `mpgm run <phase>` over a playbook whose work is code (T4.3.2).
+ *
+ * The point of this test is the binding, not the arithmetic: before it,
+ * `test.nfr` had a contract, a runner and no provider, and the only
+ * production caller of `runPhase` passed no capabilities at all — so every
+ * `nfr` node blocked from the one entry point the kernel exposes, however
+ * well the step itself worked under a unit test's own registry. Nothing is
+ * injected here: the verb binds `commandNfrProvider`, the provider reads the
+ * project's own `test/nfr.yaml`, and the measurement is a real child process
+ * printing a real number.
+ */
+describe('run — a phase whose nfr node reaches a bound test.nfr (T4.3.2)', () => {
+  const PLAYBOOK = `
+phase: test
+description: measure the quantified NFRs
+artifacts:
+  coverage:
+    schema: nfr-coverage
+    path: artifacts/coverage.md
+    description: nfr coverage
+tasks:
+  - id: scope-nfrs
+    role: nfr-scoper
+    description: state the quantified NFRs
+    prompt: list the quantified requirements
+  - kind: nfr
+    id: measure
+    description: measure them against test.nfr
+    requirements: scope-nfrs
+    produces: coverage
+gate:
+  id: test-gate
+  description: coverage exists
+  criteria:
+    - id: c1
+      kind: artifact-exists
+      description: coverage exists
+      artifact: coverage
+`;
+
+  const ROLE = [
+    '---',
+    'name: nfr-scoper',
+    'description: states the quantified NFRs of the Test phase',
+    'model: claude-sonnet-5',
+    'tools: { allow: [Read] }',
+    'budgets: { tokens: 100000, costUsd: 5, steps: 10, wallClockSeconds: 600 }',
+    'output: { schema: scope }',
+    '---',
+    'You are the nfr-scoper.',
+  ].join('\n');
+
+  const SCOPE = {
+    summary: 'a service that answers, and answers quickly',
+    requirements: [
+      {
+        kind: 'functional',
+        id: 'FUN-1',
+        statement: 'the service answers GET /health',
+        rationale: 'the deploy gate reads it',
+        priority: 'must',
+        acceptanceCriteria: ['200 with a body'],
+        tracesTo: ['GOAL-1'],
+      },
+      {
+        kind: 'non-functional',
+        id: 'PERF-1',
+        statement: 'p95 latency stays under 300ms',
+        rationale: 'the operator notices anything slower',
+        priority: 'must',
+        acceptanceCriteria: ['a load test reports p95 under 300ms'],
+        tracesTo: ['GOAL-2'],
+        threshold: { metric: 'p95-latency', value: 300, unit: 'ms', measuredBy: 'k6' },
+      },
+    ],
+    outOfScope: [{ item: 'authentication', why: 'a later milestone' }],
+  };
+
+  /**
+   * A project the verb can actually measure: a git checkout, because the
+   * bound provider refuses to measure a directory whose commit it cannot read
+   * or which is not at the `--ref` the operator named. The ref this returns is
+   * that commit, so the run below reports the checkout it measured.
+   */
+  function project(measurement: string): { root: string; ref: string } {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-run-nfr-'));
+    mkdirSync(join(root, 'phases'), { recursive: true });
+    mkdirSync(join(root, 'roles'), { recursive: true });
+    mkdirSync(join(root, 'test'), { recursive: true });
+    writeFileSync(join(root, 'phases', 'test.yaml'), PLAYBOOK, 'utf8');
+    writeFileSync(join(root, 'roles', 'nfr-scoper.md'), ROLE, 'utf8');
+    writeFileSync(
+      join(root, 'test', 'nfr.yaml'),
+      `measurements:\n` +
+        `  - requirement: PERF-1\n` +
+        `    metric: p95-latency\n` +
+        `    unit: ms\n` +
+        `    direction: at-most\n` +
+        `    command: node\n` +
+        `    args: ['-e', 'console.log(${measurement})']\n`,
+      'utf8',
+    );
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+    git('init', '--quiet');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    git('add', '.');
+    git('commit', '--quiet', '-m', 'Declare what measures PERF-1');
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim();
+    return { root, ref };
+  }
+
+  function contextFor(root: string, writes: string[]): CliContext {
+    return {
+      ...newContext(root, writes),
+      provider: { run: () => Promise.resolve(scriptedSuccess(SCOPE)) },
+    };
+  }
+
+  it('measures the project’s own declared command and writes the coverage it produced', async () => {
+    const writes: string[] = [];
+    const { root, ref } = project('250');
+
+    const result = await run(contextFor(root, writes), 'run-1', 'test', {
+      repo: 'siajasl/library-loans',
+      ref,
+    });
+
+    expect(result.ok).toBe(true);
+    const coverage = readFileSync(join(root, 'artifacts', 'coverage.v1.md'), 'utf8');
+    // 250 against a 300ms ceiling: verified, and verified *by* what Scope
+    // said measures it. A stub provider could not have produced the number.
+    expect(coverage).toMatch(/PERF-1/);
+    expect(coverage).toMatch(/"?measured"?:\s*250/);
+    expect(coverage).toMatch(/"?verified"?:\s*true/);
+    // And the row says which checkout produced the number, so the artifact is
+    // not a measurement of one commit filed against another.
+    expect(coverage).toContain(`measured siajasl/library-loans@${ref}`);
+    expect(writes.join('\n')).toMatch(/met\s+c1: coverage v1/);
+  });
+
+  it('carries a real failure through: the same wiring, a measurement over threshold', async () => {
+    const writes: string[] = [];
+    const { root, ref } = project('900');
+
+    const result = await run(contextFor(root, writes), 'run-1', 'test', {
+      repo: 'siajasl/library-loans',
+      ref,
+    });
+
+    expect(result.ok).toBe(true);
+    const coverage = readFileSync(join(root, 'artifacts', 'coverage.v1.md'), 'utf8');
+    expect(coverage).toMatch(/"?verified"?:\s*false/);
+    expect(coverage).toMatch(/below-threshold/);
+  });
+
+  it('blocks rather than reporting this checkout as a measurement of some other ref', async () => {
+    const writes: string[] = [];
+    const { root } = project('250');
+
+    // A ref the checkout is not at — the operator's most ordinary mistake,
+    // running the phase from a working tree that has moved on. Before the
+    // provider read `input.ref` this wrote a coverage artifact whose rows
+    // were measurements of the working tree, offered as measurements of a
+    // commit nothing measured (CONV-4).
+    const result = await run(contextFor(root, writes), 'run-1', 'test', {
+      repo: 'siajasl/library-loans',
+      ref: '0000000000000000000000000000000000000000',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/refusing to measure/);
+    expect(existsSync(join(root, 'artifacts', 'coverage.v1.md'))).toBe(false);
+  });
+
+  it('blocks rather than measuring a repo nobody named', async () => {
+    const writes: string[] = [];
+    const { root } = project('250');
+
+    // No --repo/--ref: `test.nfr#run` reports against a specific repo and
+    // ref, and the verb refuses to guess one from the checkout it happens to
+    // be running in.
+    const result = await run(contextFor(root, writes), 'run-1', 'test');
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/--repo <owner\/name> --ref <ref>/);
   });
 });
