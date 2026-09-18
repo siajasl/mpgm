@@ -1177,7 +1177,8 @@ export const MPGM_PLAN = {
             'declaring is counted as a failure or shown in flight. And a rework ' +
             'round escalated to a stronger tier is funded or refused before it ' +
             'starts, with work a budget kill interrupts never left where only a ' +
-            'local worktree can see it.',
+            'local worktree can see it. And a branch that conflicts with the trunk ' +
+            'reaches something that resolves it rather than ending the run.',
           validatesRisk: null,
           tasks: [
             {
@@ -1649,6 +1650,66 @@ export const MPGM_PLAN = {
               ],
               dependsOn: [],
               tracesTo: ['AGT-4', 'AGT-5', 'OBS-1', 'IMP-3'],
+            },
+            {
+              id: 'T4.3.9',
+              title: 'A merge conflict is called an agent task and given to nobody',
+              completionCriteria: [
+                'A conflict between a task branch and the trunk reaches ' +
+                  'something that can resolve it, or is refused with the ' +
+                  'reason it cannot be. Measured rather than asserted: ' +
+                  "T4.3.2's run ended with \"'mpgm/T4.3.2' is behind 'main' " +
+                  'and merging it conflicts in PLAN.md. Resolving it is a ' +
+                  'change somebody has to make; until it is made, a pull ' +
+                  'request for this branch cannot report checks at all." ' +
+                  'The operator resolved it by hand and re-ran the task.',
+                'The gap is what the code already says rather than an ' +
+                  'omission nobody had considered. src/implement/merge.ts ' +
+                  'aborts the merge and throws, and its own comment says the ' +
+                  'conflict "is a task for an agent, not a state for the ' +
+                  'kernel to sit in" -- but no path anywhere dispatches that ' +
+                  'agent. The intent is written down and unimplemented, which ' +
+                  'is why the run simply stops.',
+                'The collision is structural, not bad luck, and the change ' +
+                  'says so. CLAUDE.md requires a substantive document ' +
+                  'revision to bump its Status header and update downstream ' +
+                  'Upstream: refs, so a task that revises DESIGN edits ' +
+                  "PLAN.md's header, and every filing commit edits that same " +
+                  'header. Both land in the same two lines. T4.3.2 was cut ' +
+                  'from 7202c0b and conflicted on exactly that: main had ' +
+                  "moved PLAN.md's Status line to v0.22 filing T4.3.8, while " +
+                  "the branch had moved the next line's DESIGN reference to " +
+                  'v0.36 when its own rework bumped that document. Both edits ' +
+                  'were wanted and neither superseded the other.',
+                'What it cost is named. The refused run dispatched nothing ' +
+                  'and merged nothing; the branch could not report checks at ' +
+                  'all until a human merged the trunk in, and the re-run that ' +
+                  'followed spent a fresh implement and review cycle on work ' +
+                  'that had already passed both. Two filings landed on main ' +
+                  "during this one task's life, so the window is not narrow.",
+                'The change picks among bringing the trunk into the branch ' +
+                  'and retrying before refusing, dispatching the rework ' +
+                  'session with the conflict as the comment already claims ' +
+                  'happens, and holding filing commits while a branch is ' +
+                  'live -- and says which and why. The last is a process rule ' +
+                  'rather than code, and a change choosing it says so instead ' +
+                  'of implying the kernel enforces it.',
+                'Auto-resolution by preferring one side is refused and the ' +
+                  'change says why. Taking the trunk header would have ' +
+                  "silently dropped the branch's DESIGN v0.36 bump, which is " +
+                  'a true claim about a document that branch changed, and ' +
+                  'IMP-4 requires a deviation to be flagged rather than ' +
+                  'silently introduced. A conflict outside a document header ' +
+                  '-- two tasks editing one function -- is not resolvable by ' +
+                  'any rule this task could state, and must still refuse.',
+                'The test builds a branch and a trunk that both edit the same ' +
+                  'document header and asserts the loop reaches a merge with ' +
+                  'both edits surviving, and a second test puts the conflict ' +
+                  'in code and asserts it still refuses. A test asserting ' +
+                  'only that MergeError was thrown passes against today.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-1', 'IMP-4', 'OBS-1'],
             },
           ],
         },
