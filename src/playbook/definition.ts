@@ -397,16 +397,19 @@ export const gateCriterionSchema = z.discriminatedUnion('kind', [
    * carries instead — `blocksGate` (`src/test/defect.ts`) over it, the same
    * critical/high test that field name states.
    *
-   * `GateEvidence.defects` defaults to empty, and nothing yet populates it
-   * from a real run: `runPhase` (`src/phase/runner.ts`) builds `evidence`
-   * from `produced`/`outputs` alone, and a filed Defect lives under
-   * `artifacts/defect/`, outside both (T4.3.4). Until that task reads filed
-   * defects back off disk and hands them to `GateManager.present`, this
-   * criterion is real but vacuous on a live `mpgm run test` — met on every
-   * run, for want of anything to disagree with it, not because none was
-   * filed. Exercised directly against `GateManager` in `manager.test.ts`
-   * (T4.3.3), which supplies `defects` by hand rather than through a phase
-   * run, precisely because no phase run can supply it yet.
+   * `GateEvidence.defects` is optional and has no default, and the two states
+   * that leaves are not interchangeable. `undefined` means no defect source
+   * was wired for this evaluation, and the criterion reports **unmet**, naming
+   * the gap — the same fail-closed answer `traces-resolve` gives when no trace
+   * index is wired (CONV-4). An explicit `[]` means a source was consulted and
+   * found nothing, and the criterion reports met. Nothing yet supplies either
+   * from a live run: `runPhase` (`src/phase/runner.ts`) builds `evidence` from
+   * `produced`/`outputs` alone, and a filed Defect lives under
+   * `artifacts/defect/`, outside both (T4.3.4). So on `mpgm run test` today
+   * the field is `undefined` and this criterion holds the gate shut, which is
+   * why it is exercised directly against `GateManager` in `manager.test.ts`
+   * (T4.3.3) — that test supplies `defects` by hand, precisely because no
+   * phase run can supply it yet.
    */
   z
     .object({
