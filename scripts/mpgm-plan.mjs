@@ -1179,7 +1179,9 @@ export const MPGM_PLAN = {
             'starts, with work a budget kill interrupts never left where only a ' +
             'local worktree can see it. And a branch that conflicts with the trunk ' +
             'reaches something that resolves it rather than ending the run. And no task ' +
-            'a reviewer approved is recorded as one a reviewer refused.',
+            'a reviewer approved is recorded as one a reviewer refused. And the requirement ' +
+            'coverage this milestone reports measures what is checked rather than how ' +
+            'often a trailer was written.',
           validatesRisk: null,
           tasks: [
             {
@@ -1776,6 +1778,71 @@ export const MPGM_PLAN = {
               ],
               dependsOn: [],
               tracesTo: ['IMP-3', 'IMP-4', 'OBS-1', 'HIL-5'],
+            },
+            {
+              id: 'T4.3.11',
+              title: 'Three commits in 337 claim to verify anything',
+              completionCriteria: [
+                'Requirement coverage reflects what this repository actually ' +
+                  'checks, or says plainly why it cannot. Measured rather ' +
+                  'than asserted: over main, 50 commits carry Traces: and ' +
+                  'exactly 3 carry Verifies:, the only key ' +
+                  'TraceIndexStore.coverage counts (CLAUDE.md, Documents). ' +
+                  'Coverage therefore reads 2 of 84 -- NFR-6 from 0f374ab, ' +
+                  'TST-3 from 90752e0 and d39639a -- across a repository with ' +
+                  '1,323 passing tests. The figure is not measuring how much ' +
+                  'is verified; it is measuring how often somebody wrote one ' +
+                  'word.',
+                "T4.3.3's own delivery is the worked case and is named " +
+                  'rather than generalised from. 3ce931b, the commit ' +
+                  'introducing phases/test.yaml, the no-open-defects ' +
+                  'criterion kind and roles/nfr-scoper.md, carries no trace ' +
+                  'trailer at all and resolves to no trace node. c22812c and ' +
+                  '26e7467 carry Traces: TST-1, TST-2, EXT-3 where the work ' +
+                  'they add is what checks TST-1 and TST-5. So the phase that ' +
+                  'computes requirement coverage landed on main verifying ' +
+                  'nothing, and TST-1 and TST-5 still read UNVERIFIED.',
+                'The review did see it, four times, and a declaration is why ' +
+                  "it merged anyway. Every one of T4.3.3's last four reviews " +
+                  'approved while naming the trailer convention as an ' +
+                  'undeclared deviation, each in different words; each was ' +
+                  'declared rather than fixed, which IMP-4 permits, until a ' +
+                  'reviewer stopped rephrasing it. That is the mechanism ' +
+                  'T4.3.10 describes, and this task is what it let through ' +
+                  'rather than a second report of it.',
+                'The Test gate is **not** broken by this and the change says ' +
+                  'so rather than "fixing" it. phases/test.yaml states in its ' +
+                  'own description that "all Must-have requirements verified" ' +
+                  '(TST-2) is deliberately not among the criteria it checks, ' +
+                  'because requirementCoverageReport needs a quarantine ' +
+                  'ledger and the whole Scope list no nfr node supplies, and ' +
+                  'it checks the narrower nfr-coverage rows instead. Nothing ' +
+                  'in the gate reads the 2-of-84 figure today. A change ' +
+                  'asserting the gate is wrong has misread it.',
+                'The change picks among requiring Verifies: of the ' +
+                  'implementer role, having artifacts declare verification, ' +
+                  'and accepting coverage as forward-only from a stated ' +
+                  'commit -- and says which and why. The second is already ' +
+                  'available: extractArtifactLinks reads a verifies key off ' +
+                  'artifact data (src/trace/links.ts), so an artifact can ' +
+                  'make the claim a commit did not. The third is what the ' +
+                  'append-only history forces if neither of the others ' +
+                  'reaches backwards: 337 commits are not rewritten, so a ' +
+                  'change claiming to raise coverage over past work says how. ' +
+                  'Requiring the trailer is not free either, and the change ' +
+                  'says what an implementing session is supposed to know: ' +
+                  'whether its work verifies a requirement or merely serves ' +
+                  'one is a judgement the role was asked for four times in ' +
+                  'one task and did not give.',
+                'The test asserts coverage over this repository own history, ' +
+                  'not over a fixture: that the figure rises above 2, or that ' +
+                  'the report states the exclusion it is reporting under. A ' +
+                  'test over a synthetic repository passes while the real ' +
+                  'coverage still reads 2 of 84, which is the test this ' +
+                  'defect survived.',
+              ],
+              dependsOn: [],
+              tracesTo: ['TST-2', 'ADR-4', 'IMP-4', 'OBS-1'],
             },
           ],
         },
