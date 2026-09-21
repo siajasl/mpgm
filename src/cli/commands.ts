@@ -42,6 +42,7 @@ import {
 import { dockerReleaseProvider } from '../release/docker-provider.js';
 import { RoleRegistry } from '../role/loader.js';
 import { commandNfrProvider } from '../test/nfr-provider.js';
+import type { DefectSeverity } from '../test/defect.js';
 import { testNfrContract } from '../test/nfr.js';
 import {
   approvalKey,
@@ -203,6 +204,14 @@ export interface RunOptions {
    * (`src/test/adversarial.ts`).
    */
   readonly testProjectDir?: string;
+  /**
+   * Severity a filed defect is given, for an `nfr`/`suite` node (T4.3.4).
+   *
+   * No default, on purpose: neither producer carries a severity of its own
+   * (`src/test/defect-filing.ts`), so an operator supplies one — critical/high
+   * hold the Test gate's `no-open-defects` criterion shut, medium/low do not.
+   */
+  readonly defectSeverity?: DefectSeverity;
 }
 
 /**
@@ -259,6 +268,9 @@ export async function run(
       ...(options.testProjectDir === undefined
         ? {}
         : { testProjectDir: options.testProjectDir }),
+      ...(options.defectSeverity === undefined
+        ? {}
+        : { defectSeverity: options.defectSeverity }),
       sessions: new SessionRunner({
         log,
         provider: context.provider,

@@ -1877,6 +1877,7 @@ gate:
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
       ref,
+      defectSeverity: 'high',
     });
 
     expect(result.ok).toBe(true);
@@ -1899,6 +1900,7 @@ gate:
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
       ref,
+      defectSeverity: 'high',
     });
 
     expect(result.ok).toBe(true);
@@ -1919,6 +1921,7 @@ gate:
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
       ref: '0000000000000000000000000000000000000000',
+      defectSeverity: 'high',
     });
 
     expect(result.ok).toBe(false);

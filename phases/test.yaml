@@ -3,9 +3,13 @@ description: >
   Verify the gated requirement set holds against the system it describes:
   measure every quantified NFR against its Scope threshold (TST-3), and
   attack the implementation with a suite beyond the implementer's own
-  (TST-4). Requirement coverage over the whole trace graph (TST-2) and
-  defect filing (TST-5) are not this playbook's own work — see the gate's own
-  description below for what that means for its `no-open-defects` criterion.
+  (TST-4). Requirement coverage over the whole trace graph (TST-2) is not
+  this playbook's own work — see the gate's own description below for what
+  that means for its `no-open-defects` criterion. Defect filing (TST-5) *is*
+  wired for this playbook, but not as a task of it: `runPhase` files a
+  `Defect` straight to the store for every below-threshold `nfr-coverage` row
+  and failed `adversarial-verdict` case this playbook's `measure-nfrs` and
+  `run-suite` steps produce, outside any step's declared `produces` (T4.3.4).
 
 inputs:
   requirement-set:
@@ -107,7 +111,7 @@ gate:
     NFR coverage and an adversarial verdict both exist, and no open
     critical/high defect blocks the gate (TST-5).
 
-    Two of REQUIREMENTS' three Test-gate clauses are not checked here, and
+    One of REQUIREMENTS' three Test-gate clauses is not checked here, and
     that is a fact about this playbook rather than an oversight it hides:
     "all Must-have requirements verified" (TST-2) needs the full requirement
     coverage report `requirementCoverageReport` (`src/test/nfr.ts`) computes,
@@ -115,13 +119,14 @@ gate:
     node or `PhaseRunOptions` supplies today (DESIGN §9 decision 15's own
     account of the gap) — so this gate checks the narrower `nfr-coverage`
     rows `measure-nfrs` actually produces instead, and only that they exist,
-    not that every row verified. And `no-open-defects` below reads whatever
-    `GateEvidence.defects` carries (`src/gate/manager.ts`), which is real but
-    unpopulated on a live run of this playbook until a task files a Defect
-    and hands it to the gate manager outside `step.produces` (T4.3.4) — so
-    today this criterion reports **unmet**, naming the missing defect source,
-    on every run of this playbook, rather than asserting "no defects" on
-    evidence nothing collected.
+    not that every row verified. `no-open-defects` below is no longer the
+    same kind of gap: `measure-nfrs` and `run-suite` each file a `Defect`
+    (outside `step.produces`, under `artifacts/defect/`) for every below-
+    threshold row and failed case they find, and `runPhase` hands every one
+    filed this run to the gate manager as `GateEvidence.defects` (T4.3.4) —
+    so a live run of this playbook reads a real figure here: **met** with no
+    open critical/high defect among whatever was filed, `[]` included, and
+    **unmet** while one remains open.
   autoApprove: false
   criteria:
     - id: nfr-coverage-present
@@ -146,4 +151,4 @@ gate:
       description: >
         No open critical/high defect blocks the gate (TST-5). See this
         gate's own description above for what a live run of this playbook
-        can and cannot yet feed this criterion.
+        now feeds this criterion, and how.

@@ -105,6 +105,19 @@ export const adversarialCaseSchema = z.object({
    * `assert` (`node:assert/strict`) and `test`'s own context in scope.
    */
   body: z.string().min(1),
+  /**
+   * Requirement ids a failure of this case would call into question (T4.3.4).
+   *
+   * `fileDefect` (`src/test/defect.ts`) requires a non-empty `tracesTo` —
+   * "a defect that names no requirement gives whichever phase it is routed to
+   * nothing to check the fix against" — and before this field existed nothing
+   * in the adversarial substrate could supply one: not the case, not the
+   * suite, not a folded result. `.min(1)` for the same reason `defect`
+   * itself is required rather than optional: a case that could name zero
+   * requirements would produce a case result `defect-filing.ts` could not
+   * turn into a `Defect` at all, on exactly the run that found something.
+   */
+  tracesTo: z.array(z.string().min(1)).min(1),
 });
 
 export type AdversarialCase = z.infer<typeof adversarialCaseSchema>;
@@ -232,6 +245,8 @@ export interface AdversarialCaseResult {
   readonly defect: string;
   readonly outcome: AdversarialOutcome;
   readonly detail: string;
+  /** Requirement ids a failure of this case calls into question (T4.3.4). */
+  readonly tracesTo: readonly string[];
 }
 
 export interface AdversarialVerdict {
@@ -254,6 +269,7 @@ const adversarialCaseResultSchema: z.ZodType<AdversarialCaseResult> = z.object({
   defect: z.string().min(1),
   outcome: z.enum(['passed', 'failed', 'not-reported']),
   detail: z.string(),
+  tracesTo: z.array(z.string().min(1)).min(1),
 });
 
 /**
@@ -387,6 +403,7 @@ export function adversarialVerdict(
       outcome:
         execution === undefined ? 'not-reported' : execution.passed ? 'passed' : 'failed',
       detail: execution?.detail ?? '',
+      tracesTo: entry.tracesTo,
     };
   });
 

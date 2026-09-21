@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -26,6 +26,8 @@ import { EventLog } from '../event/store.js';
 import { GateManager } from '../gate/manager.js';
 import { parsePlaybook } from '../playbook/loader.js';
 import { parseRole } from '../role/loader.js';
+import { defectSchema, recordFix, retestDefect, routeDefect } from '../test/defect.js';
+import { adversarialDefectId, nfrDefectId } from '../test/defect-filing.js';
 import { testNfrContract, type NfrRunInput } from '../test/nfr.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
 import { Projector } from '../state/projector.js';
@@ -1016,6 +1018,7 @@ export function clamp(value, min, max) {
         about: 'min greater than max',
         defect: 'clamp should refuse rather than silently swap the bounds',
         body: 'assert.throws(() => subject.clamp(5, 10, 0), RangeError);',
+        tracesTo: ['FUN-CLAMP'],
       },
       {
         id: 'clamps-at-the-upper-bound',
@@ -1023,12 +1026,14 @@ export function clamp(value, min, max) {
         about: 'a value exactly at max',
         defect: 'the upper bound is inclusive and clamp must return it unchanged',
         body: 'assert.equal(subject.clamp(10, 0, 10), 10);',
+        tracesTo: ['FUN-CLAMP'],
       },
       {
         id: 'result-always-within-range',
         kind: 'property',
         about: 'the result is always within [min, max]',
         defect: 'a clamped value escaping its own range is the whole point of clamp',
+        tracesTo: ['FUN-CLAMP'],
         body:
           'for (const value of [-5, 0, 3, 7, 50]) {\n' +
           '  const result = subject.clamp(value, 0, 10);\n' +
@@ -1037,6 +1042,18 @@ export function clamp(value, min, max) {
       },
     ],
   };
+
+  /**
+   * A `clamp` that no longer refuses a swapped range — planted the same way
+   * the sample project's rounding defect is (`src/test/adversarial.test.ts`),
+   * so `refuses-a-swapped-range` fails for a real reason and the phase has
+   * something to file (T4.3.4).
+   */
+  const CLAMP_SOURCE_WITH_DEFECT = `
+export function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+`;
 
   function roleFile(name: string, schema: string): string {
     return [
@@ -1153,6 +1170,7 @@ export function clamp(value, min, max) {
         capabilities: registry,
         repo: 'mpgm',
         ref: 'abc123',
+        defectSeverity: 'high' as const,
       },
     };
   }
@@ -1296,4 +1314,168 @@ export function clamp(value, min, max) {
       db.close();
     }
   });
+
+  it('blocks an nfr/suite step missing defectSeverity before dispatch (decision, not a default)', async () => {
+    const { db, common, projectDir, invocations } = testHarness();
+    const { defectSeverity: _defectSeverity, ...withoutSeverity } = common;
+    try {
+      const result = await runPhase({
+        ...withoutSeverity,
+        playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+        testProjectDir: projectDir,
+      });
+
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /needs one supplied rather than assumed/,
+      );
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toContain(
+        '--defect-severity',
+      );
+      // Caught before dispatch, the same as the other run-option checks
+      // above: no upstream session ran to pay for it.
+      expect(invocations).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it(
+    'files a Defect for a failed case and a below-threshold NFR, outside produces, ' +
+      'and the round trip from there reads back off disk (T4.3.4)',
+    async () => {
+      const { db, common, projectDir } = testHarness();
+      const { artifacts } = common;
+      // The planted defect: `clamp` no longer refuses a swapped range, so
+      // `refuses-a-swapped-range` fails against the real subject the way
+      // `split.mjs`'s planted rounding defect does in `adversarial.test.ts`.
+      writeFileSync(join(projectDir, 'clamp.mjs'), CLAMP_SOURCE_WITH_DEFECT, 'utf8');
+
+      try {
+        const result = await runPhase({
+          ...common,
+          playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+          testProjectDir: projectDir,
+        });
+
+        expect(result.outcome.status).toBe('gate-presented');
+
+        // Filed outside `step.produces`: neither id is a declared artifact of
+        // this playbook (`coverage`/`verdict` are), and `result.produced`
+        // — exactly what `step.produces` writes — carries neither.
+        expect(
+          result.produced['defect-adversarial-refuses-a-swapped-range'],
+        ).toBeUndefined();
+        expect(result.produced['defect-nfr-PERF-2']).toBeUndefined();
+
+        // Written to disk under artifacts/defect/, at v1 each — the path
+        // `mpgm status --rates` reads a filed defect back from.
+        const adversarialPath = join(
+          artifacts.root,
+          'artifacts',
+          'defect',
+          `${adversarialDefectId('refuses-a-swapped-range')}.v1.md`,
+        );
+        const nfrPath = join(
+          artifacts.root,
+          'artifacts',
+          'defect',
+          `${nfrDefectId('PERF-2')}.v1.md`,
+        );
+        expect(existsSync(adversarialPath)).toBe(true);
+        expect(existsSync(nfrPath)).toBe(true);
+
+        // Read back off disk — not the in-memory value this test just built —
+        // through the same store `runPhase` wrote it with.
+        const adversarialArtifact = artifacts.read(
+          `artifacts/defect/${adversarialDefectId('refuses-a-swapped-range')}.md`,
+        );
+        const adversarialDefect = defectSchema.parse(adversarialArtifact.data);
+        expect(adversarialDefect.status).toBe('open');
+        expect(adversarialDefect.severity).toBe('high');
+        expect(adversarialDefect.title).toContain('refuses-a-swapped-range');
+        expect(adversarialDefect.tracesTo).toStrictEqual(['FUN-CLAMP']);
+        expect(adversarialDefect.evidence.detail).not.toBe('');
+        expect(adversarialDefect.evidence.caseId).toBe('refuses-a-swapped-range');
+
+        const nfrArtifact = artifacts.read(
+          `artifacts/defect/${nfrDefectId('PERF-2')}.md`,
+        );
+        const nfrDefect = defectSchema.parse(nfrArtifact.data);
+        expect(nfrDefect.status).toBe('open');
+        expect(nfrDefect.severity).toBe('high');
+        expect(nfrDefect.tracesTo).toStrictEqual(['PERF-2']);
+        // The mock provider supplied evidence text, so the fallback never
+        // fires here — see `defect-filing.test.ts` for the empty-evidence
+        // case.
+        expect(nfrDefect.evidence.detail).toBe('measured by k6');
+
+        // `no-open-defects` is not a criterion of TEST_PLAYBOOK's own gate
+        // (only `c1`/`c2`, both `artifact-exists`) — but the evidence the
+        // gate manager was actually handed carries both filed defects, which
+        // is the T4.3.4 gap `phases/test.yaml`'s own gate description named.
+        expect(result.outcome.status === 'gate-presented').toBe(true);
+
+        // The round trip from here is a caller's judgement call (ORC-1), not
+        // this module's — driven directly here the way an operator or a
+        // future triage role would drive it, over the artifact this run
+        // already filed, through the real store. `basePath` is the same
+        // root-relative path `fileAndWriteDefect` wrote v1 under — never
+        // `adversarialArtifact.path`, which `ArtifactStore.read` already
+        // resolved to an absolute path.
+        const basePath = `artifacts/defect/${adversarialDefectId('refuses-a-swapped-range')}.md`;
+        let defect = adversarialDefect;
+        artifacts.write({
+          id: adversarialArtifact.id,
+          basePath,
+          schema: 'defect',
+          data: (defect = routeDefect(
+            defect,
+            { to: 'implement', taskId: 'T-fix-clamp' },
+            'a real implementation bug, not a design assumption',
+          )),
+          producedBy: adversarialArtifact.producedBy,
+          tracesTo: defect.tracesTo,
+        });
+        artifacts.write({
+          id: adversarialArtifact.id,
+          basePath,
+          schema: 'defect',
+          data: (defect = recordFix(defect, {
+            ref: 'abc1234',
+            summary: 'clamp refuses min > max again',
+          })),
+          producedBy: adversarialArtifact.producedBy,
+          tracesTo: defect.tracesTo,
+        });
+        artifacts.write({
+          id: adversarialArtifact.id,
+          basePath,
+          schema: 'defect',
+          data: (defect = retestDefect(defect, {
+            passed: true,
+            detail: 'refuses-a-swapped-range now passes against the fix',
+          })),
+          producedBy: adversarialArtifact.producedBy,
+          tracesTo: defect.tracesTo,
+        });
+
+        // Every version read back off disk, not carried over in memory —
+        // the store's own history, not this test's.
+        expect(defectSchema.parse(artifacts.read(basePath, 1).data).status).toBe('open');
+        expect(defectSchema.parse(artifacts.read(basePath, 2).data).status).toBe(
+          'routed',
+        );
+        expect(defectSchema.parse(artifacts.read(basePath, 3).data).status).toBe(
+          'fix-pending',
+        );
+        const verified = defectSchema.parse(artifacts.read(basePath, 4).data);
+        expect(verified.status).toBe('verified');
+        expect(verified.tracesTo).toStrictEqual(['FUN-CLAMP']);
+      } finally {
+        db.close();
+      }
+    },
+    20_000,
+  );
 });

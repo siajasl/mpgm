@@ -17,6 +17,7 @@ import {
   type CliContext,
   type CommandResult,
 } from './commands.js';
+import { defectSeverities, type DefectSeverity } from '../test/defect.js';
 
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
@@ -52,10 +53,12 @@ export type Verb = (typeof VERBS)[number];
 export const USAGE = `mpgm — agentic SDLC harness
 
   mpgm run <phase> [--run <id>] [--repo <owner/name>] [--ref <ref>]
-    [--test-project-dir <path>]        execute a phase and present its gate
+    [--test-project-dir <path>] [--defect-severity <critical|high|medium|low>]
+                                        execute a phase and present its gate
     --repo/--ref are what an 'nfr' node's test.nfr measurements report against;
     --test-project-dir is where a 'suite' node runs its generated tests, and is
-    never defaulted — the cases are agent-authored code (TST-4)
+    never defaulted — the cases are agent-authored code (TST-4); --defect-severity
+    is what a filed defect is given — neither producer carries one of its own (T4.3.4)
   mpgm status [--run <id>] [--metrics] [--rates]
     folded state of a run, with cost/tokens/latency/retry/success per phase, role and run and
     harness overhead against NFR-3's 10% threshold (context assembly only, merged over
@@ -155,10 +158,23 @@ export async function runCli(
       const repo = optional('--repo', flags.repo);
       const ref = optional('--ref', flags.ref);
       const testProjectDir = optional('--test-project-dir', flags['test-project-dir']);
+      const defectSeverityFlag = optional('--defect-severity', flags['defect-severity']);
+      if (
+        defectSeverityFlag !== undefined &&
+        !defectSeverities.includes(defectSeverityFlag as DefectSeverity)
+      ) {
+        throw new Error(
+          `run: --defect-severity must be one of ${defectSeverities.join(', ')}, got ` +
+            `'${defectSeverityFlag}'\n\n${USAGE}`,
+        );
+      }
       return run(context, runId, require('a phase name', positional[0]), {
         ...(repo === undefined ? {} : { repo }),
         ...(ref === undefined ? {} : { ref }),
         ...(testProjectDir === undefined ? {} : { testProjectDir }),
+        ...(defectSeverityFlag === undefined
+          ? {}
+          : { defectSeverity: defectSeverityFlag as DefectSeverity }),
       });
     }
 
