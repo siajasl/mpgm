@@ -1,7 +1,9 @@
 import type { Artifact, ArtifactStore, Provenance } from '../artifact/store.js';
 import type { AdversarialCaseResult, AdversarialVerdict } from './adversarial.js';
 import {
+  defectSchema,
   fileDefect,
+  retestDefect,
   type Defect,
   type DefectSeverity,
   type FileDefectOptions,
@@ -28,8 +30,37 @@ import type { NfrCoverageRow } from './nfr.js';
  * directly, once per failure, and writes each straight to the store at a
  * `basePath` this module derives from the finding's own id — outside
  * `step.produces` entirely, under `artifacts/defect/`, which is the one path
- * `mpgm status --rates` already reads a filed defect back from
- * (`src/cli/commands.ts`, `src/dashboard/server.ts`).
+ * `mpgm status --rates` reads a filed defect back from (`src/cli/commands.ts`,
+ * `src/dashboard/server.ts`) — that path existing is not the same claim as
+ * "so filing here feeds the escaped-defect rate", and it does not, on two
+ * separate counts that a run of `phases/test.yaml` hits every time:
+ *
+ * First, `computeEscapedDefectRate` (`src/state/escaped-defect-rate.ts`)
+ * divides by the run's own `ChangeMerged` events, and a Test phase run
+ * files defects but merges nothing — it emits none. The rate for that run
+ * reads `null` regardless of what got filed; it only becomes readable for a
+ * run that both merges a task and files a defect against it, and the merge
+ * has to be datable at all (T4.2.7) before "did the merge precede the
+ * filing" can be answered.
+ *
+ * Second, even once some other run's merges give the division a denominator,
+ * every defect this module files is itself undated, permanently, by how it
+ * is filed rather than by anything about that later run. `filedAt`
+ * (`escaped-defect-rate.ts`) dates a filing from a `TaskCompleted` — either
+ * one whose `artifactRefs` names the artifact, or, failing that, one whose
+ * `taskId`/`runId` match the lowest version's own `producedBy`. `nfr`/`suite`
+ * steps are kernel steps: `src/phase/runner.ts` calls `runNfrSuite`/
+ * `runAdversarialSuite` directly and never calls `SessionRunner.runTask`,
+ * which is the only call site in this codebase that appends `TaskCompleted`
+ * at all (`src/agent/runner.ts`). No `TaskCompleted` ever names a step id
+ * these steps use, by either route, so a defect filed here is exactly the
+ * "step that writes an artifact but runs no session at all" case
+ * `escaped-defect-rate.ts`'s own doc already names as `undated`'s live
+ * example (alongside a panel's tally) — not a new case this task adds, and
+ * not one this task closes either. It stays `undated` however the defect is
+ * later routed: nothing in `src/test/defect.ts`'s round trip appends a
+ * `TaskCompleted` either (module doc's closing section — routing is left to
+ * a caller this codebase does not yet have).
  *
  * Both producers hand back less than `fileDefect` needs, and this module
  * supplies the rest rather than assuming either one grows a field it does not
@@ -178,10 +209,29 @@ export interface FiledDefectRecord {
  * store at `artifacts/defect/<id>.md`, outside any playbook node's
  * `produces` (module doc above).
  *
- * A rerun of the same case or requirement reuses `id`, so the store versions
- * the same artifact (`ArtifactStore.write` always writes the next version)
- * rather than filing a second, unrelated-looking defect for what is really
- * the same finding recurring.
+ * A rerun of the same case or requirement reuses `id`, so a still-`open`
+ * defect versions forward (`ArtifactStore.write` always writes the next
+ * version) rather than filing a second, unrelated-looking defect for what is
+ * really the same finding recurring. Once the defect has moved past `open`,
+ * though, `id` alone is no longer enough to decide what a rerun means:
+ *
+ * - **`fix-pending`.** A route and a fix are already on record, and the case
+ *   or row failed again against them — the fix did not hold. This is exactly
+ *   {@link retestDefect}'s failing branch, so that is what runs, moving the
+ *   defect to `reopened` rather than discarding the route and fix underneath
+ *   it. `options.evidence.detail` — guaranteed non-empty by
+ *   `defectEvidenceSchema` — becomes the re-test's own `detail`.
+ * - **`routed`, `reopened` or `verified`.** None of these is a status
+ *   {@link retestDefect} accepts (only `fix-pending` is), and there is
+ *   nothing else in `src/test/defect.ts`'s lifecycle that means "still
+ *   failing" from here: `routed` has no fix yet to have failed, `reopened`
+ *   already records this same failure, and `verified` closed on a fix this
+ *   function was never asked to re-open. Writing a fresh `fileDefect` result
+ *   over any of them would silently reset the defect to `open`, discarding
+ *   whatever route and fix already got recorded — precisely the edge-skip
+ *   the lifecycle union in `src/test/defect.ts` exists to make
+ *   unrepresentable (module doc there). So this function leaves the existing
+ *   version untouched and hands it back instead of writing anything.
  */
 export function fileAndWriteDefect(
   artifacts: ArtifactStore,
@@ -189,10 +239,36 @@ export function fileAndWriteDefect(
   options: FileDefectOptions,
   producedBy: Provenance,
 ): FiledDefectRecord {
+  const basePath = `artifacts/defect/${id}.md`;
+  const latest = artifacts.latestVersion(basePath);
+  if (latest > 0) {
+    const existingArtifact = artifacts.read(basePath, latest);
+    const parsedExisting = defectSchema.safeParse(existingArtifact.data);
+    if (parsedExisting.success && parsedExisting.data.status !== 'open') {
+      const existingDefect = parsedExisting.data;
+      if (existingDefect.status === 'fix-pending') {
+        const reopened = retestDefect(existingDefect, {
+          passed: false,
+          detail: options.evidence.detail,
+        });
+        const artifact = artifacts.write({
+          id,
+          basePath,
+          schema: 'defect',
+          data: reopened,
+          producedBy,
+          tracesTo: reopened.tracesTo,
+        });
+        return { artifact, defect: reopened };
+      }
+      return { artifact: existingArtifact, defect: existingDefect };
+    }
+  }
+
   const defect = fileDefect(options);
   const artifact = artifacts.write({
     id,
-    basePath: `artifacts/defect/${id}.md`,
+    basePath,
     schema: 'defect',
     data: defect,
     producedBy,
@@ -207,7 +283,10 @@ export function fileAndWriteDefect(
  * `routeDefect` (`src/test/defect.ts`) needs a judgement call — "does this
  * invalidate a design assumption" — that ORC-1 hands to a person or an agent,
  * never to an inference over the evidence this module just filed. This
- * module produces `open` defects only; the caller that decides `implement`
+ * module only ever produces `open` or `reopened` defects — `reopened` when a
+ * rerun finds the same case or row still failing against a route and fix
+ * already on record (`fileAndWriteDefect`'s own doc above) — and never
+ * decides where either goes next; the caller that decides `implement`
  * vs. `design` and calls `routeDefect` is either an operator (the same class
  * of call as `mpgm approve`/`mpgm reopen`) or a future triage role reading
  * the filed artifact, and either way it runs after this one, over the

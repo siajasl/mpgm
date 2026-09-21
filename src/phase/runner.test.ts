@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { OutputSchemaRegistry } from '../agent/output-registry.js';
 import { SessionRunner } from '../agent/runner.js';
@@ -999,6 +999,35 @@ gate:
       artifact: coverage
 `;
 
+  /**
+   * No `nfr`/`suite` node at all — a plain session step, the negative case
+   * `GateEvidence.defects` needs (T4.3.4): a playbook that never had a way to
+   * file anything this run leaves the field `undefined`, not `[]`.
+   */
+  const NO_DEFECT_SOURCE_PLAYBOOK = `
+phase: test
+description: a plain session step, no nfr/suite node
+artifacts:
+  scope-doc:
+    schema: scope
+    path: artifacts/scope-doc.md
+    description: a plain session output, never an nfr/suite step
+tasks:
+  - id: scope-nfrs
+    role: nfr-scoper
+    description: state the quantified NFRs to measure
+    prompt: MARK-NFR list the quantified requirements
+    produces: scope-doc
+gate:
+  id: test-gate
+  description: scope-doc exists
+  criteria:
+    - id: c1
+      kind: artifact-exists
+      description: scope-doc exists
+      artifact: scope-doc
+`;
+
   const CLAMP_SOURCE = `
 export function clamp(value, min, max) {
   if (min > max) {
@@ -1345,7 +1374,11 @@ export function clamp(value, min, max) {
       'and the round trip from there reads back off disk (T4.3.4)',
     async () => {
       const { db, common, projectDir } = testHarness();
-      const { artifacts } = common;
+      const { artifacts, gates } = common;
+      // Spied rather than inferred from the packet: `ApprovalPacket` does not
+      // expose the `GateEvidence` it was built from, so the only way to check
+      // what the gate manager actually received is to intercept the call.
+      const presentSpy = vi.spyOn(gates, 'present');
       // The planted defect: `clamp` no longer refuses a swapped range, so
       // `refuses-a-swapped-range` fails against the real subject the way
       // `split.mjs`'s planted rounding defect does in `adversarial.test.ts`.
@@ -1411,10 +1444,16 @@ export function clamp(value, min, max) {
         expect(nfrDefect.evidence.detail).toBe('measured by k6');
 
         // `no-open-defects` is not a criterion of TEST_PLAYBOOK's own gate
-        // (only `c1`/`c2`, both `artifact-exists`) — but the evidence the
-        // gate manager was actually handed carries both filed defects, which
-        // is the T4.3.4 gap `phases/test.yaml`'s own gate description named.
-        expect(result.outcome.status === 'gate-presented').toBe(true);
+        // (only `c1`/`c2`, both `artifact-exists`) — so the only way to see
+        // that the T4.3.4 gap `phases/test.yaml`'s own gate description named
+        // is actually closed is to check what `present` was handed directly:
+        // an explicit `defects` array (not `undefined`) naming both filings.
+        expect(presentSpy).toHaveBeenCalledTimes(1);
+        const evidence = presentSpy.mock.calls[0]?.[2];
+        expect(evidence?.defects).toBeDefined();
+        expect(
+          evidence?.defects?.map((defect) => defect.evidence.caseId).sort(),
+        ).toStrictEqual(['PERF-2', 'refuses-a-swapped-range'].sort());
 
         // The round trip from here is a caller's judgement call (ORC-1), not
         // this module's — driven directly here the way an operator or a
@@ -1477,5 +1516,33 @@ export function clamp(value, min, max) {
       }
     },
     20_000,
+  );
+
+  it(
+    'leaves GateEvidence.defects undefined for a playbook with no nfr/suite node ' +
+      '(T4.3.4)',
+    async () => {
+      const { db, common } = testHarness();
+      const { gates } = common;
+      const presentSpy = vi.spyOn(gates, 'present');
+
+      try {
+        const result = await runPhase({
+          ...common,
+          playbook: parsePlaybook('test.yaml', NO_DEFECT_SOURCE_PLAYBOOK),
+        });
+
+        expect(result.outcome.status).toBe('gate-presented');
+        expect(presentSpy).toHaveBeenCalledTimes(1);
+        const evidence = presentSpy.mock.calls[0]?.[2];
+        // Not `[]`: `[]` means a source was consulted and found nothing,
+        // `undefined` means no source was wired at all — this playbook never
+        // declared an `nfr`/`suite` node, so it is the latter
+        // (`GateEvidence.defects`'s own doc, `src/gate/manager.ts`).
+        expect(evidence?.defects).toBeUndefined();
+      } finally {
+        db.close();
+      }
+    },
   );
 });

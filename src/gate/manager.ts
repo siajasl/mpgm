@@ -69,13 +69,13 @@ export interface GateEvidence {
    * criterion reports **unmet**, naming the gap, exactly as `traces-resolve`
    * reports unmet when no trace index is wired. An explicit `[]` means a
    * source was consulted and found nothing, and the criterion reports met.
-   * `runPhase` (`src/phase/runner.ts`) does not populate this field today — a
-   * filed `Defect` lives under `artifacts/defect/`, written outside
-   * `step.produces`, and nothing yet reads that directory back before
-   * presenting the gate (T4.3.4). So on every live `mpgm run test` today this
-   * field is `undefined` and `no-open-defects` reports unmet, not met — the
-   * gap is disclosed on the packet an operator sees rather than hidden behind
-   * an affirmative that nothing checked.
+   * `runPhase` (`src/phase/runner.ts`) populates this field with every
+   * `Defect` filed this run whenever the playbook declares at least one
+   * `nfr`/`suite` node (T4.3.4) — filed straight to `artifacts/defect/`,
+   * outside `step.produces`, and handed to `present` alongside the rest of
+   * the evidence rather than read back from disk. A playbook with neither
+   * node kind never had a way to file anything this run, so this field stays
+   * `undefined` for it, the same disclosed-gap reading it always had.
    */
   readonly defects?: readonly Defect[];
 }

@@ -719,6 +719,16 @@ export {
   retestDefect,
   routeDefect,
 } from './test/defect.js';
+export type { DefectToFile, FiledDefectRecord } from './test/defect-filing.js';
+export {
+  adversarialDefectId,
+  adversarialDefectOptions,
+  defectsFromAdversarialVerdict,
+  defectsFromNfrCoverage,
+  fileAndWriteDefect,
+  nfrDefectId,
+  nfrDefectOptions,
+} from './test/defect-filing.js';
 export type {
   DashboardGate,
   DashboardRun,

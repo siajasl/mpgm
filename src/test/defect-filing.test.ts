@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ArtifactStore } from '../artifact/store.js';
 import { projectArtifactSchemas } from '../schemas.js';
 import type { AdversarialCaseResult, AdversarialVerdict } from './adversarial.js';
-import { defectSchema } from './defect.js';
+import { defectSchema, recordFix, routeDefect } from './defect.js';
 import {
   adversarialDefectId,
   adversarialDefectOptions,
@@ -245,4 +245,135 @@ describe('fileAndWriteDefect, through a real store (T4.3.4)', () => {
     expect(second.artifact.version).toBe(2);
     expect(second.artifact.id).toBe(entry.id);
   });
+
+  it(
+    'reopens rather than refiles when a rerun still fails a defect already ' +
+      'fix-pending, so the route and fix stay on record',
+    () => {
+      const artifacts = store();
+      const entries = defectsFromAdversarialVerdict(
+        { rows: [failedCase()], defects: [failedCase()], notReported: [], clean: false },
+        'high',
+      );
+      const entry = entries[0];
+      expect(entry).toBeDefined();
+      if (entry === undefined) {
+        throw new Error('unreachable: asserted above');
+      }
+      const producedBy = {
+        task: 'run-suite',
+        role: 'kernel',
+        model: '(none)',
+        runId: 'run-1',
+      };
+
+      // v1: filed. v2/v3: routed and a (bad) fix recorded, by hand — the way
+      // an operator or a future triage role would, over the artifact this
+      // module already filed (module doc, `fileAndWriteDefect`).
+      const filed = fileAndWriteDefect(artifacts, entry.id, entry.file, producedBy);
+      const basePath = `artifacts/defect/${entry.id}.md`;
+      let defect = routeDefect(
+        filed.defect,
+        { to: 'implement', taskId: 'T-fix' },
+        'a real bug',
+      );
+      artifacts.write({
+        id: entry.id,
+        basePath,
+        schema: 'defect',
+        data: defect,
+        producedBy: filed.artifact.producedBy,
+        tracesTo: defect.tracesTo,
+      });
+      defect = recordFix(defect, { ref: 'abc1234', summary: 'attempted a fix' });
+      artifacts.write({
+        id: entry.id,
+        basePath,
+        schema: 'defect',
+        data: defect,
+        producedBy: filed.artifact.producedBy,
+        tracesTo: defect.tracesTo,
+      });
+
+      // The case fails again — the fix did not hold. A naive re-file would
+      // overwrite v3 (`fix-pending`, route and fix on record) with a fresh
+      // `open` v4, discarding both (CONV-6: this assertion fails against
+      // that naive version).
+      const reopened = fileAndWriteDefect(artifacts, entry.id, entry.file, {
+        ...producedBy,
+        runId: 'run-2',
+      });
+
+      expect(reopened.artifact.version).toBe(4);
+      expect(reopened.defect.status).toBe('reopened');
+      if (reopened.defect.status !== 'reopened') {
+        throw new Error('unreachable: asserted above');
+      }
+      expect(reopened.defect.route).toStrictEqual({ to: 'implement', taskId: 'T-fix' });
+      expect(reopened.defect.fix).toStrictEqual({
+        ref: 'abc1234',
+        summary: 'attempted a fix',
+      });
+      expect(reopened.defect.failedAttempts).toBe(1);
+
+      // Every earlier version is untouched on disk.
+      expect(defectSchema.parse(artifacts.read(basePath, 1).data).status).toBe('open');
+      expect(defectSchema.parse(artifacts.read(basePath, 2).data).status).toBe('routed');
+      expect(defectSchema.parse(artifacts.read(basePath, 3).data).status).toBe(
+        'fix-pending',
+      );
+    },
+  );
+
+  it(
+    'leaves a routed (not yet fixed) defect untouched on a rerun, rather ' +
+      'than resetting it to open',
+    () => {
+      const artifacts = store();
+      const entries = defectsFromAdversarialVerdict(
+        { rows: [failedCase()], defects: [failedCase()], notReported: [], clean: false },
+        'high',
+      );
+      const entry = entries[0];
+      expect(entry).toBeDefined();
+      if (entry === undefined) {
+        throw new Error('unreachable: asserted above');
+      }
+      const producedBy = {
+        task: 'run-suite',
+        role: 'kernel',
+        model: '(none)',
+        runId: 'run-1',
+      };
+
+      const filed = fileAndWriteDefect(artifacts, entry.id, entry.file, producedBy);
+      const basePath = `artifacts/defect/${entry.id}.md`;
+      const routed = routeDefect(
+        filed.defect,
+        { to: 'implement', taskId: 'T-fix' },
+        'a real bug',
+      );
+      artifacts.write({
+        id: entry.id,
+        basePath,
+        schema: 'defect',
+        data: routed,
+        producedBy: filed.artifact.producedBy,
+        tracesTo: routed.tracesTo,
+      });
+
+      // No fix recorded yet — nothing for `retestDefect` to have failed, so
+      // a rerun finding the same failure leaves the routed defect exactly as
+      // it was (CONV-6: this fails against a naive version that writes a
+      // fresh `open` v3 over it).
+      const again = fileAndWriteDefect(artifacts, entry.id, entry.file, {
+        ...producedBy,
+        runId: 'run-2',
+      });
+
+      expect(again.artifact.version).toBe(2);
+      expect(again.defect.status).toBe('routed');
+      expect(artifacts.latestVersion(basePath)).toBe(2);
+    },
+  );
 });
