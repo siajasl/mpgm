@@ -51,7 +51,11 @@ export type Verb = (typeof VERBS)[number];
 
 export const USAGE = `mpgm — agentic SDLC harness
 
-  mpgm run <phase> [--run <id>]        execute a phase and present its gate
+  mpgm run <phase> [--run <id>] [--repo <owner/name>] [--ref <ref>]
+    [--test-project-dir <path>]        execute a phase and present its gate
+    --repo/--ref are what an 'nfr' node's test.nfr measurements report against;
+    --test-project-dir is where a 'suite' node runs its generated tests, and is
+    never defaulted — the cases are agent-authored code (TST-4)
   mpgm status [--run <id>] [--metrics] [--rates]
     folded state of a run, with cost/tokens/latency/retry/success per phase, role and run and
     harness overhead against NFR-3's 10% threshold (context assembly only, merged over
@@ -144,8 +148,19 @@ export async function runCli(
   };
 
   switch (verb) {
-    case 'run':
-      return run(context, runId, require('a phase name', positional[0]));
+    case 'run': {
+      // Passed through only where given: `runPhase` blocks the step that
+      // needed one rather than measuring a guessed repo or running generated
+      // tests somewhere nobody named (T4.3.2).
+      const repo = optional('--repo', flags.repo);
+      const ref = optional('--ref', flags.ref);
+      const testProjectDir = optional('--test-project-dir', flags['test-project-dir']);
+      return run(context, runId, require('a phase name', positional[0]), {
+        ...(repo === undefined ? {} : { repo }),
+        ...(ref === undefined ? {} : { ref }),
+        ...(testProjectDir === undefined ? {} : { testProjectDir }),
+      });
+    }
 
     case 'status':
       return status(context, flags.run, {

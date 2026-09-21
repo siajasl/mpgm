@@ -1,7 +1,7 @@
 # PLAN — mpgm Build Plan
 
 **Status:** v0.23 — T4.3.9 added: a task branch conflicting with the trunk ends the run, though merge.ts calls the conflict an agent's task, and a filing commit and a task's own document bump always land in the same two header lines · **Owner:** macg@enthropic.io · **Last updated:** 2026-09-17
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.35. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.37. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 

@@ -140,6 +140,25 @@ function checkGate(
               `kernel, not asserted by an agent. Use kind 'vote-carried'.`,
           );
         }
+        if (nodeKinds.get(criterion.fromTask) === 'nfr') {
+          // Coverage rows are what `test.nfr` reported, not something a
+          // session attested to — the same reasoning as the panel case above.
+          throw new PlaybookLoadError(
+            sourcePath,
+            `gate criterion '${criterion.id}' reads '${criterion.fromTask}' as an ` +
+              `agent assertion, but it is an 'nfr' node: its result is measured by ` +
+              `the bound 'test.nfr' capability, not asserted by an agent.`,
+          );
+        }
+        if (nodeKinds.get(criterion.fromTask) === 'suite') {
+          // A verdict is folded from a test run, not attested to by a session.
+          throw new PlaybookLoadError(
+            sourcePath,
+            `gate criterion '${criterion.id}' reads '${criterion.fromTask}' as an ` +
+              `agent assertion, but it is a 'suite' node: its result is a verdict ` +
+              `folded from a test run, not asserted by an agent.`,
+          );
+        }
         break;
 
       case 'traces-resolve':
