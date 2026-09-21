@@ -430,7 +430,7 @@ measurements:
     ).rejects.toThrow(/cannot establish which commit .* rev-parse HEAD' failed/s);
   });
 
-  it('scrubs the measurement command\'s environment by default, so a secret in the kernel\'s own environment is not visible to it (CONV-4)', async () => {
+  it("scrubs the measurement command's environment by default, so a secret in the kernel's own environment is not visible to it (CONV-4)", async () => {
     // The measurement command is repo-declared, the same trust boundary
     // nodeTestExecutor scrubs for its case bodies. This asserts the same
     // default here: a variable the kernel process holds must not be readable
