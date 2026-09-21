@@ -430,6 +430,71 @@ measurements:
     ).rejects.toThrow(/cannot establish which commit .* rev-parse HEAD' failed/s);
   });
 
+  it('scrubs the measurement command\'s environment by default, so a secret in the kernel\'s own environment is not visible to it (CONV-4)', async () => {
+    // The measurement command is repo-declared, the same trust boundary
+    // nodeTestExecutor scrubs for its case bodies. This asserts the same
+    // default here: a variable the kernel process holds must not be readable
+    // by the child unless a caller widened `env` explicitly.
+    const { root, ref } = project(`
+measurements:
+  - requirement: PERF-1
+    metric: leak-check
+    unit: flag
+    direction: at-most
+    command: node
+    args: ['-e', 'console.log(process.env.MPGM_NFR_PROVIDER_TEST_SECRET ? 1 : 0)']
+`);
+    process.env.MPGM_NFR_PROVIDER_TEST_SECRET = 'leaked-token';
+    try {
+      const result = await new BoundContract(
+        testNfrContract,
+        commandNfrProvider({ root }),
+      ).invoke<{ measured: number }>('run', {
+        repo: 'siajasl/library-loans',
+        ref,
+        requirementId: 'PERF-1',
+        metric: 'leak-check',
+        value: 1,
+        unit: 'flag',
+        measuredBy: 'probe',
+      });
+
+      expect(result.measured).toBe(0);
+    } finally {
+      delete process.env.MPGM_NFR_PROVIDER_TEST_SECRET;
+    }
+  });
+
+  it('lets a caller widen the measurement environment explicitly, for a measurement that needs a credential', async () => {
+    const { root, ref } = project(`
+measurements:
+  - requirement: PERF-1
+    metric: leak-check
+    unit: flag
+    direction: at-most
+    command: node
+    args: ['-e', 'console.log(process.env.MPGM_NFR_PROVIDER_TEST_SECRET ? 1 : 0)']
+`);
+
+    const result = await new BoundContract(
+      testNfrContract,
+      commandNfrProvider({
+        root,
+        env: { ...process.env, MPGM_NFR_PROVIDER_TEST_SECRET: 'issued-on-purpose' },
+      }),
+    ).invoke<{ measured: number }>('run', {
+      repo: 'siajasl/library-loans',
+      ref,
+      requirementId: 'PERF-1',
+      metric: 'leak-check',
+      value: 1,
+      unit: 'flag',
+      measuredBy: 'probe',
+    });
+
+    expect(result.measured).toBe(1);
+  });
+
   it('records an uncommitted change in evidence rather than passing the tree off as the ref', async () => {
     // Not a refusal: a phase writes its own artifacts into the root as it
     // runs. But the row says the tree it measured was not the commit as

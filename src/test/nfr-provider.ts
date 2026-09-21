@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { parse as parseYaml, YAMLParseError } from 'yaml';
 import { z } from 'zod';
 import type { Provider } from '../contract/capability.js';
+import { testEnvironment } from './adversarial.js';
 import type { NfrRunInput, NfrRunOutput } from './nfr.js';
 
 /**
@@ -47,6 +48,25 @@ import type { NfrRunInput, NfrRunOutput } from './nfr.js';
  * opposite directions and that the provider is the thing that knows which, so
  * `direction` is declared per measurement and has no default (CONV-5: a
  * manifest cannot decline to say which it means).
+ *
+ * What the measurement child can read from the environment is a decision, not
+ * a default. `command`/`args` come from `test/nfr.yaml` in the repository
+ * being measured — the same self-hosting model as every other project this
+ * provider might run against, and a directory agent sessions write to. The
+ * sibling path in `./adversarial.ts` closes exactly this for `nodeTestExecutor`
+ * by scrubbing to {@link testEnvironment} rather than inheriting
+ * `process.env`, on the grounds that the broker's first layer of control is
+ * that a secret is not there to be read, and that `GITHUB_TOKEN` would
+ * otherwise be back within reach on a path the broker never sees (SAF-2).
+ * That reasoning is not specific to `node --test`: it holds for any
+ * repo-declared argv this kernel spawns, so `commandNfrProvider` scrubs the
+ * same way and defaults `env` to `testEnvironment()` too. A measurement that
+ * genuinely needs a credential — a k6 run against a staging endpoint behind
+ * auth, say — is not blocked by this: `CommandNfrProviderOptions.env` can be
+ * set explicitly by whatever constructs the provider (`mpgm run` does not,
+ * today), the same override `NodeTestExecutorOptions.env` offers its callers.
+ * What is refused is silent inheritance, not a credentialed measurement asked
+ * for by name (CONV-4).
  */
 
 export class NfrProviderError extends Error {}
@@ -142,6 +162,17 @@ export interface CommandNfrProviderOptions {
   readonly manifestPath?: string;
   /** Wall-clock bound on one measurement. */
   readonly timeoutMs?: number;
+  /**
+   * Environment for the measurement command. Defaults to
+   * {@link testEnvironment}, which keeps only what a spawned process needs to
+   * start — the manifest's `command`/`args` are declared by the repository
+   * being measured, the same trust boundary `nodeTestExecutor` scrubs for
+   * (see the module doc). Pass `process.env`, or a broker-scrubbed
+   * environment carrying the one credential a measurement legitimately needs,
+   * to widen it; nothing stops a caller doing that, and nothing should read
+   * the default as though it did.
+   */
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
 const run = promisify(execFile);
@@ -319,10 +350,15 @@ export function commandNfrProvider(options: CommandNfrProviderOptions): Provider
       const commandLine = [measurement.command, ...measurement.args].join(' ');
       let stdout: string;
       try {
+        // `env` is passed explicitly rather than left to `execFile`'s default
+        // inheritance, for the reason the module doc gives: the command and
+        // its argv are repo-declared, and an omitted option here is the leak
+        // (CONV-4).
         ({ stdout } = await run(measurement.command, [...measurement.args], {
           cwd: options.root,
           timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           encoding: 'utf8',
+          env: options.env ?? testEnvironment(),
         }));
       } catch (cause) {
         const detail = cause instanceof Error ? cause.message : String(cause);

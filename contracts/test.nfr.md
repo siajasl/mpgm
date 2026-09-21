@@ -197,6 +197,25 @@ artifact at all, which is the point. `nfrCoverage`'s `not-run` row is what a
 *completed* run says about a requirement nothing reported on; it is not a
 softer landing these refusals fall into.
 
+**What the measurement command can read from the environment is decided, not
+left to inheritance.** `command`/`args` come from `test/nfr.yaml` in the
+repository being measured — a directory agent sessions write to, the same
+trust boundary the adversarial suite's `nodeTestExecutor` closes by scrubbing
+its child's environment to an allowlist (`testEnvironment`) rather than
+passing `process.env`, on the grounds that a secret is not there to be read
+and `GITHUB_TOKEN` would otherwise be back within reach on a path the broker
+never sees (SAF-2). `commandNfrProvider` runs an arbitrary repo-declared argv
+the same way `nodeTestExecutor` runs one, so it scrubs the same way:
+`CommandNfrProviderOptions.env` defaults to `testEnvironment()` rather than
+inheriting the kernel's own environment (CONV-4). A measurement that
+legitimately needs a credential — a k6 run against a staging endpoint behind
+auth — is not blocked by this default: a caller constructing the provider can
+pass `env` explicitly, the same override `nodeTestExecutor` offers. `mpgm run`
+does not do so today, so a manifest command that needs a token currently has
+none; that gap is named here rather than closed by guessing at a widened
+default, the way `suite`'s required `testProjectDir`
+(`src/phase/runner.ts`) names its own precondition rather than assuming one.
+
 ## Consumers
 
 - [`src/test/nfr.ts`](../src/test/nfr.ts) — `runNfrSuite` (the orchestration:
