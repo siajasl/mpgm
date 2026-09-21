@@ -473,6 +473,31 @@ describe('the no-open-defects criterion (TST-5)', () => {
     tracesTo: ['LOAN-1'],
   });
 
+  it('is unmet when no defect source was wired at all — undefined is not "none filed"', () => {
+    // This is the shape `runPhase` actually hands the gate today: it never
+    // sets `defects` on `GateEvidence` (T4.3.4 is what will). Reporting met
+    // here, the way an empty array does, would assert "no open defects" on
+    // a run where nothing looked — CONV-4 and the doctrine this file already
+    // states for agent-assertion and traces-resolve.
+    const { db, log, projector } = harness();
+    try {
+      const packet = new GateManager({ log, projector }).present(
+        'run-1',
+        defectPlaybook,
+        { artifacts: {}, outputs: {} },
+      );
+
+      expect(packet.criteria[0]).toMatchObject({
+        id: 'no-open-defects',
+        met: false,
+      });
+      expect(packet.allMet).toBe(false);
+      expect(packet.criteria[0]?.detail).toMatch(/no defect source is wired/);
+    } finally {
+      db.close();
+    }
+  });
+
   it('is met when no defect was filed at all', () => {
     const { db, log, projector } = harness();
     try {

@@ -595,6 +595,11 @@ describe('the test playbook (T4.3.3)', () => {
       (entry) => entry.id === 'attack-subject',
     );
 
+    // Assert the step is still there before asserting a property of it is
+    // undefined — otherwise a renamed or removed step would make `find`
+    // return `undefined` and the optional chain below would report the same
+    // "undefined" result for the wrong reason, passing regardless.
+    expect(attackSubject).toBeDefined();
     expect(attackSubject?.produces).toBeUndefined();
   });
 

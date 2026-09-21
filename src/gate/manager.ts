@@ -64,14 +64,18 @@ export interface GateEvidence {
    * Defects filed against this run, for a `no-open-defects` criterion
    * (TST-5).
    *
-   * Optional and defaulting to none: most gates carry no such criterion, and
+   * Optional, but the two states it distinguishes are not interchangeable:
+   * `undefined` means no defect source was wired for this evaluation and the
+   * criterion reports **unmet**, naming the gap, exactly as `traces-resolve`
+   * reports unmet when no trace index is wired. An explicit `[]` means a
+   * source was consulted and found nothing, and the criterion reports met.
    * `runPhase` (`src/phase/runner.ts`) does not populate this field today — a
    * filed `Defect` lives under `artifacts/defect/`, written outside
    * `step.produces`, and nothing yet reads that directory back before
-   * presenting the gate (T4.3.4). A caller that does have defects to hand
-   * over — today, a test constructing `GateEvidence` directly — supplies them
-   * here; `runPhase` supplying none is why `no-open-defects` is met on every
-   * live run until T4.3.4 lands, not evidence that no defect was filed.
+   * presenting the gate (T4.3.4). So on every live `mpgm run test` today this
+   * field is `undefined` and `no-open-defects` reports unmet, not met — the
+   * gap is disclosed on the packet an operator sees rather than hidden behind
+   * an affirmative that nothing checked.
    */
   readonly defects?: readonly Defect[];
 }
@@ -173,8 +177,22 @@ function evaluate(
   }
 
   if (criterion.kind === 'no-open-defects') {
-    const defects = evidence.defects ?? [];
-    const blocking = blocksGate(defects);
+    if (evidence.defects === undefined) {
+      // Unmet rather than met: an absent field means no defect source was
+      // wired for this run (T4.3.4), not that none were filed. Reporting met
+      // here would assert a fact nothing checked, which is exactly what the
+      // agent-assertion and traces-resolve criteria above refuse to do
+      // (CONV-4).
+      return {
+        id: criterion.id,
+        kind: criterion.kind,
+        description: criterion.description,
+        met: false,
+        detail:
+          'no defect source is wired for this run, so open defects could not be checked',
+      };
+    }
+    const blocking = blocksGate(evidence.defects);
     return {
       id: criterion.id,
       kind: criterion.kind,
@@ -182,9 +200,9 @@ function evaluate(
       met: blocking.length === 0,
       detail:
         blocking.length === 0
-          ? defects.length === 0
+          ? evidence.defects.length === 0
             ? 'no defects filed'
-            : `${String(defects.length)} defect(s) filed, none open at critical/high severity`
+            : `${String(evidence.defects.length)} defect(s) filed, none open at critical/high severity`
           : `${String(blocking.length)} open critical/high defect(s): ` +
             blocking.map((defect) => `${defect.title} (${defect.severity})`).join(', '),
     };
