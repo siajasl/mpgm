@@ -951,6 +951,61 @@ gate:
   };
 
   /**
+   * A below-threshold NFR whose own requirement id cannot become a defect
+   * path segment (a space, refused by `DEFECT_ID_SEGMENT`,
+   * `src/test/defect-filing.ts`) — the shape review round 3 of T4.3.4 found
+   * actually unguarded: `nfrScopeSchema`'s flat `requirements` array
+   * (`nfrRequirementSchema`, `id: z.string().min(1)`, `src/test/nfr.ts`) has
+   * no format constraint on `id` at all, unlike a real Scope's own
+   * `requirementSchema` (`/^[A-Z][A-Z0-9]{1,5}-[0-9]+$/`), which could never
+   * produce an id `DEFECT_ID_SEGMENT` refuses in the first place. This is the
+   * flat shape, not a Scope, so a measured row with an id like this reaches
+   * the filing call for real.
+   */
+  const ILL_FORMED_NFR_ID_SCOPE = {
+    summary: 'a below-threshold NFR whose id cannot be filed as a defect',
+    requirements: [
+      {
+        id: 'PERF 2',
+        metric: 'p99-latency',
+        // Over threshold, the same way PERF-2 above is: this row must
+        // actually reach the filing call, not merely parse.
+        value: 500,
+        unit: 'ms',
+        measuredBy: 'k6',
+      },
+    ],
+  };
+
+  const ILL_FORMED_NFR_ID_PLAYBOOK = `
+phase: test
+description: measure a below-threshold NFR whose id cannot become a defect path
+artifacts:
+  coverage:
+    schema: nfr-coverage
+    path: artifacts/coverage.md
+    description: nfr coverage
+tasks:
+  - id: scope-nfrs
+    role: flat-nfr-scoper
+    description: state the quantified NFRs to measure, in the flat shape
+    prompt: MARK-BAD-NFR-ID list the quantified requirements
+  - kind: nfr
+    id: measure
+    description: measure them against test.nfr
+    requirements: scope-nfrs
+    produces: coverage
+gate:
+  id: test-gate
+  description: coverage exists
+  criteria:
+    - id: c1
+      kind: artifact-exists
+      description: coverage exists
+      artifact: coverage
+`;
+
+  /**
    * A Scope that declares requirements but nothing quantified — the case an
    * all-or-nothing parse of the flat shape could never reach, and the one
    * that must not complete as a clean, zero-row coverage report.
@@ -1128,11 +1183,17 @@ export function clamp(value, min, max) {
     const provider: AgentSessionProvider = {
       run: (request: SessionRequest) => {
         invocations.push(request.prompt);
-        if (request.prompt.includes('MARK-NFR')) {
-          return Promise.resolve(scriptedSuccess(SCOPE));
-        }
+        // The more specific markers first: 'MARK-NFR' is a substring of
+        // 'MARK-NO-NFR' were it checked after, and of any 'MARK-NFR-*'
+        // variant, so checking it first would shadow them.
         if (request.prompt.includes('MARK-NO-NFR')) {
           return Promise.resolve(scriptedSuccess(FUNCTIONAL_ONLY_SCOPE));
+        }
+        if (request.prompt.includes('MARK-BAD-NFR-ID')) {
+          return Promise.resolve(scriptedSuccess(ILL_FORMED_NFR_ID_SCOPE));
+        }
+        if (request.prompt.includes('MARK-NFR')) {
+          return Promise.resolve(scriptedSuccess(SCOPE));
         }
         if (request.prompt.includes('MARK-SUITE')) {
           return Promise.resolve(scriptedSuccess(SUITE));
@@ -1154,6 +1215,11 @@ export function clamp(value, min, max) {
       // (`nfrRequirementsSourceOf`, src/phase/runner.ts).
       parseRole('nfr-scoper.md', roleFile('nfr-scoper', 'scope')),
       parseRole('suite-writer.md', roleFile('suite-writer', 'adversarial-suite')),
+      // The flat `nfr-scope` shape (`nfrScopeSchema`) a real Scope can never
+      // produce (its own `id` is regex-constrained) but this schema does not
+      // constrain at all beyond `.min(1)` — the shape review round 3 named
+      // as actually unguarded (`ILL_FORMED_NFR_ID_SCOPE` above).
+      parseRole('flat-nfr-scoper.md', roleFile('flat-nfr-scoper', 'nfr-scope')),
     ]);
 
     const registry = new CapabilityRegistry();
@@ -1368,6 +1434,38 @@ export function clamp(value, min, max) {
       db.close();
     }
   });
+
+  it(
+    'blocks an nfr step rather than crashing when a below-threshold row cannot ' +
+      'be filed as a defect (T4.3.4 rework, review round 3)',
+    async () => {
+      const { db, common } = testHarness();
+      try {
+        const result = await runPhase({
+          ...common,
+          playbook: parsePlaybook('test.yaml', ILL_FORMED_NFR_ID_PLAYBOOK),
+        });
+
+        // Not an uncaught rejection escaping `runNfr`'s own try/catch: the
+        // scheduler (`src/orchestrator/scheduler.ts`) already turns a
+        // throwing step runner into a generic 'step runner threw: ...'
+        // blocked reason, so the assertion that actually distinguishes
+        // 'caught here' from 'caught two layers up' is that the reason is
+        // exactly `DefectIdError`'s own message — anchored, not merely
+        // present somewhere inside a wrapping one.
+        expect(result.outcome.status).toBe('blocked');
+        expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+          /^cannot file a defect for quantified NFR 'PERF 2'/,
+        );
+        // The coverage artifact this step already wrote before filing was
+        // attempted is still on disk — blocking here is a step outcome over
+        // work already done, not a crash that leaves nothing recorded.
+        expect(result.produced.coverage).toBeDefined();
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it(
     'files a Defect for a failed case and a below-threshold NFR, outside produces, ' +

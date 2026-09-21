@@ -713,13 +713,28 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     // The kernel measured it, so the kernel is the producer of record — the
     // same reasoning `runTally` already gives its own written artifact.
     writeArtifact(step, 'kernel', '(none)', rows);
-    // A below-threshold row is TST-5's second producer (T4.3.4) — filed
-    // outside `produces`, under `artifacts/defect/`, never folded into the
-    // one `nfr-coverage` artifact just written above.
-    fileDefects(step, defectsFromNfrCoverage(rows, options.defectSeverity));
-    // ...and a row that now meets its threshold closes the defect a previous
-    // run filed against it, once a fix is on record for it (TST-5's re-test).
-    verifyDefects(step, defectsToVerifyFromNfrCoverage(rows));
+    try {
+      // A below-threshold row is TST-5's second producer (T4.3.4) — filed
+      // outside `produces`, under `artifacts/defect/`, never folded into the
+      // one `nfr-coverage` artifact just written above.
+      fileDefects(step, defectsFromNfrCoverage(rows, options.defectSeverity));
+      // ...and a row that now meets its threshold closes the defect a
+      // previous run filed against it, once a fix is on record for it
+      // (TST-5's re-test).
+      verifyDefects(step, defectsToVerifyFromNfrCoverage(rows));
+    } catch (cause) {
+      // `fileAndWriteDefect`/`verifyFixedDefect` refuse a requirement id that
+      // cannot become a path segment (`safeSegment`, `defect-filing.ts`) by
+      // throwing rather than filing — reachable here because
+      // `nfrRequirementSourceSchema`'s flat shape only requires `id.min(1)`.
+      // That refusal is meant to block the step the same way every other
+      // failure above does, not escape `runPhase` after the coverage
+      // artifact this function already wrote.
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
     return { status: 'completed', value: rows };
   };
 
@@ -757,13 +772,24 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
 
     record(step, verdict);
     writeArtifact(step, 'kernel', '(none)', verdict);
-    // A failed case is TST-5's first producer (T4.3.4) — filed outside
-    // `produces`, under `artifacts/defect/`, one per failure rather than
-    // folded into the one `adversarial-verdict` artifact just written above.
-    fileDefects(step, defectsFromAdversarialVerdict(verdict, options.defectSeverity));
-    // ...and a case that passes again closes the defect a previous run filed
-    // against it, once a fix is on record for it (TST-5's re-test).
-    verifyDefects(step, defectsToVerifyFromAdversarialVerdict(verdict));
+    try {
+      // A failed case is TST-5's first producer (T4.3.4) — filed outside
+      // `produces`, under `artifacts/defect/`, one per failure rather than
+      // folded into the one `adversarial-verdict` artifact just written
+      // above.
+      fileDefects(step, defectsFromAdversarialVerdict(verdict, options.defectSeverity));
+      // ...and a case that passes again closes the defect a previous run
+      // filed against it, once a fix is on record for it (TST-5's re-test).
+      verifyDefects(step, defectsToVerifyFromAdversarialVerdict(verdict));
+    } catch (cause) {
+      // Same reasoning as `runNfr`'s guard above: a refusal from the filing
+      // module blocks this step rather than escaping `runPhase` after the
+      // verdict artifact this function already wrote.
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
     return { status: 'completed', value: verdict };
   };
 

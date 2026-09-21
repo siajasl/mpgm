@@ -2083,4 +2083,58 @@ describe('mpgm defect (T4.3.4)', () => {
     // CONV-3: the path it looked at, not just "not found".
     expect(writes.join('\n')).toContain('artifacts/defect/defect-nope.md');
   });
+
+  // review round 3: `main.ts` now refuses a missing `--reason`/`--summary`
+  // before `defect` (this function) is ever called, but a caller that skips
+  // that layer — a direct call, the way these tests all make one — must not
+  // be able to reach `routeDefect`/`recordFix` with a reason or summary that
+  // says nothing (CONV-4, HIL-5). These drive `defect` itself, not the CLI's
+  // own `require()`.
+  it('refuses to route with no reason, writing no new version', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+    const id = filedAt(root);
+
+    const result = defect(newContext(root, writes), 'route', id, {
+      by: 'operator',
+      to: 'implement',
+      taskId: 'T9.9.9',
+      // reason omitted
+    });
+
+    expect(result.ok).toBe(false);
+    expect(writes.join('\n')).toContain('--reason is required');
+    expect(
+      new ArtifactStore({ root, schemas: projectArtifactSchemas() }).latestVersion(
+        'artifacts/defect/defect-adversarial-zero-split-refused.md',
+      ),
+    ).toBe(1);
+  });
+
+  it('refuses to fix with no summary, writing no new version', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+    const id = filedAt(root);
+    const context = newContext(root, writes);
+    defect(context, 'route', id, {
+      by: 'operator',
+      to: 'implement',
+      taskId: 'T9.9.9',
+      reason: 'an implementation bug, not a design assumption',
+    });
+
+    const result = defect(context, 'fix', id, {
+      by: 'operator',
+      ref: 'abc1234',
+      // summary omitted
+    });
+
+    expect(result.ok).toBe(false);
+    expect(writes.join('\n')).toContain('--summary is required');
+    expect(
+      new ArtifactStore({ root, schemas: projectArtifactSchemas() }).latestVersion(
+        'artifacts/defect/defect-adversarial-zero-split-refused.md',
+      ),
+    ).toBe(2);
+  });
 });

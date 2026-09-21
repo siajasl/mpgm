@@ -1335,6 +1335,33 @@ try {
     producedBy: { task: 'attack', role: 'kernel', model: '(none)', runId: 'r1' },
   });
 
+  // A bare `defect route` with no `--reason` is refused before `defect` (the
+  // function) is ever reached — `routeDefect`'s own non-empty-reason check
+  // (HIL-5) exists to make routing auditable, and a CLI that defaulted the
+  // flag to '' and padded it with `(routed by ...)` would let that check
+  // pass with nothing true in it.
+  const defectNoReason = await call([
+    'defect',
+    'route',
+    demoDefectId,
+    '--to',
+    'implement',
+    '--task',
+    'T9.1.1',
+    '--by',
+    'macg',
+  ]).catch((cause) => ({ result: undefined, output: '', error: cause }));
+  check(
+    'defect route refuses a missing --reason, writing no new version',
+    defectNoReason.result === undefined &&
+      defectNoReason.error?.message.includes('--reason') &&
+      defectNoReason.error?.message.includes('is required') &&
+      new ArtifactStore({ root: workspace, schemas: projectArtifactSchemas() }).latestVersion(
+        `artifacts/defect/${demoDefectId}.md`,
+      ) === 1,
+    defectNoReason.error?.message,
+  );
+
   const defectRouted = await call([
     'defect',
     'route',
@@ -1354,6 +1381,32 @@ try {
       defectRouted.output.includes('demo-case') &&
       defectRouted.output.includes('routed'),
     defectRouted.output,
+  );
+
+  // Same shape, the other verb: a bare `defect fix` with no `--summary` is
+  // refused before `defectFixSchema`'s own non-empty check ever sees it.
+  const defectFixedRoutedVersion = new ArtifactStore({
+    root: workspace,
+    schemas: projectArtifactSchemas(),
+  }).latestVersion(`artifacts/defect/${demoDefectId}.md`);
+  const defectNoSummary = await call([
+    'defect',
+    'fix',
+    demoDefectId,
+    '--ref',
+    'abc1234',
+    '--by',
+    'macg',
+  ]).catch((cause) => ({ result: undefined, output: '', error: cause }));
+  check(
+    'defect fix refuses a missing --summary, writing no new version',
+    defectNoSummary.result === undefined &&
+      defectNoSummary.error?.message.includes('--summary') &&
+      defectNoSummary.error?.message.includes('is required') &&
+      new ArtifactStore({ root: workspace, schemas: projectArtifactSchemas() }).latestVersion(
+        `artifacts/defect/${demoDefectId}.md`,
+      ) === defectFixedRoutedVersion,
+    defectNoSummary.error?.message,
   );
 
   const defectFixed = await call([

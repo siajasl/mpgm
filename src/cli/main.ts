@@ -286,9 +286,14 @@ export async function runCli(
           .split(',')
           .map((entry) => entry.trim())
           .filter((entry) => entry !== ''),
-        ...(flags.reason === undefined ? {} : { reason: flags.reason }),
+        // `route` is refused by `routeDefect` (HIL-5) and `fix` by
+        // `defectFixSchema` when these say nothing — but only once they
+        // reach `commands.ts`. Requiring the flag here, the same way
+        // `reopen`/`attest` already do, means a bare `mpgm defect route`
+        // with no `--reason` never gets that far.
+        ...(action === 'route' ? { reason: require('--reason', flags.reason) } : {}),
         ...(flags.ref === undefined ? {} : { ref: flags.ref }),
-        ...(flags.summary === undefined ? {} : { summary: flags.summary }),
+        ...(action === 'fix' ? { summary: require('--summary', flags.summary) } : {}),
       });
     }
 

@@ -1422,7 +1422,18 @@ export function defect(
             `call to you, and nothing in the evidence above decides it`,
         );
       }
-      const reason = options.reason ?? '';
+      // `reason` is required and non-empty by the time it reaches here: not
+      // defaulted from a missing flag (`main.ts` already refuses that), and
+      // not padded from '' — a caller that skips it is a caller `routeDefect`
+      // itself would refuse (HIL-5), and this function fails the same way
+      // rather than manufacturing the non-empty string the check wants to see
+      // (CONV-4).
+      if (options.reason === undefined || options.reason.trim() === '') {
+        throw new Error(
+          'defect route: --reason is required and must say something (HIL-5) — ' +
+            'routing a defect is a decision the log records, not a rubber stamp',
+        );
+      }
       const route: DefectRoute =
         to === 'implement'
           ? { to, taskId: options.taskId ?? '' }
@@ -1433,14 +1444,23 @@ export function defect(
                 ? {}
                 : { changed: [...options.changed] }),
             };
-      // `--by` rides in the reason rather than in a field of its own: the
-      // history entry is the record of the decision, and a reason naming
-      // nobody is not one an operator can be asked about later (HIL-5).
-      next = routeDefect(current, route, `${reason} (routed by ${options.by})`);
+      // `--by` is appended to a reason that already says something, rather
+      // than standing in for one: the history entry names both who decided
+      // and why, and neither substitutes for the other.
+      next = routeDefect(current, route, `${options.reason} (routed by ${options.by})`);
     } else {
+      // Same fail-closed shape as `reason` above: `defectFixSchema` requires
+      // a non-empty `summary`, and padding an unset one would let a fix with
+      // nothing to say reach that check as if it had something.
+      if (options.summary === undefined || options.summary.trim() === '') {
+        throw new Error(
+          'defect fix: --summary is required and must say something — ' +
+            'it is what the next reader checks the fix against',
+        );
+      }
       next = recordFix(current, {
         ref: options.ref ?? '',
-        summary: `${options.summary ?? ''} (recorded by ${options.by})`,
+        summary: `${options.summary} (recorded by ${options.by})`,
       });
     }
   } catch (cause) {
