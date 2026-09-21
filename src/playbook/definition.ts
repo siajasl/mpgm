@@ -384,6 +384,37 @@ export const gateCriterionSchema = z.discriminatedUnion('kind', [
       artifact: identifier,
     })
     .strict(),
+  /**
+   * `no-open-defects` — REQUIREMENTS' Test gate: no open critical/high
+   * defect (TST-5).
+   *
+   * Names nothing of its own to check, unlike the other four kinds: a
+   * `Defect` is filed by the round trip in `src/test/defect.ts`, never by a
+   * session (see {@link projectArtifactSchemas}, `src/schemas.ts`), so no
+   * task in a playbook could ever be named as its source the way
+   * `agent-assertion`'s `fromTask` or `vote-carried`'s `panel` name one.
+   * `evaluate` (`src/gate/manager.ts`) reads whatever `GateEvidence.defects`
+   * carries instead — `blocksGate` (`src/test/defect.ts`) over it, the same
+   * critical/high test that field name states.
+   *
+   * `GateEvidence.defects` defaults to empty, and nothing yet populates it
+   * from a real run: `runPhase` (`src/phase/runner.ts`) builds `evidence`
+   * from `produced`/`outputs` alone, and a filed Defect lives under
+   * `artifacts/defect/`, outside both (T4.3.4). Until that task reads filed
+   * defects back off disk and hands them to `GateManager.present`, this
+   * criterion is real but vacuous on a live `mpgm run test` — met on every
+   * run, for want of anything to disagree with it, not because none was
+   * filed. Exercised directly against `GateManager` in `manager.test.ts`
+   * (T4.3.3), which supplies `defects` by hand rather than through a phase
+   * run, precisely because no phase run can supply it yet.
+   */
+  z
+    .object({
+      id: identifier,
+      kind: z.literal('no-open-defects'),
+      description: nonEmpty,
+    })
+    .strict(),
 ]);
 
 export const gateSchema = z

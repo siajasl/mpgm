@@ -5,6 +5,7 @@ import type { EventLog } from '../event/store.js';
 import type { GateCriterion } from '../playbook/definition.js';
 import type { Playbook } from '../playbook/graph.js';
 import type { KernelState } from '../state/kernel-state.js';
+import { blocksGate, type Defect } from '../test/defect.js';
 import type { TraceIndex } from '../trace/index-store.js';
 import { artifactNodeId } from '../trace/links.js';
 
@@ -59,6 +60,20 @@ export interface GateEvidence {
    * you the gate should stay shut.
    */
   readonly outputs: Readonly<Record<string, unknown>>;
+  /**
+   * Defects filed against this run, for a `no-open-defects` criterion
+   * (TST-5).
+   *
+   * Optional and defaulting to none: most gates carry no such criterion, and
+   * `runPhase` (`src/phase/runner.ts`) does not populate this field today — a
+   * filed `Defect` lives under `artifacts/defect/`, written outside
+   * `step.produces`, and nothing yet reads that directory back before
+   * presenting the gate (T4.3.4). A caller that does have defects to hand
+   * over — today, a test constructing `GateEvidence` directly — supplies them
+   * here; `runPhase` supplying none is why `no-open-defects` is met on every
+   * live run until T4.3.4 lands, not evidence that no defect was filed.
+   */
+  readonly defects?: readonly Defect[];
 }
 
 /** Caller-supplied narrative for the packet (HIL-4). */
@@ -154,6 +169,24 @@ function evaluate(
           ? `every citation in ${artifact.id} v${String(artifact.version)} resolves`
           : `${String(dangling.length)} citation(s) resolve to nothing: ` +
             dangling.map((entry) => `${entry.src} -> ${entry.dst}`).join(', '),
+    };
+  }
+
+  if (criterion.kind === 'no-open-defects') {
+    const defects = evidence.defects ?? [];
+    const blocking = blocksGate(defects);
+    return {
+      id: criterion.id,
+      kind: criterion.kind,
+      description: criterion.description,
+      met: blocking.length === 0,
+      detail:
+        blocking.length === 0
+          ? defects.length === 0
+            ? 'no defects filed'
+            : `${String(defects.length)} defect(s) filed, none open at critical/high severity`
+          : `${String(blocking.length)} open critical/high defect(s): ` +
+            blocking.map((defect) => `${defect.title} (${defect.severity})`).join(', '),
     };
   }
 

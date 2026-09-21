@@ -1,7 +1,11 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { designStances } from '../schemas.js';
+import {
+  designStances,
+  projectArtifactSchemas,
+  projectOutputSchemas,
+} from '../schemas.js';
 import type { Playbook } from './graph.js';
 import {
   loadPlaybookFile,
@@ -539,5 +543,127 @@ describe('the plan playbook', () => {
 
     expect(Object.keys(inputs)).toStrictEqual(['requirement-set', 'design']);
     expect(Object.values(inputs).every((input) => !input.optional)).toBe(true);
+  });
+});
+
+describe('the test playbook (T4.3.3)', () => {
+  const playbook = (): Playbook => loadPlaybookFile(join(phasesDir, 'test.yaml'));
+
+  it('loads and validates', () => {
+    const loaded = playbook();
+
+    expect(loaded.phase).toBe('test');
+    expect(loaded.tasks.map((task) => task.id)).toStrictEqual([
+      'scope-nfrs',
+      'measure-nfrs',
+      'attack-subject',
+      'run-suite',
+    ]);
+    expect(Object.keys(loaded.artifacts)).toStrictEqual([
+      'nfr-coverage',
+      'adversarial-verdict',
+    ]);
+  });
+
+  it('does not auto-approve its gate', () => {
+    // HIL-1: silence means ask.
+    expect(playbook().gate.autoApprove).toBe(false);
+  });
+
+  it('cannot run without a gated Scope to measure against', () => {
+    expect(Object.keys(playbook().inputs)).toStrictEqual(['requirement-set']);
+    expect(playbook().inputs['requirement-set']?.optional).toBe(false);
+  });
+
+  it('routes an nfr node at a task, never at the Scope input directly', () => {
+    // An `nfr` node's `requirements` field names a task in this playbook
+    // (`expandPlaybook`, `src/playbook/graph.ts`), never a phase input — so
+    // this phase carries `scope-nfrs` as the indirection, and `measure-nfrs`
+    // reads its result rather than `requirement-set`'s.
+    const step = playbook().graph.steps.find((entry) => entry.id === 'measure-nfrs');
+
+    expect(step?.kind === 'nfr' && step.requirements).toBe('scope-nfrs');
+  });
+
+  it('declares no artifact for the AdversarialSuite attack-subject returns', () => {
+    // `adversarial-suite` is a session output only (`projectOutputSchemas`),
+    // never registered as an artifact schema — a `produces` naming it here
+    // would load (the loader never consults the artifact-schema registry)
+    // and only fail once `ArtifactStore.write` looked the schema up at
+    // dispatch time, on a run that had already paid for the session.
+    const attackSubject = playbook().graph.steps.find(
+      (entry) => entry.id === 'attack-subject',
+    );
+
+    expect(attackSubject?.produces).toBeUndefined();
+  });
+
+  it('gates on nfr coverage, an adversarial verdict, and no open defect', () => {
+    expect(playbook().gate.criteria.map((criterion) => criterion.id)).toStrictEqual([
+      'nfr-coverage-present',
+      'adversarial-verdict-present',
+      'no-open-defects',
+    ]);
+    expect(playbook().gate.criteria.map((criterion) => criterion.kind)).toStrictEqual([
+      'artifact-exists',
+      'artifact-exists',
+      'no-open-defects',
+    ]);
+  });
+
+  it('loads through the registry', () => {
+    const registry = PlaybookRegistry.fromDirectory(phasesDir);
+
+    expect(registry.has('test')).toBe(true);
+    expect(registry.get('test').gate.id).toBe('test-gate');
+  });
+});
+
+/**
+ * Every phase's declared artifacts, against the registries that actually
+ * govern a run (T4.3.3).
+ *
+ * The loader itself never checks this (`checkReferences`, `./loader.ts`
+ * cross-references only what one playbook states about itself), so a
+ * playbook naming a `schema` nothing registers loads without complaint here
+ * and fails only once `ArtifactStore.write` looks the id up — on a run that
+ * has already paid for whatever task produced it. This is the check that
+ * would have caught it earlier, over every playbook `phases/` actually
+ * carries rather than one written by hand for the test.
+ */
+describe('every phase playbook declares only registered artifact schemas', () => {
+  it('has an entry in projectArtifactSchemas for every artifact template', () => {
+    const registry = PlaybookRegistry.fromDirectory(phasesDir);
+    const artifactSchemas = projectArtifactSchemas();
+
+    const unregistered: string[] = [];
+    for (const phase of registry.phases) {
+      const loaded = registry.get(phase);
+      for (const [artifactId, template] of Object.entries(loaded.artifacts)) {
+        if (!artifactSchemas.families.includes(template.schema)) {
+          unregistered.push(`${phase}.${artifactId} (schema '${template.schema}')`);
+        }
+      }
+    }
+
+    expect(unregistered).toStrictEqual([]);
+  });
+
+  it('never names a session-output-only schema — adversarial-suite — as an artifact', () => {
+    // The specific gap T4.3.3 names by hand: `adversarial-suite` is
+    // registered in `projectOutputSchemas` and deliberately not in
+    // `projectArtifactSchemas` (`src/schemas.ts`), so a playbook that named
+    // it as an artifact's `schema` would pass every check above and still
+    // fail at write.
+    expect(projectOutputSchemas().has('adversarial-suite')).toBe(true);
+    expect(projectArtifactSchemas().families).not.toContain('adversarial-suite');
+
+    const registry = PlaybookRegistry.fromDirectory(phasesDir);
+    for (const phase of registry.phases) {
+      const templates = Object.values(registry.get(phase).artifacts);
+      expect(templates.map((template) => template.schema)).not.toContain(
+        'adversarial-suite',
+      );
+    }
   });
 });

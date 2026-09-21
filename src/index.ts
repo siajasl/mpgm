@@ -294,6 +294,7 @@ export {
   designVerdictSchema,
   elicitationSchema,
   findingsSchema,
+  nfrScopeSchema,
   priorArtSchema,
   priorities,
   requiredConcerns,
