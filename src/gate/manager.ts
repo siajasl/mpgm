@@ -5,6 +5,7 @@ import type { EventLog } from '../event/store.js';
 import type { GateCriterion } from '../playbook/definition.js';
 import type { Playbook } from '../playbook/graph.js';
 import type { KernelState } from '../state/kernel-state.js';
+import { blocksGate, type Defect } from '../test/defect.js';
 import type { TraceIndex } from '../trace/index-store.js';
 import { artifactNodeId } from '../trace/links.js';
 
@@ -59,6 +60,24 @@ export interface GateEvidence {
    * you the gate should stay shut.
    */
   readonly outputs: Readonly<Record<string, unknown>>;
+  /**
+   * Defects filed against this run, for a `no-open-defects` criterion
+   * (TST-5).
+   *
+   * Optional, but the two states it distinguishes are not interchangeable:
+   * `undefined` means no defect source was wired for this evaluation and the
+   * criterion reports **unmet**, naming the gap, exactly as `traces-resolve`
+   * reports unmet when no trace index is wired. An explicit `[]` means a
+   * source was consulted and found nothing, and the criterion reports met.
+   * `runPhase` (`src/phase/runner.ts`) does not populate this field today — a
+   * filed `Defect` lives under `artifacts/defect/`, written outside
+   * `step.produces`, and nothing yet reads that directory back before
+   * presenting the gate (T4.3.4). So on every live `mpgm run test` today this
+   * field is `undefined` and `no-open-defects` reports unmet, not met — the
+   * gap is disclosed on the packet an operator sees rather than hidden behind
+   * an affirmative that nothing checked.
+   */
+  readonly defects?: readonly Defect[];
 }
 
 /** Caller-supplied narrative for the packet (HIL-4). */
@@ -154,6 +173,38 @@ function evaluate(
           ? `every citation in ${artifact.id} v${String(artifact.version)} resolves`
           : `${String(dangling.length)} citation(s) resolve to nothing: ` +
             dangling.map((entry) => `${entry.src} -> ${entry.dst}`).join(', '),
+    };
+  }
+
+  if (criterion.kind === 'no-open-defects') {
+    if (evidence.defects === undefined) {
+      // Unmet rather than met: an absent field means no defect source was
+      // wired for this run (T4.3.4), not that none were filed. Reporting met
+      // here would assert a fact nothing checked, which is exactly what the
+      // agent-assertion and traces-resolve criteria above refuse to do
+      // (CONV-4).
+      return {
+        id: criterion.id,
+        kind: criterion.kind,
+        description: criterion.description,
+        met: false,
+        detail:
+          'no defect source is wired for this run, so open defects could not be checked',
+      };
+    }
+    const blocking = blocksGate(evidence.defects);
+    return {
+      id: criterion.id,
+      kind: criterion.kind,
+      description: criterion.description,
+      met: blocking.length === 0,
+      detail:
+        blocking.length === 0
+          ? evidence.defects.length === 0
+            ? 'no defects filed'
+            : `${String(evidence.defects.length)} defect(s) filed, none open at critical/high severity`
+          : `${String(blocking.length)} open critical/high defect(s): ` +
+            blocking.map((defect) => `${defect.title} (${defect.severity})`).join(', '),
     };
   }
 

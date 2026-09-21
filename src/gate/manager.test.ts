@@ -15,6 +15,7 @@ import { EventLog } from '../event/store.js';
 import { loadPlaybookFile, parsePlaybook } from '../playbook/loader.js';
 import { Projector } from '../state/projector.js';
 import { SnapshotStore } from '../state/snapshot-store.js';
+import { fileDefect, type Defect } from '../test/defect.js';
 import { TraceIndex } from '../trace/index-store.js';
 import {
   canProceed,
@@ -414,6 +415,167 @@ describe('the traces-resolve criterion (ART-2)', () => {
 
       expect(packet.criteria[0]?.met).toBe(false);
       expect(packet.criteria[0]?.detail).toMatch(/no trace index/);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * The `no-open-defects` criterion (TST-5, T4.3.3).
+ *
+ * None of the other four criterion kinds reads a `Defect` at all — the point
+ * this exercises. A gate asserted only on the clean case would pass while
+ * incapable of refusing (CONV-6), so both directions are driven through the
+ * same `Defect`-shaped evidence a real filed defect would carry, built with
+ * `fileDefect` rather than a hand-rolled object literal.
+ */
+describe('the no-open-defects criterion (TST-5)', () => {
+  const defectPlaybook = parsePlaybook(
+    'test.yaml',
+    [
+      'phase: test',
+      'description: a phase',
+      'artifacts:',
+      '  verdict:',
+      '    schema: definition',
+      '    path: artifacts/test/verdict.md',
+      '    description: the verdict',
+      'tasks:',
+      '  - id: run-suite',
+      '    role: planner',
+      '    description: run it',
+      '    prompt: run it',
+      '    produces: verdict',
+      'gate:',
+      '  id: test-gate',
+      '  description: no open defect blocks it',
+      '  criteria:',
+      '    - id: no-open-defects',
+      '      kind: no-open-defects',
+      '      description: no open critical/high defect',
+    ].join('\n'),
+  );
+
+  function evidenceWith(defects: readonly Defect[]): GateEvidence {
+    return { artifacts: {}, outputs: {}, defects };
+  }
+
+  const openHighSeverity = fileDefect({
+    title: 'clamp accepts a swapped range silently',
+    severity: 'high',
+    description: 'clamp(5, 10, 0) returns 5 instead of refusing the call',
+    evidence: {
+      kind: 'adversarial',
+      caseId: 'refuses-a-swapped-range',
+      detail: 'expected a RangeError, got 5',
+    },
+    tracesTo: ['LOAN-1'],
+  });
+
+  it('is unmet when no defect source was wired at all — undefined is not "none filed"', () => {
+    // This is the shape `runPhase` actually hands the gate today: it never
+    // sets `defects` on `GateEvidence` (T4.3.4 is what will). Reporting met
+    // here, the way an empty array does, would assert "no open defects" on
+    // a run where nothing looked — CONV-4 and the doctrine this file already
+    // states for agent-assertion and traces-resolve.
+    const { db, log, projector } = harness();
+    try {
+      const packet = new GateManager({ log, projector }).present(
+        'run-1',
+        defectPlaybook,
+        { artifacts: {}, outputs: {} },
+      );
+
+      expect(packet.criteria[0]).toMatchObject({
+        id: 'no-open-defects',
+        met: false,
+      });
+      expect(packet.allMet).toBe(false);
+      expect(packet.criteria[0]?.detail).toMatch(/no defect source is wired/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is met when no defect was filed at all', () => {
+    const { db, log, projector } = harness();
+    try {
+      const packet = new GateManager({ log, projector }).present(
+        'run-1',
+        defectPlaybook,
+        evidenceWith([]),
+      );
+
+      expect(packet.criteria[0]).toMatchObject({
+        id: 'no-open-defects',
+        met: true,
+      });
+      expect(packet.criteria[0]?.detail).toMatch(/no defects filed/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is met when every filed defect is closed or below critical/high', () => {
+    const { db, log, projector } = harness();
+    try {
+      const lowSeverity = fileDefect({
+        title: 'a typo in a log line',
+        severity: 'low',
+        description: 'the log line misspells "requirement"',
+        evidence: { kind: 'adversarial', caseId: 'log-spelling', detail: 'sic' },
+        tracesTo: ['LOAN-1'],
+      });
+
+      const packet = new GateManager({ log, projector }).present(
+        'run-1',
+        defectPlaybook,
+        evidenceWith([lowSeverity]),
+      );
+
+      expect(packet.criteria[0]?.met).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses while an open high-severity defect remains, and names it', () => {
+    const { db, log, projector } = harness();
+    try {
+      const packet = new GateManager({ log, projector }).present(
+        'run-1',
+        defectPlaybook,
+        evidenceWith([openHighSeverity]),
+      );
+
+      expect(packet.criteria[0]?.met).toBe(false);
+      expect(packet.allMet).toBe(false);
+      expect(packet.criteria[0]?.detail).toContain(
+        'clamp accepts a swapped range silently',
+      );
+      expect(packet.criteria[0]?.detail).toContain('high');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('the two runs reach different decisions over otherwise identical evidence', () => {
+    const { db, log, projector } = harness();
+    try {
+      const clean = new GateManager({ log, projector }).present(
+        'run-1',
+        defectPlaybook,
+        evidenceWith([]),
+      );
+      const withDefect = new GateManager({ log, projector }).present(
+        'run-1',
+        defectPlaybook,
+        evidenceWith([openHighSeverity]),
+      );
+
+      expect(clean.allMet).toBe(true);
+      expect(withDefect.allMet).toBe(false);
     } finally {
       db.close();
     }

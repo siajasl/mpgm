@@ -1,0 +1,149 @@
+phase: test
+description: >
+  Verify the gated requirement set holds against the system it describes:
+  measure every quantified NFR against its Scope threshold (TST-3), and
+  attack the implementation with a suite beyond the implementer's own
+  (TST-4). Requirement coverage over the whole trace graph (TST-2) and
+  defect filing (TST-5) are not this playbook's own work — see the gate's own
+  description below for what that means for its `no-open-defects` criterion.
+
+inputs:
+  requirement-set:
+    schema: scope
+    path: artifacts/scope/requirements.md
+    description: >
+      The gated Scope artifact. Required: `test.nfr` measures the quantified
+      thresholds it declares (SCP-1), and there is nothing else to measure
+      against.
+    optional: false
+
+artifacts:
+  # `adversarial-suite` — the shape `attack-subject` below actually returns —
+  # is deliberately not declared here. It is a session output only
+  # (`projectOutputSchemas`, `src/schemas.ts`): the loader that reads this
+  # file never consults the artifact-schema registry (`checkReferences`,
+  # `src/playbook/loader.ts`), so a `produces` naming it would load without
+  # complaint and only fail once `ArtifactStore.write` looked the schema up
+  # and found nothing — on a run that had already paid for the session. The
+  # suite is read straight off `attack-subject`'s own result by `run-suite`
+  # below instead, the way `measure-nfrs` already reads `scope-nfrs`'s.
+  nfr-coverage:
+    schema: nfr-coverage
+    path: artifacts/test/nfr-coverage.md
+    description: >
+      Per-quantified-NFR coverage (TST-3): whether `test.nfr` measured each
+      one Scope declares, and whether the measurement held against its
+      threshold.
+  adversarial-verdict:
+    schema: adversarial-verdict
+    path: artifacts/test/adversarial-verdict.md
+    description: >
+      Per-case results from running the generated adversarial suite (TST-4):
+      which cases passed, which failed, and which the runner never reported
+      on.
+
+tasks:
+  # An `nfr` node's `requirements` field names a task declared in this same
+  # playbook, never a phase input directly (`expandPlaybook`,
+  # `src/playbook/graph.ts`) — Scope is an input, so nothing can point an
+  # `nfr` node at it on its own. This task is that indirection: it restates
+  # Scope's quantified requirements as the flat list `measure-nfrs` reads.
+  - id: scope-nfrs
+    role: nfr-scoper
+    description: >
+      State the quantified NFRs Scope declares, for the kernel to measure.
+    prompt: >
+      From the gated Scope artifact, restate every quantified (non-functional)
+      requirement as a flat list: `id`, `metric`, `value`, `unit` and
+      `measuredBy`, exactly as Scope states them. A functional requirement
+      carries no threshold and does not belong in your list.
+    consumes: [requirement-set]
+
+  - kind: nfr
+    id: measure-nfrs
+    description: >
+      Measure every quantified NFR against the bound `test.nfr` capability
+      (TST-3).
+    dependsOn: [scope-nfrs]
+    requirements: scope-nfrs
+    produces: nfr-coverage
+
+  # `adversarial-tester` is already a frozen role (T3.2.2): TST-4 asks for
+  # tests beyond the implementer's own, so the role that writes them cannot be
+  # the one that wrote the code. Its result is an `AdversarialSuite`, read
+  # directly by `run-suite` below — see the `artifacts` comment above for why
+  # this task declares no `produces`.
+  - id: attack-subject
+    role: adversarial-tester
+    description: >
+      Attack a real module in this project with an adversarial suite (TST-4).
+    prompt: >
+      Choose one module in this project whose behaviour materially matters —
+      something another part of the system, or a user, depends on holding —
+      and write your adversarial suite against it. Prefer a module with real
+      logic over one that only wires other modules together; a suite against
+      glue code finds nothing a type checker would not already have caught.
+
+      Set `subject` to the relative specifier the rendered suite will import,
+      resolved against the root of this project — the same directory you are
+      reading the module from. That is the only directory you can see, and
+      `nodeTestExecutor` (`src/test/adversarial.ts`) runs the rendered suite
+      from `testProjectDir`, an operator-supplied path never named to you;
+      the two coincide only when the operator points `testProjectDir` at
+      this project's own root, which is how a suite step is meant to be run
+      and the only case in which the specifier you choose will resolve.
+
+  - kind: suite
+    id: run-suite
+    description: >
+      Run the generated adversarial suite and fold a verdict (TST-4).
+    dependsOn: [attack-subject]
+    suite: attack-subject
+    produces: adversarial-verdict
+
+gate:
+  id: test-gate
+  description: >
+    NFR coverage and an adversarial verdict both exist, and no open
+    critical/high defect blocks the gate (TST-5).
+
+    Two of REQUIREMENTS' three Test-gate clauses are not checked here, and
+    that is a fact about this playbook rather than an oversight it hides:
+    "all Must-have requirements verified" (TST-2) needs the full requirement
+    coverage report `requirementCoverageReport` (`src/test/nfr.ts`) computes,
+    which needs a quarantine ledger and the whole Scope list that no `nfr`
+    node or `PhaseRunOptions` supplies today (DESIGN §9 decision 15's own
+    account of the gap) — so this gate checks the narrower `nfr-coverage`
+    rows `measure-nfrs` actually produces instead, and only that they exist,
+    not that every row verified. And `no-open-defects` below reads whatever
+    `GateEvidence.defects` carries (`src/gate/manager.ts`), which is real but
+    unpopulated on a live run of this playbook until a task files a Defect
+    and hands it to the gate manager outside `step.produces` (T4.3.4) — so
+    today this criterion reports **unmet**, naming the missing defect source,
+    on every run of this playbook, rather than asserting "no defects" on
+    evidence nothing collected.
+  autoApprove: false
+  criteria:
+    - id: nfr-coverage-present
+      kind: artifact-exists
+      description: >
+        An `nfr-coverage` artifact was produced (TST-3). `artifact-exists`
+        checks only that the artifact was written, not that every row in it
+        verified — see this gate's own description above for why that
+        stronger check is not available to this playbook yet.
+      artifact: nfr-coverage
+
+    - id: adversarial-verdict-present
+      kind: artifact-exists
+      description: >
+        An `adversarial-verdict` artifact was produced (TST-4).
+        `artifact-exists` checks only that the artifact was written, not
+        which cases in it passed.
+      artifact: adversarial-verdict
+
+    - id: no-open-defects
+      kind: no-open-defects
+      description: >
+        No open critical/high defect blocks the gate (TST-5). See this
+        gate's own description above for what a live run of this playbook
+        can and cannot yet feed this criterion.

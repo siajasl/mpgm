@@ -13,7 +13,7 @@ import {
 import { releaseOutcomeSchema } from './release/verify.js';
 import { adversarialSuiteSchema, adversarialVerdictSchema } from './test/adversarial.js';
 import { defectSchema } from './test/defect.js';
-import { nfrCoverageReportSchema } from './test/nfr.js';
+import { nfrCoverageReportSchema, nfrRequirementSchema } from './test/nfr.js';
 
 /**
  * The project's own schemas.
@@ -641,6 +641,32 @@ export const codeReviewSchema = z
     },
   );
 
+/**
+ * What the `nfr-scoper` role returns, for an `nfr` node to measure (TST-3,
+ * T4.3.2, T4.3.3, `phases/test.yaml`).
+ *
+ * An `nfr` node's `requirements` field names a *task* declared in the same
+ * playbook — Scope itself is a phase *input*, not a node, and nothing can
+ * point an `nfr` node at an input directly (`expandPlaybook`,
+ * `src/playbook/graph.ts` requires `declared.has(node.requirements)` over
+ * task ids only) — so the Test phase needs a task whose result *is* the
+ * quantified requirement list. This is that task's output shape: the flat
+ * `id`/`metric`/`value`/`unit`/`measuredBy` fields `NfrRequirement` already
+ * has, one entry per quantified requirement Scope declares, which is exactly
+ * the shape `nfrRequirementSourceSchema` (`src/test/nfr-source.ts`) already
+ * anticipated a session handing over alongside a real Scope's own mixed list.
+ *
+ * Registered as a session output only, never as a stored artifact: its
+ * result feeds a kernel-computed `nfr` step directly and is never written to
+ * disk on its own — `phases/test.yaml`'s `measure-nfrs` node writes the
+ * *coverage* that step computes (schema `nfr-coverage`, already registered
+ * below), not the requirement list that fed it.
+ */
+export const nfrScopeSchema = z.object({
+  summary: z.string().min(1),
+  requirements: z.array(nfrRequirementSchema),
+});
+
 /** The elicitation record: conclusions plus the dialogue that produced them. */
 export const elicitationSchema = z.object({
   conclusions: conclusionsSchema,
@@ -664,6 +690,7 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
     change: changeSchema,
     'code-review': codeReviewSchema,
     'adversarial-suite': adversarialSuiteSchema,
+    'nfr-scope': nfrScopeSchema,
   });
 }
 
@@ -694,6 +721,28 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
  * node writes when it declares `produces` (T4.3.2, `src/phase/runner.ts`);
  * without them registered, that half of both node kinds is reachable only
  * from a test that brings its own registry.
+ *
+ * Two things this registry deliberately does **not** carry, named here so the
+ * absence is a decision and not a gap nobody noticed (T4.3.3):
+ *
+ * - {@link adversarialSuiteSchema} (`'adversarial-suite'`) is a session
+ *   output only (see {@link projectOutputSchemas} above) — an
+ *   {@link AdversarialSuite} is what the `adversarial-tester` role returns,
+ *   consumed directly by a `suite` node's `execute`, and never written to
+ *   disk on its own. `phases/test.yaml`'s `attack-subject` task therefore
+ *   declares no `produces`: a playbook that named `adversarial-suite` as an
+ *   artifact's `schema` would load — the loader never consults this registry
+ *   (`checkReferences`, `src/playbook/loader.ts`) — and only fail once
+ *   `ArtifactStore.write` looked the id up and found nothing, on a run that
+ *   had already spent the session's budget getting there.
+ * - `RequirementCoverageReport` (`src/test/nfr.ts`) is a plain TypeScript
+ *   interface, not a zod schema, so it cannot appear in this registry or in
+ *   {@link projectOutputSchemas} — there is nothing to register. No playbook
+ *   node computes it either: `requirementCoverageReport` needs a quarantine
+ *   ledger and the full Scope requirement list, neither of which
+ *   `PhaseRunOptions` or any `nfr`/`suite` node currently supplies (DESIGN
+ *   §9 decision 15's own account of the gap). `phases/test.yaml` writes the
+ *   narrower `nfr-coverage` rows `nfrCoverage` already produces instead.
  */
 export function projectArtifactSchemas(): ArtifactSchemaRegistry {
   return new ArtifactSchemaRegistry([
