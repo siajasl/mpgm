@@ -1178,7 +1178,8 @@ export const MPGM_PLAN = {
             'round escalated to a stronger tier is funded or refused before it ' +
             'starts, with work a budget kill interrupts never left where only a ' +
             'local worktree can see it. And a branch that conflicts with the trunk ' +
-            'reaches something that resolves it rather than ending the run.',
+            'reaches something that resolves it rather than ending the run. And no task ' +
+            'a reviewer approved is recorded as one a reviewer refused.',
           validatesRisk: null,
           tasks: [
             {
@@ -1710,6 +1711,71 @@ export const MPGM_PLAN = {
               ],
               dependsOn: [],
               tracesTo: ['IMP-1', 'IMP-4', 'OBS-1'],
+            },
+            {
+              id: 'T4.3.10',
+              title: 'A change two reviewers approved is recorded as one they refused',
+              completionCriteria: [
+                'A task that runs out of declaration rounds is recorded as ' +
+                  'what it is, not as a refusal. Measured rather than ' +
+                  'asserted: T4.3.3 ended on TaskBlocked reading "the review ' +
+                  'still refuses the change after 4 attempt(s): the change ' +
+                  'departs from CONV-5", while the two ChangeReviewed events ' +
+                  'it ended on both carry approved: true. No reviewer refused ' +
+                  'it. Eight sessions and $16.84 close on a sentence that is ' +
+                  'false.',
+                'The mechanism is named and the bound is not what is in ' +
+                  'question. earnsDeclarationRound (src/implement/' +
+                  'late-deviation.ts) grants a round when a review approves ' +
+                  'and every refusal it carries is undeclared-deviation, and ' +
+                  'src/implement/loop.ts adds that round once per task ' +
+                  '(extensionSpent). T4.3.3 spent it: review 3 approved with ' +
+                  'the trace-trailer deviation undeclared, a $0.21 session ' +
+                  'declared it, and review 4 approved and named a fresh one, ' +
+                  'CONV-5. The loop comment already argues why that is ' +
+                  'bounded -- a reviewer reporting a fresh deviation every ' +
+                  'round would extend the budget forever -- and this task ' +
+                  'does not reopen it.',
+                'What is wrong is the exit. Both the refusal path and the ' +
+                  'out-of-declaration-rounds path leave through the same ' +
+                  'stop("the review still refuses the change after N ' +
+                  'attempt(s): " + decision.reasons) in src/implement/' +
+                  'loop.ts, so a change the reviewer passed is reported in ' +
+                  "the reviewer's name as refused. That sentence is what the " +
+                  'CLI prints, what TaskBlocked stores and what the dashboard ' +
+                  'shows, and an operator deciding what to do next reads it ' +
+                  'first. A change approved and held for want of a ' +
+                  'declaration is a different fact from a change the gate ' +
+                  'refused, the same distinction T4.2.15 drew for an operator ' +
+                  'override (HIL-5).',
+                'The merge-gate refusal rate is **not** the defect and the ' +
+                  'change says so rather than "fixing" it. gate-rates.ts ' +
+                  'counts a review as a refusal on !approved || ' +
+                  'undeclaredDeviations.length > 0, and the comment above it ' +
+                  'states the reason: the loop dispatches a fresh session on ' +
+                  'both, so both are refusals the change was sent back for. ' +
+                  'BudgetExceeded adds no count of its own there. A change ' +
+                  'that alters those counts is changing a decision T4.2.2a ' +
+                  'made deliberately and must say why.',
+                'Whether blocking is the right outcome at all is answered ' +
+                  'rather than assumed. IMP-4 requires a deviation to be ' +
+                  'flagged rather than silently introduced, so merging a ' +
+                  'change with one outstanding is not obviously available; ' +
+                  'but the change says whether an approved change with an ' +
+                  'undeclared deviation blocks, merges with the deviation ' +
+                  'recorded against it, or goes to the operator, and defends ' +
+                  'the choice. Recording it accurately is required either ' +
+                  'way, which is why that is the first criterion and this is ' +
+                  'not.',
+                'The test drives a task to an approval carrying an ' +
+                  'undeclared deviation, spends the declaration round, gets a ' +
+                  'second approval naming a different one, and asserts from ' +
+                  'the log alone that the recorded outcome does not say the ' +
+                  'review refused the change. A test asserting only that ' +
+                  'TaskBlocked was appended passes against today.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-3', 'IMP-4', 'OBS-1', 'HIL-5'],
             },
           ],
         },
