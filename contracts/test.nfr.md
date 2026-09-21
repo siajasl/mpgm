@@ -208,12 +208,21 @@ softer landing these refusals fall into.
   bound to and blocks rather than treating an unbound one as nothing to
   measure. It produces `nfrCoverage`'s rows and stops there:
   `requirementCoverageReport` — the fold of those rows with the trace graph
-  and the quarantine ledger — has **no caller yet**, because it needs a
-  `TraceIndex` and a ledger on `PhaseRunOptions` that nothing passes. That is
-  the Test phase's own wiring (T4.3.3, which already records
-  `RequirementCoverageReport` as an interface in neither schema registry), and
-  it is named here rather than left to be discovered: until it lands, a Test
-  run reports NFR coverage and not the combined TST-2/TST-3 report.
+  and the quarantine ledger — has **no caller yet**, and not because a
+  `TraceIndex` is missing: `PhaseRunOptions.traces` already exists and
+  `run()` (`src/cli/commands.ts`) already builds and passes one, so the
+  general trace-graph coverage query is reachable today. What is missing is
+  a quarantine-ledger option on `PhaseRunOptions` (the `quarantined` input
+  has nowhere to arrive from), a registration of `RequirementCoverageReport`
+  in either schema registry (so `writeArtifact` — whose schema comes from
+  the *calling playbook's own* `artifacts` map — would have nothing to write
+  it against even if one were computed), and a playbook node naming which
+  node produces it, over the full Scope requirement list rather than the
+  quantified subset one `nfr` step measures. All three are the Test phase's
+  own wiring (T4.3.3, which already records `RequirementCoverageReport` as an
+  interface in neither schema registry), and are named here rather than left
+  to be discovered: until they land, a Test run reports NFR coverage and not
+  the combined TST-2/TST-3 report.
 - [`src/test/quarantine.ts`](../src/test/quarantine.ts) — `detectFlaky`,
   `quarantineFlaky`/`detectAndQuarantine` (TST-6's ledger) and
   `withoutQuarantined` (the exclusion `requirementCoverageReport` applies).
