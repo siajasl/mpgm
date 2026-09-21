@@ -27,6 +27,17 @@ import {
   runAdversarialSuite,
   adversarialSuiteSchema,
 } from '../test/adversarial.js';
+import type { Defect, DefectSeverity } from '../test/defect.js';
+import {
+  defectsFromAdversarialVerdict,
+  defectsFromNfrCoverage,
+  defectsToVerifyFromAdversarialVerdict,
+  defectsToVerifyFromNfrCoverage,
+  fileAndWriteDefect,
+  verifyFixedDefect,
+  type DefectToFile,
+  type DefectToVerify,
+} from '../test/defect-filing.js';
 import {
   nfrRequirementSourceSchema,
   quantifiedRequirements,
@@ -94,6 +105,20 @@ export interface PhaseRunOptions {
    * supplies on its own.
    */
   readonly testProjectDir?: string;
+  /**
+   * Severity a `nfr`/`suite` step's filed defects are given (T4.3.4).
+   *
+   * Neither producer carries a severity of its own — an `AdversarialCaseResult`
+   * says a case failed, an `NfrCoverageRow` says a measurement came back
+   * below threshold, and neither says how badly that matters — so nothing
+   * here invents one. Absent, and a phase whose playbook declares an `nfr` or
+   * `suite` node blocks the step that would need it, the same "decision, not
+   * a default" `testProjectDir` already is; a phase with neither node kind
+   * runs exactly as before. See `src/test/defect-filing.ts` for what a filed
+   * defect's severity then does: critical/high hold the Test gate's
+   * `no-open-defects` criterion shut (TST-5), medium/low do not.
+   */
+  readonly defectSeverity?: DefectSeverity;
 }
 
 export type PhaseOutcome =
@@ -186,6 +211,17 @@ function nfrRepoRefMissingReason(stepId: string): string {
     `'mpgm run' binds refuses to measure a checkout that is not at the ref ` +
     `it was given, and names in its evidence the commit it did measure ` +
     `(src/test/nfr-provider.ts).`
+  );
+}
+
+function defectSeverityMissingReason(stepId: string, kind: 'nfr' | 'suite'): string {
+  return (
+    `${kind} '${stepId}' can file a Defect once it finds something (TST-5) — a failed ` +
+    `adversarial case, or a below-threshold NFR row — and neither producer carries a ` +
+    `severity of its own, so filing needs one supplied rather than assumed ` +
+    `(src/test/defect-filing.ts). Pass 'defectSeverity' on PhaseRunOptions — from the ` +
+    `CLI, 'mpgm run <phase> --defect-severity <critical|high|medium|low>'; critical/high ` +
+    `hold the Test gate's 'no-open-defects' criterion shut, medium/low do not.`
   );
 }
 
@@ -361,6 +397,81 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
       relative(options.artifacts.root, artifact.path),
     );
     return artifact;
+  };
+
+  /**
+   * `Defect` artifacts a `nfr`/`suite` step filed this run (T4.3.4,
+   * `src/test/defect-filing.ts`) — every one, whatever step filed it, which
+   * is what `GateEvidence.defects`'s own doc means by "filed against this
+   * run" (`src/gate/manager.ts`).
+   */
+  const filedDefects: Defect[] = [];
+
+  /**
+   * File and write every entry, outside `step.produces` and under
+   * `artifacts/defect/` (module doc, `src/test/defect-filing.ts`) — never
+   * through {@link writeArtifact}, which writes exactly one artifact at one
+   * declared id and would collapse several findings from the same step into
+   * one file.
+   */
+  const fileDefects = (step: GraphStep, entries: readonly DefectToFile[]): void => {
+    const provenance: Provenance = {
+      task: step.id,
+      role: 'kernel',
+      model: '(none)',
+      runId,
+    };
+    for (const entry of entries) {
+      const { artifact, defect } = fileAndWriteDefect(
+        options.artifacts,
+        entry.id,
+        entry.file,
+        provenance,
+      );
+      filedDefects.push(defect);
+      options.traces?.indexArtifactAs(
+        artifact,
+        relative(options.artifacts.root, artifact.path),
+      );
+    }
+  };
+
+  /**
+   * Close every already-filed defect whose case or row passed this run
+   * (`verifyFixedDefect`, `src/test/defect-filing.ts`) — the kernel's half of
+   * TST-5's round trip, and the reason the trip is driven by the phase that
+   * re-runs the evidence rather than by whoever remembers to mark it closed.
+   *
+   * Only a `fix-pending` defect moves; everything else `verifyFixedDefect`
+   * leaves alone and returns `undefined` for, which is why a pass with no
+   * defect behind it — the overwhelmingly common case — writes nothing. A
+   * defect closed here still joins `filedDefects`: `GateEvidence.defects` is
+   * what this run found about every defect it touched, and a `verified` one
+   * is what `blocksGate` reads as not holding the gate shut.
+   */
+  const verifyDefects = (step: GraphStep, entries: readonly DefectToVerify[]): void => {
+    const provenance: Provenance = {
+      task: step.id,
+      role: 'kernel',
+      model: '(none)',
+      runId,
+    };
+    for (const entry of entries) {
+      const closed = verifyFixedDefect(
+        options.artifacts,
+        entry.id,
+        entry.detail,
+        provenance,
+      );
+      if (closed === undefined) {
+        continue;
+      }
+      filedDefects.push(closed.defect);
+      options.traces?.indexArtifactAs(
+        closed.artifact,
+        relative(options.artifacts.root, closed.artifact.path),
+      );
+    }
   };
 
   /** `TaskCompleted.artifactRefs` naming one written artifact (T4.2.7). */
@@ -578,6 +689,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     if (options.repo === undefined || options.ref === undefined) {
       return { status: 'blocked', reason: nfrRepoRefMissingReason(step.id) };
     }
+    if (options.defectSeverity === undefined) {
+      return { status: 'blocked', reason: defectSeverityMissingReason(step.id, 'nfr') };
+    }
 
     const contract = options.capabilities.require('test.nfr');
     let rows;
@@ -599,6 +713,28 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     // The kernel measured it, so the kernel is the producer of record — the
     // same reasoning `runTally` already gives its own written artifact.
     writeArtifact(step, 'kernel', '(none)', rows);
+    try {
+      // A below-threshold row is TST-5's second producer (T4.3.4) — filed
+      // outside `produces`, under `artifacts/defect/`, never folded into the
+      // one `nfr-coverage` artifact just written above.
+      fileDefects(step, defectsFromNfrCoverage(rows, options.defectSeverity));
+      // ...and a row that now meets its threshold closes the defect a
+      // previous run filed against it, once a fix is on record for it
+      // (TST-5's re-test).
+      verifyDefects(step, defectsToVerifyFromNfrCoverage(rows));
+    } catch (cause) {
+      // `fileAndWriteDefect`/`verifyFixedDefect` refuse a requirement id that
+      // cannot become a path segment (`safeSegment`, `defect-filing.ts`) by
+      // throwing rather than filing — reachable here because
+      // `nfrRequirementSourceSchema`'s flat shape only requires `id.min(1)`.
+      // That refusal is meant to block the step the same way every other
+      // failure above does, not escape `runPhase` after the coverage
+      // artifact this function already wrote.
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
     return { status: 'completed', value: rows };
   };
 
@@ -617,6 +753,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     if (options.testProjectDir === undefined) {
       return { status: 'blocked', reason: suiteProjectDirMissingReason(step.id) };
     }
+    if (options.defectSeverity === undefined) {
+      return { status: 'blocked', reason: defectSeverityMissingReason(step.id, 'suite') };
+    }
 
     let verdict;
     try {
@@ -633,6 +772,24 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
 
     record(step, verdict);
     writeArtifact(step, 'kernel', '(none)', verdict);
+    try {
+      // A failed case is TST-5's first producer (T4.3.4) — filed outside
+      // `produces`, under `artifacts/defect/`, one per failure rather than
+      // folded into the one `adversarial-verdict` artifact just written
+      // above.
+      fileDefects(step, defectsFromAdversarialVerdict(verdict, options.defectSeverity));
+      // ...and a case that passes again closes the defect a previous run
+      // filed against it, once a fix is on record for it (TST-5's re-test).
+      verifyDefects(step, defectsToVerifyFromAdversarialVerdict(verdict));
+    } catch (cause) {
+      // Same reasoning as `runNfr`'s guard above: a refusal from the filing
+      // module blocks this step rather than escaping `runPhase` after the
+      // verdict artifact this function already wrote.
+      return {
+        status: 'blocked',
+        reason: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
     return { status: 'completed', value: verdict };
   };
 
@@ -673,18 +830,44 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
           outputs,
         };
       }
+      if (options.defectSeverity === undefined) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: step.id,
+            reason: defectSeverityMissingReason(step.id, 'nfr'),
+            blocked: [],
+          },
+          produced,
+          outputs,
+        };
+      }
     }
-    if (step.kind === 'suite' && options.testProjectDir === undefined) {
-      return {
-        outcome: {
-          status: 'blocked',
-          taskId: step.id,
-          reason: suiteProjectDirMissingReason(step.id),
-          blocked: [],
-        },
-        produced,
-        outputs,
-      };
+    if (step.kind === 'suite') {
+      if (options.testProjectDir === undefined) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: step.id,
+            reason: suiteProjectDirMissingReason(step.id),
+            blocked: [],
+          },
+          produced,
+          outputs,
+        };
+      }
+      if (options.defectSeverity === undefined) {
+        return {
+          outcome: {
+            status: 'blocked',
+            taskId: step.id,
+            reason: defectSeverityMissingReason(step.id, 'suite'),
+            blocked: [],
+          },
+          produced,
+          outputs,
+        };
+      }
     }
   }
 
@@ -723,7 +906,21 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     return { outcome: { status: 'stopped', control }, produced, outputs };
   }
 
-  const evidence: GateEvidence = { artifacts: produced, outputs };
+  // `defects` distinguishes exactly the two states `GateEvidence.defects`'s
+  // own doc describes (T4.3.4): a playbook with at least one `nfr`/`suite`
+  // node ran every one of them to the point of filing or finding nothing to
+  // file, so an explicit array — `[]` included — is a source that was
+  // actually consulted. A playbook with neither node kind never had a way to
+  // file anything this run, so `undefined` stays the honest answer for it,
+  // the same "no source was wired" reading it always had.
+  const hasDefectSource = graph.steps.some(
+    (step) => step.kind === 'nfr' || step.kind === 'suite',
+  );
+  const evidence: GateEvidence = {
+    artifacts: produced,
+    outputs,
+    ...(hasDefectSource ? { defects: filedDefects } : {}),
+  };
   return {
     outcome: {
       status: 'gate-presented',

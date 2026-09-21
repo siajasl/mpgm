@@ -19,9 +19,10 @@ import type { ReleaseArtifact } from '../release/deliver.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
 import { computeEscapedDefectRate } from '../state/escaped-defect-rate.js';
 import { fold } from '../state/reduce.js';
-import { fileDefect, routeDefect } from '../test/defect.js';
+import { defectSchema, fileDefect, routeDefect } from '../test/defect.js';
 import { CONVENTION_CITATION_REASON } from '../trace/index-store.js';
 import {
+  defect,
   intervene,
   recordMerge,
   rollback,
@@ -1877,6 +1878,7 @@ gate:
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
       ref,
+      defectSeverity: 'high',
     });
 
     expect(result.ok).toBe(true);
@@ -1899,6 +1901,7 @@ gate:
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
       ref,
+      defectSeverity: 'high',
     });
 
     expect(result.ok).toBe(true);
@@ -1919,6 +1922,7 @@ gate:
     const result = await run(contextFor(root, writes), 'run-1', 'test', {
       repo: 'siajasl/library-loans',
       ref: '0000000000000000000000000000000000000000',
+      defectSeverity: 'high',
     });
 
     expect(result.ok).toBe(false);
@@ -1937,5 +1941,200 @@ gate:
 
     expect(result.ok).toBe(false);
     expect(result.detail).toMatch(/--repo <owner\/name> --ref <ref>/);
+  });
+});
+
+/**
+ * `mpgm defect route|fix` — the operator's half of TST-5's round trip
+ * (T4.3.4, ORC-1).
+ *
+ * The kernel files a defect and re-tests it; where it goes and which commit
+ * fixed it are the two calls a run cannot make for itself, and this verb is
+ * the component that makes them. Driven here over a defect written to a real
+ * store the way an `nfr`/`suite` step writes one.
+ */
+describe('mpgm defect (T4.3.4)', () => {
+  const filedAt = (root: string): string => {
+    const defect = fileDefect({
+      title: "Adversarial case 'zero-split-refused' failed: splitting between nobody",
+      severity: 'high',
+      description: 'splitEvenly divides by zero instead of refusing an empty split.',
+      evidence: {
+        kind: 'adversarial',
+        caseId: 'zero-split-refused',
+        detail: 'returned an array instead of refusing',
+      },
+      tracesTo: ['LOAN-3'],
+    });
+    new ArtifactStore({ root, schemas: projectArtifactSchemas() }).write({
+      id: 'defect-adversarial-zero-split-refused',
+      basePath: 'artifacts/defect/defect-adversarial-zero-split-refused.md',
+      schema: 'defect',
+      data: defect,
+      producedBy: { task: 'attack', role: 'kernel', model: '(none)', runId: 'r1' },
+    });
+    return 'defect-adversarial-zero-split-refused';
+  };
+
+  const newRoot = (): string => mkdtempSync(join(tmpdir(), 'mpgm-defect-verb-'));
+
+  it('routes a filed defect, showing the evidence the decision is made on', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+    const id = filedAt(root);
+
+    const result = defect(newContext(root, writes), 'route', id, {
+      by: 'operator',
+      to: 'implement',
+      taskId: 'T9.9.9',
+      reason: 'an implementation bug, not a design assumption',
+    });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    // ORC-1's call is made on the filed artifact's own evidence, and an
+    // operator asked to make it must be shown it rather than sent to a log:
+    // every field `fileDefect` recorded is printed before anything is
+    // written (CONV-6: this fails against a verb that writes silently).
+    expect(output).toContain('zero-split-refused');
+    expect(output).toContain('LOAN-3');
+    expect(output).toContain('returned an array instead of refusing');
+    expect(output).toContain('high');
+
+    const stored = new ArtifactStore({ root, schemas: projectArtifactSchemas() }).read(
+      'artifacts/defect/defect-adversarial-zero-split-refused.md',
+    );
+    const routed = defectSchema.parse(stored.data);
+    expect(stored.version).toBe(2);
+    expect(routed.status).toBe('routed');
+    expect(routed.status !== 'open' && routed.route).toStrictEqual({
+      to: 'implement',
+      taskId: 'T9.9.9',
+    });
+    // Who decided is on the record, in the defect's own append-only history.
+    expect(routed.history.at(-1)?.detail).toContain('operator');
+  });
+
+  it('records the fix a routed defect produced', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+    const id = filedAt(root);
+    const context = newContext(root, writes);
+    defect(context, 'route', id, {
+      by: 'operator',
+      to: 'design',
+      phase: 'design',
+      changed: ['C-4'],
+      reason: 'the design assumed non-empty splits',
+    });
+
+    const result = defect(context, 'fix', id, {
+      by: 'operator',
+      ref: 'abc1234',
+      summary: 'splitEvenly refuses an empty split',
+    });
+
+    expect(result.ok).toBe(true);
+    const stored = new ArtifactStore({ root, schemas: projectArtifactSchemas() }).read(
+      'artifacts/defect/defect-adversarial-zero-split-refused.md',
+    );
+    const pending = defectSchema.parse(stored.data);
+    expect(stored.version).toBe(3);
+    expect(pending.status).toBe('fix-pending');
+    expect(pending.status === 'fix-pending' && pending.fix.ref).toBe('abc1234');
+  });
+
+  it('refuses an edge the lifecycle does not have, and writes nothing', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+    const id = filedAt(root);
+    const context = newContext(root, writes);
+
+    // No route yet: recording a fix here is the out-of-band patch TST-5
+    // refuses, and the refusal comes from `recordFix` rather than from a
+    // second copy of its rules in the CLI.
+    const result = defect(context, 'fix', id, {
+      by: 'operator',
+      ref: 'abc1234',
+      summary: 'a patch nobody routed',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(writes.join('\n')).toContain("status is 'open'");
+    expect(
+      new ArtifactStore({ root, schemas: projectArtifactSchemas() }).latestVersion(
+        'artifacts/defect/defect-adversarial-zero-split-refused.md',
+      ),
+    ).toBe(1);
+  });
+
+  it('says where it looked when there is no such defect', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+
+    const result = defect(newContext(root, writes), 'route', 'defect-nope', {
+      by: 'operator',
+      to: 'implement',
+      taskId: 'T1',
+      reason: 'why',
+    });
+
+    expect(result.ok).toBe(false);
+    // CONV-3: the path it looked at, not just "not found".
+    expect(writes.join('\n')).toContain('artifacts/defect/defect-nope.md');
+  });
+
+  // review round 3: `main.ts` now refuses a missing `--reason`/`--summary`
+  // before `defect` (this function) is ever called, but a caller that skips
+  // that layer — a direct call, the way these tests all make one — must not
+  // be able to reach `routeDefect`/`recordFix` with a reason or summary that
+  // says nothing (CONV-4, HIL-5). These drive `defect` itself, not the CLI's
+  // own `require()`.
+  it('refuses to route with no reason, writing no new version', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+    const id = filedAt(root);
+
+    const result = defect(newContext(root, writes), 'route', id, {
+      by: 'operator',
+      to: 'implement',
+      taskId: 'T9.9.9',
+      // reason omitted
+    });
+
+    expect(result.ok).toBe(false);
+    expect(writes.join('\n')).toContain('--reason is required');
+    expect(
+      new ArtifactStore({ root, schemas: projectArtifactSchemas() }).latestVersion(
+        'artifacts/defect/defect-adversarial-zero-split-refused.md',
+      ),
+    ).toBe(1);
+  });
+
+  it('refuses to fix with no summary, writing no new version', () => {
+    const root = newRoot();
+    const writes: string[] = [];
+    const id = filedAt(root);
+    const context = newContext(root, writes);
+    defect(context, 'route', id, {
+      by: 'operator',
+      to: 'implement',
+      taskId: 'T9.9.9',
+      reason: 'an implementation bug, not a design assumption',
+    });
+
+    const result = defect(context, 'fix', id, {
+      by: 'operator',
+      ref: 'abc1234',
+      // summary omitted
+    });
+
+    expect(result.ok).toBe(false);
+    expect(writes.join('\n')).toContain('--summary is required');
+    expect(
+      new ArtifactStore({ root, schemas: projectArtifactSchemas() }).latestVersion(
+        'artifacts/defect/defect-adversarial-zero-split-refused.md',
+      ),
+    ).toBe(2);
   });
 });

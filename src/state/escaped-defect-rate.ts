@@ -132,12 +132,24 @@ import { defectSchema, type Defect } from '../test/defect.js';
  * no `TaskCompleted` was ever appended for either. That is `undated`'s live
  * case, not a hypothetical one.
  *
- * This module's own rate stays unmeasured rather than reading `0%`, whatever
- * the fix above does: `phases/` has no test playbook yet, and `fileDefect`
- * (`src/test/defect.ts`) has no call site outside the export list in
- * `src/index.ts`, so nothing yet writes a Defect artifact in this
- * repository's own log. T4.2.7 makes `TaskCompleted.artifactRefs` and this
- * fallback both *measurable*; it does not, by itself, make anything measured.
+ * `phases/test.yaml` (T4.3.3) now runs `nfr`/`suite` steps that call
+ * `fileDefect` (T4.3.4, `src/test/defect-filing.ts`, `src/phase/runner.ts`),
+ * so this repository's own log can carry real Defect artifacts. That does
+ * not make this module's rate measurable for a run that only ran Test,
+ * though, on two separate counts `src/test/defect-filing.ts`'s own module
+ * doc states in full: a Test phase run files defects but merges nothing, so
+ * `merged` — and with it `rate` — reads `0`/`null` for that run regardless of
+ * what got filed; and every defect an `nfr`/`suite` step files is `undated`
+ * by construction, because those are kernel steps that never call
+ * `SessionRunner.runTask` (`src/agent/runner.ts`), and no other
+ * `TaskCompleted` appender names a step id they use either (`chat`'s fixed
+ * `elicit` task, `src/cli/commands.ts`; the demo workload's own fixture ids,
+ * `src/demo/workload.ts`) — so neither `filedAt` route above ever finds one
+ * to date the filing with. That is this module's own `undated`
+ * case (module doc above), not a hypothetical one and not one T4.3.4 closes.
+ * T4.2.7 makes `TaskCompleted.artifactRefs` and the `producedBy.task`
+ * fallback both *measurable*; a defect filed by a kernel step that never
+ * dispatches at all is outside what either can reach.
  */
 export interface EscapedDefectRate {
   readonly runId: string;

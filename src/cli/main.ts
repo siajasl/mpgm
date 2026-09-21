@@ -4,6 +4,7 @@ import {
   attest,
   chat,
   confirm,
+  defect,
   implement,
   intervene,
   recordMerge,
@@ -17,11 +18,12 @@ import {
   type CliContext,
   type CommandResult,
 } from './commands.js';
+import { defectSeverities, type DefectSeverity } from '../test/defect.js';
 
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: sixteen verbs and a handful of flags. A CLI framework would
+ * Deliberately small: nineteen verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -42,6 +44,7 @@ export const VERBS = [
   'record-merge',
   'reopen',
   'chat',
+  'defect',
   'trace',
   'replay',
   'rollback',
@@ -52,10 +55,12 @@ export type Verb = (typeof VERBS)[number];
 export const USAGE = `mpgm — agentic SDLC harness
 
   mpgm run <phase> [--run <id>] [--repo <owner/name>] [--ref <ref>]
-    [--test-project-dir <path>]        execute a phase and present its gate
+    [--test-project-dir <path>] [--defect-severity <critical|high|medium|low>]
+                                        execute a phase and present its gate
     --repo/--ref are what an 'nfr' node's test.nfr measurements report against;
     --test-project-dir is where a 'suite' node runs its generated tests, and is
-    never defaulted — the cases are agent-authored code (TST-4)
+    never defaulted — the cases are agent-authored code (TST-4); --defect-severity
+    is what a filed defect is given — neither producer carries one of its own (T4.3.4)
   mpgm status [--run <id>] [--metrics] [--rates]
     folded state of a run, with cost/tokens/latency/retry/success per phase, role and run and
     harness overhead against NFR-3's 10% threshold (context assembly only, merged over
@@ -80,6 +85,13 @@ export const USAGE = `mpgm — agentic SDLC harness
     repository before anything is recorded (T4.2.15)
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
+  mpgm defect route <id> --to implement --task <t> --by <who> --reason <s>
+  mpgm defect route <id> --to design --phase <p> [--changed <id,id>] --by <who> --reason <s>
+  mpgm defect fix <id> --ref <sha|node> --summary <s> --by <who>
+    route a filed defect back through Implement or Design, or record the fix that
+    route produced (TST-5, ORC-1). The kernel files and re-tests defects; where one
+    belongs is an operator call, made on the evidence this verb prints first. There
+    is no 'verify': a defect closes when the suite that caught it passes again
   mpgm trace <id> | --coverage | --dangling
   mpgm replay [--run <id>]             re-derive state from the log alone
   mpgm rollback <env> --to-version <v> --to-image <img> --to-digest <sha256:...>
@@ -155,10 +167,23 @@ export async function runCli(
       const repo = optional('--repo', flags.repo);
       const ref = optional('--ref', flags.ref);
       const testProjectDir = optional('--test-project-dir', flags['test-project-dir']);
+      const defectSeverityFlag = optional('--defect-severity', flags['defect-severity']);
+      if (
+        defectSeverityFlag !== undefined &&
+        !defectSeverities.includes(defectSeverityFlag as DefectSeverity)
+      ) {
+        throw new Error(
+          `run: --defect-severity must be one of ${defectSeverities.join(', ')}, got ` +
+            `'${defectSeverityFlag}'\n\n${USAGE}`,
+        );
+      }
       return run(context, runId, require('a phase name', positional[0]), {
         ...(repo === undefined ? {} : { repo }),
         ...(ref === undefined ? {} : { ref }),
         ...(testProjectDir === undefined ? {} : { testProjectDir }),
+        ...(defectSeverityFlag === undefined
+          ? {}
+          : { defectSeverity: defectSeverityFlag as DefectSeverity }),
       });
     }
 
@@ -240,6 +265,37 @@ export async function runCli(
           .filter((entry) => entry !== ''),
         flags['dry-run'] === 'true',
       );
+
+    case 'defect': {
+      const action = require("'route' or 'fix'", positional[0]);
+      if (action !== 'route' && action !== 'fix') {
+        throw new Error(`defect: expected 'route' or 'fix', got '${action}'\n\n${USAGE}`);
+      }
+      const to = optional('--to', flags.to);
+      if (to !== undefined && to !== 'implement' && to !== 'design') {
+        throw new Error(
+          `defect route: --to must be 'implement' or 'design', got '${to}'\n\n${USAGE}`,
+        );
+      }
+      return defect(context, action, require('a defect id', positional[1]), {
+        by: require('--by', flags.by),
+        ...(to === undefined ? {} : { to }),
+        ...(flags.task === undefined ? {} : { taskId: flags.task }),
+        ...(flags.phase === undefined ? {} : { phase: flags.phase }),
+        changed: (flags.changed ?? '')
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== ''),
+        // `route` is refused by `routeDefect` (HIL-5) and `fix` by
+        // `defectFixSchema` when these say nothing — but only once they
+        // reach `commands.ts`. Requiring the flag here, the same way
+        // `reopen`/`attest` already do, means a bare `mpgm defect route`
+        // with no `--reason` never gets that far.
+        ...(action === 'route' ? { reason: require('--reason', flags.reason) } : {}),
+        ...(flags.ref === undefined ? {} : { ref: flags.ref }),
+        ...(action === 'fix' ? { summary: require('--summary', flags.summary) } : {}),
+      });
+    }
 
     case 'chat':
       return chat(

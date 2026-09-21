@@ -46,6 +46,15 @@ Each case carries what a failure would mean, in `defect`. That field becomes
 the defect report somebody reads later, so "assertion failed" is not an answer
 — say which promise of the subject was broken.
 
+Each case also carries `tracesTo`: at least one requirement id the subject
+serves, that a failure of this case would call into question. You are not
+handed a requirements document directly — find the id yourself, the same way
+you found the subject, by reading REQUIREMENTS.md (or the project's own
+requirements document) and citing the id whose statement the subject's
+behaviour bears on. Do not invent one. A case naming no requirement cannot
+become a filed defect at all (TST-5): whichever phase it is routed to would
+have nothing to check the fix against.
+
 You do not run anything. You have no shell: the kernel renders your suite,
 runs it, and reports which cases failed. This is deliberate, and it costs you
 the ability to check a case before returning it — so prefer a case whose

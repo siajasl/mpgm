@@ -42,6 +42,14 @@ import {
 import { dockerReleaseProvider } from '../release/docker-provider.js';
 import { RoleRegistry } from '../role/loader.js';
 import { commandNfrProvider } from '../test/nfr-provider.js';
+import {
+  defectSchema,
+  recordFix,
+  routeDefect,
+  type Defect,
+  type DefectRoute,
+  type DefectSeverity,
+} from '../test/defect.js';
 import { testNfrContract } from '../test/nfr.js';
 import {
   approvalKey,
@@ -203,6 +211,14 @@ export interface RunOptions {
    * (`src/test/adversarial.ts`).
    */
   readonly testProjectDir?: string;
+  /**
+   * Severity a filed defect is given, for an `nfr`/`suite` node (T4.3.4).
+   *
+   * No default, on purpose: neither producer carries a severity of its own
+   * (`src/test/defect-filing.ts`), so an operator supplies one — critical/high
+   * hold the Test gate's `no-open-defects` criterion shut, medium/low do not.
+   */
+  readonly defectSeverity?: DefectSeverity;
 }
 
 /**
@@ -259,6 +275,9 @@ export async function run(
       ...(options.testProjectDir === undefined
         ? {}
         : { testProjectDir: options.testProjectDir }),
+      ...(options.defectSeverity === undefined
+        ? {}
+        : { defectSeverity: options.defectSeverity }),
       sessions: new SessionRunner({
         log,
         provider: context.provider,
@@ -1307,6 +1326,173 @@ export async function rollback(
   } finally {
     db.close();
   }
+}
+
+export interface DefectCommandOptions {
+  /** Who is making the call. Recorded in the defect's own history. */
+  readonly by: string;
+  /** `route` only: where TST-5 sends it. */
+  readonly to?: 'implement' | 'design';
+  /** `route --to implement`: the plan task the fix lands under. */
+  readonly taskId?: string;
+  /** `route --to design`: the phase to reopen. */
+  readonly phase?: string;
+  /** `route --to design`: ids whose content the defect calls into question. */
+  readonly changed?: readonly string[];
+  /** `route`: why — required, and recorded (HIL-5, `routeDefect`). */
+  readonly reason?: string;
+  /** `fix`: the commit sha (Implement) or artifact node (Design) the route produced. */
+  readonly ref?: string;
+  /** `fix`: what the fix did. */
+  readonly summary?: string;
+}
+
+/**
+ * `mpgm defect route|fix <id>` — the operator's half of TST-5's round trip
+ * (T4.3.4, ORC-1).
+ *
+ * This is the component that routes a filed defect, and it is an operator
+ * verb rather than a role or an inference for the reason `src/test/defect.ts`
+ * gives: judging "does this invalidate a design assumption, or is it a bug in
+ * the implementation" is exactly the call ORC-1 reserves for a person. The
+ * kernel files the defect (`src/test/defect-filing.ts`, from an `nfr`/`suite`
+ * step) and re-tests it on the next run of the same suite; what it will not
+ * do is decide where the fix belongs.
+ *
+ * The evidence the decision is made on is printed before anything is written,
+ * and it is the filed artifact's own: the title, severity, requirement trace,
+ * the suite and case id that caught it, and the finder's `detail`. That is
+ * everything `fileDefect` recorded — an operator routing a defect is not
+ * asked to go and re-derive the failure from a log somewhere.
+ *
+ * Both verbs walk one edge of the lifecycle and write the next version of the
+ * same artifact, so a refusal (`DefectLifecycleError`) comes from
+ * `src/test/defect.ts` and not from a second copy of its rules here:
+ *
+ * - `route` — `routeDefect`, from `open` or `reopened`.
+ * - `fix` — `recordFix`, from `routed`, naming the ref the target produced.
+ *
+ * There is deliberately no `verify` verb. Closing a defect is a re-test
+ * result, not a decision: the next `suite`/`nfr` run either fails the same
+ * case again (`fileAndWriteDefect` reopens it) or passes it
+ * (`verifyFixedDefect` closes it), both driven by the phase over the same
+ * evidence that caught it. An operator verb that marked a defect `verified`
+ * by assertion would be TST-5's out-of-band patch wearing the kernel's own
+ * CLI.
+ */
+export function defect(
+  context: CliContext,
+  action: 'route' | 'fix',
+  id: string,
+  options: DefectCommandOptions,
+): CommandResult {
+  const artifacts = new ArtifactStore({
+    root: context.root,
+    schemas: context.artifactSchemas,
+  });
+  const basePath = `artifacts/defect/${id}.md`;
+  if (artifacts.latestVersion(basePath) === 0) {
+    // Named in full: an operator who mistypes an id needs to know where the
+    // command looked, not merely that it found nothing (CONV-3).
+    context.write(
+      `no defect '${id}' at ${basePath} under ${context.root}. Filed defects are ` +
+        `written there by an 'nfr'/'suite' step (T4.3.4); 'mpgm status --rates' ` +
+        `lists what has been filed.`,
+    );
+    return { ok: false, detail: 'no such defect' };
+  }
+
+  const artifact = artifacts.read(basePath);
+  const current = defectSchema.parse(artifact.data);
+
+  context.write(`${id} v${String(artifact.version)} — ${current.status}`);
+  context.write(`  ${current.severity}: ${current.title}`);
+  context.write(`  traces to: ${current.tracesTo.join(', ')}`);
+  context.write(`  caught by: ${current.evidence.kind} case ${current.evidence.caseId}`);
+  context.write(`  detail: ${current.evidence.detail}`);
+  context.write(`  description: ${current.description}`);
+
+  let next: Defect;
+  try {
+    if (action === 'route') {
+      const to = options.to;
+      if (to === undefined) {
+        throw new Error(
+          `defect route: --to must be 'implement' or 'design' — ORC-1 leaves that ` +
+            `call to you, and nothing in the evidence above decides it`,
+        );
+      }
+      // `reason` is required and non-empty by the time it reaches here: not
+      // defaulted from a missing flag (`main.ts` already refuses that), and
+      // not padded from '' — a caller that skips it is a caller `routeDefect`
+      // itself would refuse (HIL-5), and this function fails the same way
+      // rather than manufacturing the non-empty string the check wants to see
+      // (CONV-4).
+      if (options.reason === undefined || options.reason.trim() === '') {
+        throw new Error(
+          'defect route: --reason is required and must say something (HIL-5) — ' +
+            'routing a defect is a decision the log records, not a rubber stamp',
+        );
+      }
+      const route: DefectRoute =
+        to === 'implement'
+          ? { to, taskId: options.taskId ?? '' }
+          : {
+              to,
+              phase: options.phase ?? '',
+              ...(options.changed === undefined || options.changed.length === 0
+                ? {}
+                : { changed: [...options.changed] }),
+            };
+      // `--by` is appended to a reason that already says something, rather
+      // than standing in for one: the history entry names both who decided
+      // and why, and neither substitutes for the other.
+      next = routeDefect(current, route, `${options.reason} (routed by ${options.by})`);
+    } else {
+      // Same fail-closed shape as `reason` above: `defectFixSchema` requires
+      // a non-empty `summary`, and padding an unset one would let a fix with
+      // nothing to say reach that check as if it had something.
+      if (options.summary === undefined || options.summary.trim() === '') {
+        throw new Error(
+          'defect fix: --summary is required and must say something — ' +
+            'it is what the next reader checks the fix against',
+        );
+      }
+      next = recordFix(current, {
+        ref: options.ref ?? '',
+        summary: `${options.summary} (recorded by ${options.by})`,
+      });
+    }
+  } catch (cause) {
+    context.write(cause instanceof Error ? cause.message : String(cause));
+    return { ok: false, detail: `defect ${action} refused` };
+  }
+
+  const written = artifacts.write({
+    id: artifact.id,
+    basePath,
+    schema: 'defect',
+    data: next,
+    // The operator is the producer of record for this version, the same way
+    // the kernel is for the filing it is answering.
+    producedBy: {
+      task: `defect-${action}`,
+      role: 'operator',
+      model: '(none)',
+      runId: artifact.producedBy.runId,
+    },
+    tracesTo: next.tracesTo,
+  });
+
+  context.write(`\n${id} v${String(written.version)} — ${next.status}`);
+  if (next.status !== 'open') {
+    context.write(
+      next.route.to === 'implement'
+        ? `  routed to implement, task ${next.route.taskId}`
+        : `  routed to design, phase ${next.route.phase}`,
+    );
+  }
+  return { ok: true, detail: `${id} is ${next.status}` };
 }
 
 /** `mpgm approve <gate>` — record a gate decision (HIL-5). */

@@ -22,6 +22,7 @@ import {
   ArtifactStore,
   deployFingerprint,
   EventLog,
+  fileDefect,
   fingerprint,
   kernelRegistry,
   listGateTags,
@@ -1310,6 +1311,123 @@ try {
       already.output,
     );
   }
+
+  // defect route|fix — the operator's half of TST-5's round trip (T4.3.4,
+  // ORC-1). The kernel files a defect the way an nfr/suite step does
+  // (`fileAndWriteDefect`); what this exercises is the two calls a run
+  // cannot make for itself — where a filed defect goes, and what fixed it.
+  const demoDefectId = 'defect-adversarial-demo-case';
+  new ArtifactStore({ root: workspace, schemas: projectArtifactSchemas() }).write({
+    id: demoDefectId,
+    basePath: `artifacts/defect/${demoDefectId}.md`,
+    schema: 'defect',
+    data: fileDefect({
+      title: "Adversarial case 'demo-case' failed: request accepted with no owner",
+      severity: 'high',
+      description: 'the sample service accepted a loan with an empty owner field.',
+      evidence: {
+        kind: 'adversarial',
+        caseId: 'demo-case',
+        detail: 'expected a 400 refusal, got a 201 with owner: ""',
+      },
+      tracesTo: ['ORC-1'],
+    }),
+    producedBy: { task: 'attack', role: 'kernel', model: '(none)', runId: 'r1' },
+  });
+
+  // A bare `defect route` with no `--reason` is refused before `defect` (the
+  // function) is ever reached — `routeDefect`'s own non-empty-reason check
+  // (HIL-5) exists to make routing auditable, and a CLI that defaulted the
+  // flag to '' and padded it with `(routed by ...)` would let that check
+  // pass with nothing true in it.
+  const defectNoReason = await call([
+    'defect',
+    'route',
+    demoDefectId,
+    '--to',
+    'implement',
+    '--task',
+    'T9.1.1',
+    '--by',
+    'macg',
+  ]).catch((cause) => ({ result: undefined, output: '', error: cause }));
+  check(
+    'defect route refuses a missing --reason, writing no new version',
+    defectNoReason.result === undefined &&
+      defectNoReason.error?.message.includes('--reason') &&
+      defectNoReason.error?.message.includes('is required') &&
+      new ArtifactStore({
+        root: workspace,
+        schemas: projectArtifactSchemas(),
+      }).latestVersion(`artifacts/defect/${demoDefectId}.md`) === 1,
+    defectNoReason.error?.message,
+  );
+
+  const defectRouted = await call([
+    'defect',
+    'route',
+    demoDefectId,
+    '--to',
+    'implement',
+    '--task',
+    'T9.1.1',
+    '--by',
+    'macg',
+    '--reason',
+    'a validation bug, not a design assumption',
+  ]);
+  check(
+    'defect route walks a filed defect to routed, printing the evidence it decided on',
+    defectRouted.result.ok &&
+      defectRouted.output.includes('demo-case') &&
+      defectRouted.output.includes('routed'),
+    defectRouted.output,
+  );
+
+  // Same shape, the other verb: a bare `defect fix` with no `--summary` is
+  // refused before `defectFixSchema`'s own non-empty check ever sees it.
+  const defectFixedRoutedVersion = new ArtifactStore({
+    root: workspace,
+    schemas: projectArtifactSchemas(),
+  }).latestVersion(`artifacts/defect/${demoDefectId}.md`);
+  const defectNoSummary = await call([
+    'defect',
+    'fix',
+    demoDefectId,
+    '--ref',
+    'abc1234',
+    '--by',
+    'macg',
+  ]).catch((cause) => ({ result: undefined, output: '', error: cause }));
+  check(
+    'defect fix refuses a missing --summary, writing no new version',
+    defectNoSummary.result === undefined &&
+      defectNoSummary.error?.message.includes('--summary') &&
+      defectNoSummary.error?.message.includes('is required') &&
+      new ArtifactStore({
+        root: workspace,
+        schemas: projectArtifactSchemas(),
+      }).latestVersion(`artifacts/defect/${demoDefectId}.md`) ===
+        defectFixedRoutedVersion,
+    defectNoSummary.error?.message,
+  );
+
+  const defectFixed = await call([
+    'defect',
+    'fix',
+    demoDefectId,
+    '--ref',
+    'abc1234',
+    '--summary',
+    'reject an empty owner with a 400',
+    '--by',
+    'macg',
+  ]);
+  check(
+    'defect fix records the commit the route produced',
+    defectFixed.result.ok && defectFixed.output.includes('fix-pending'),
+    defectFixed.output,
+  );
 
   // kill — terminal, and resume does not undo it
   await call(['kill', '--run', 'r1']);

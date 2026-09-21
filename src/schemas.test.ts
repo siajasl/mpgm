@@ -1,4 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import {
+  ArtifactSchemaRegistry,
+  defineArtifactSchema,
+} from './artifact/schema-registry.js';
+import { ArtifactStore } from './artifact/store.js';
+import {
+  adversarialVerdictSchema,
+  MIGRATED_VERDICT_TRACES_TO,
+} from './test/adversarial.js';
+import { looksLikeId } from './trace/links.js';
 import {
   designCandidateSchema,
   designCandidatesSchema,
@@ -11,6 +25,13 @@ import {
   requirementSchema,
   scopeSchema,
 } from './schemas.js';
+
+const temporaryRoots: string[] = [];
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 const functional = {
   kind: 'functional' as const,
@@ -507,6 +528,56 @@ describe('schema registration', () => {
     // object-topped check below regardless.
     expect(projectArtifactSchemas().families).toContain('defect');
     expect(projectOutputSchemas().has('defect')).toBe(false);
+  });
+
+  it('reads an adversarial-verdict written before tracesTo existed (ART-3, T4.3.4)', () => {
+    // T4.3.4 made `tracesTo` required and non-empty on a verdict row. That is
+    // a narrowing of a registered family, so a v1 file has to migrate rather
+    // than stop being readable (CONV-7's artifact counterpart): without the
+    // migration this read throws inside `ArtifactSchemaRegistry.validate`,
+    // which is what this test fails on.
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-verdict-migration-'));
+    temporaryRoots.push(root);
+    const v1Row = {
+      id: 'refuses-a-swapped-range',
+      kind: 'negative',
+      about: 'clamp with min > max',
+      defect: 'clamp returns a value instead of refusing',
+      outcome: 'failed',
+      detail: '',
+    };
+    const v1Registry = new ArtifactSchemaRegistry([
+      defineArtifactSchema(
+        'adversarial-verdict',
+        z.object({
+          rows: z.array(z.record(z.string(), z.unknown())).min(1),
+          defects: z.array(z.record(z.string(), z.unknown())),
+          notReported: z.array(z.record(z.string(), z.unknown())),
+          clean: z.boolean(),
+        }),
+      ),
+    ]);
+    const basePath = 'artifacts/verdict/attack.md';
+    new ArtifactStore({ root, schemas: v1Registry }).write({
+      id: 'attack',
+      basePath,
+      schema: 'adversarial-verdict',
+      data: { rows: [v1Row], defects: [v1Row], notReported: [], clean: false },
+      producedBy: { task: 'attack', role: 'kernel', model: '(none)', runId: 'run-1' },
+    });
+
+    const read = new ArtifactStore({ root, schemas: projectArtifactSchemas() }).read(
+      basePath,
+    );
+    const verdict = adversarialVerdictSchema.parse(read.data);
+
+    expect(read.schemaVersion).toBe(2);
+    expect(verdict.rows[0]?.tracesTo).toStrictEqual([MIGRATED_VERDICT_TRACES_TO]);
+    // Not id-shaped, so the trace index reports it as a citation that was
+    // never going to resolve rather than as a dangling requirement.
+    expect(looksLikeId(MIGRATED_VERDICT_TRACES_TO)).toBe(false);
+    // Everything the row already carried survives the migration.
+    expect(verdict.rows[0]?.defect).toBe('clamp returns a value instead of refusing');
   });
 
   it('registers release-outcome as a stored artifact only, not a session output', () => {

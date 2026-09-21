@@ -7,6 +7,7 @@ import {
   designReopenRequest,
   fileDefect,
   recordFix,
+  regressDefect,
   retestDefect,
   routeDefect,
   type Defect,
@@ -262,6 +263,69 @@ describe("CONV-5: a defect's history must end where its own status says it is", 
     const verified = retestDefect(fixPending, { passed: true, detail: 'holds' });
 
     expect(defectSchema.safeParse(verified).success).toBe(true);
+  });
+});
+
+describe('regressDefect: a verified defect whose case fails again (T4.3.4)', () => {
+  const verified = (): Defect => {
+    const routed = routeDefect(
+      fileDefect(filing),
+      { to: 'implement', taskId: 'T-fix' },
+      'a real implementation bug',
+    );
+    const pending = recordFix(routed, { ref: 'abc1234', summary: 'refuses zero again' });
+    return retestDefect(pending, { passed: true, detail: 'the case passes' });
+  };
+
+  it('reopens it, carrying the route and fix that regressed', () => {
+    const before = verified();
+    assertStatus(before, 'verified');
+
+    const after = regressDefect(before, 'the same case fails again on run-9');
+
+    assertStatus(after, 'reopened');
+    expect(after.route).toStrictEqual({ to: 'implement', taskId: 'T-fix' });
+    expect(after.fix).toStrictEqual({ ref: 'abc1234', summary: 'refuses zero again' });
+    // Another round of re-work, counted as one — the same meaning
+    // `retestDefect`'s failing branch gives the field.
+    expect(after.failedAttempts).toBe(before.failedAttempts + 1);
+    expect(after.history.at(-1)).toStrictEqual({
+      status: 'reopened',
+      detail: 'the same case fails again on run-9',
+      ref: 'abc1234',
+      route: { to: 'implement', taskId: 'T-fix' },
+    });
+  });
+
+  it('puts the defect back in front of the Test gate', () => {
+    // The whole point of the edge: `blocksGate` reads `verified` as closed,
+    // so without this transition a regression is a failing case the gate
+    // reports nothing about (CONV-6: fails against a version that leaves the
+    // verified defect as it was).
+    const before = verified();
+    expect(blocksGate([before])).toStrictEqual([]);
+    expect(blocksGate([regressDefect(before, 'failing again')])).toHaveLength(1);
+  });
+
+  it('leaves it routable again, so the round trip can run a second time', () => {
+    const reopened = regressDefect(verified(), 'failing again');
+    const rerouted = routeDefect(reopened, { to: 'implement', taskId: 'T-fix-2' }, 'why');
+
+    assertStatus(rerouted, 'routed');
+    expect(rerouted.route).toStrictEqual({ to: 'implement', taskId: 'T-fix-2' });
+  });
+
+  it('refuses a defect that is not verified', () => {
+    // Only `verified` — `fix-pending` is `retestDefect`'s failing branch, and
+    // routing a reopened defect is `routeDefect`'s. A second way to reach
+    // `reopened` from those would be an edge-skip wearing a different name.
+    expect(() => regressDefect(fileDefect(filing), 'failing again')).toThrow(
+      DefectLifecycleError,
+    );
+  });
+
+  it('refuses a regression with no stated detail', () => {
+    expect(() => regressDefect(verified(), '  ')).toThrow(DefectDataError);
   });
 });
 

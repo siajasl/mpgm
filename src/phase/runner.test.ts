@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { OutputSchemaRegistry } from '../agent/output-registry.js';
 import { SessionRunner } from '../agent/runner.js';
@@ -26,6 +26,8 @@ import { EventLog } from '../event/store.js';
 import { GateManager } from '../gate/manager.js';
 import { parsePlaybook } from '../playbook/loader.js';
 import { parseRole } from '../role/loader.js';
+import { defectSchema, recordFix, routeDefect } from '../test/defect.js';
+import { adversarialDefectId, nfrDefectId } from '../test/defect-filing.js';
 import { testNfrContract, type NfrRunInput } from '../test/nfr.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
 import { Projector } from '../state/projector.js';
@@ -949,6 +951,61 @@ gate:
   };
 
   /**
+   * A below-threshold NFR whose own requirement id cannot become a defect
+   * path segment (a space, refused by `DEFECT_ID_SEGMENT`,
+   * `src/test/defect-filing.ts`) — the shape review round 3 of T4.3.4 found
+   * actually unguarded: `nfrScopeSchema`'s flat `requirements` array
+   * (`nfrRequirementSchema`, `id: z.string().min(1)`, `src/test/nfr.ts`) has
+   * no format constraint on `id` at all, unlike a real Scope's own
+   * `requirementSchema` (`/^[A-Z][A-Z0-9]{1,5}-[0-9]+$/`), which could never
+   * produce an id `DEFECT_ID_SEGMENT` refuses in the first place. This is the
+   * flat shape, not a Scope, so a measured row with an id like this reaches
+   * the filing call for real.
+   */
+  const ILL_FORMED_NFR_ID_SCOPE = {
+    summary: 'a below-threshold NFR whose id cannot be filed as a defect',
+    requirements: [
+      {
+        id: 'PERF 2',
+        metric: 'p99-latency',
+        // Over threshold, the same way PERF-2 above is: this row must
+        // actually reach the filing call, not merely parse.
+        value: 500,
+        unit: 'ms',
+        measuredBy: 'k6',
+      },
+    ],
+  };
+
+  const ILL_FORMED_NFR_ID_PLAYBOOK = `
+phase: test
+description: measure a below-threshold NFR whose id cannot become a defect path
+artifacts:
+  coverage:
+    schema: nfr-coverage
+    path: artifacts/coverage.md
+    description: nfr coverage
+tasks:
+  - id: scope-nfrs
+    role: flat-nfr-scoper
+    description: state the quantified NFRs to measure, in the flat shape
+    prompt: MARK-BAD-NFR-ID list the quantified requirements
+  - kind: nfr
+    id: measure
+    description: measure them against test.nfr
+    requirements: scope-nfrs
+    produces: coverage
+gate:
+  id: test-gate
+  description: coverage exists
+  criteria:
+    - id: c1
+      kind: artifact-exists
+      description: coverage exists
+      artifact: coverage
+`;
+
+  /**
    * A Scope that declares requirements but nothing quantified — the case an
    * all-or-nothing parse of the flat shape could never reach, and the one
    * that must not complete as a clean, zero-row coverage report.
@@ -997,6 +1054,35 @@ gate:
       artifact: coverage
 `;
 
+  /**
+   * No `nfr`/`suite` node at all — a plain session step, the negative case
+   * `GateEvidence.defects` needs (T4.3.4): a playbook that never had a way to
+   * file anything this run leaves the field `undefined`, not `[]`.
+   */
+  const NO_DEFECT_SOURCE_PLAYBOOK = `
+phase: test
+description: a plain session step, no nfr/suite node
+artifacts:
+  scope-doc:
+    schema: scope
+    path: artifacts/scope-doc.md
+    description: a plain session output, never an nfr/suite step
+tasks:
+  - id: scope-nfrs
+    role: nfr-scoper
+    description: state the quantified NFRs to measure
+    prompt: MARK-NFR list the quantified requirements
+    produces: scope-doc
+gate:
+  id: test-gate
+  description: scope-doc exists
+  criteria:
+    - id: c1
+      kind: artifact-exists
+      description: scope-doc exists
+      artifact: scope-doc
+`;
+
   const CLAMP_SOURCE = `
 export function clamp(value, min, max) {
   if (min > max) {
@@ -1016,6 +1102,7 @@ export function clamp(value, min, max) {
         about: 'min greater than max',
         defect: 'clamp should refuse rather than silently swap the bounds',
         body: 'assert.throws(() => subject.clamp(5, 10, 0), RangeError);',
+        tracesTo: ['FUN-CLAMP'],
       },
       {
         id: 'clamps-at-the-upper-bound',
@@ -1023,12 +1110,14 @@ export function clamp(value, min, max) {
         about: 'a value exactly at max',
         defect: 'the upper bound is inclusive and clamp must return it unchanged',
         body: 'assert.equal(subject.clamp(10, 0, 10), 10);',
+        tracesTo: ['FUN-CLAMP'],
       },
       {
         id: 'result-always-within-range',
         kind: 'property',
         about: 'the result is always within [min, max]',
         defect: 'a clamped value escaping its own range is the whole point of clamp',
+        tracesTo: ['FUN-CLAMP'],
         body:
           'for (const value of [-5, 0, 3, 7, 50]) {\n' +
           '  const result = subject.clamp(value, 0, 10);\n' +
@@ -1037,6 +1126,18 @@ export function clamp(value, min, max) {
       },
     ],
   };
+
+  /**
+   * A `clamp` that no longer refuses a swapped range — planted the same way
+   * the sample project's rounding defect is (`src/test/adversarial.test.ts`),
+   * so `refuses-a-swapped-range` fails for a real reason and the phase has
+   * something to file (T4.3.4).
+   */
+  const CLAMP_SOURCE_WITH_DEFECT = `
+export function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+`;
 
   function roleFile(name: string, schema: string): string {
     return [
@@ -1082,11 +1183,17 @@ export function clamp(value, min, max) {
     const provider: AgentSessionProvider = {
       run: (request: SessionRequest) => {
         invocations.push(request.prompt);
-        if (request.prompt.includes('MARK-NFR')) {
-          return Promise.resolve(scriptedSuccess(SCOPE));
-        }
+        // The more specific markers first: 'MARK-NFR' is a substring of
+        // 'MARK-NO-NFR' were it checked after, and of any 'MARK-NFR-*'
+        // variant, so checking it first would shadow them.
         if (request.prompt.includes('MARK-NO-NFR')) {
           return Promise.resolve(scriptedSuccess(FUNCTIONAL_ONLY_SCOPE));
+        }
+        if (request.prompt.includes('MARK-BAD-NFR-ID')) {
+          return Promise.resolve(scriptedSuccess(ILL_FORMED_NFR_ID_SCOPE));
+        }
+        if (request.prompt.includes('MARK-NFR')) {
+          return Promise.resolve(scriptedSuccess(SCOPE));
         }
         if (request.prompt.includes('MARK-SUITE')) {
           return Promise.resolve(scriptedSuccess(SUITE));
@@ -1108,6 +1215,11 @@ export function clamp(value, min, max) {
       // (`nfrRequirementsSourceOf`, src/phase/runner.ts).
       parseRole('nfr-scoper.md', roleFile('nfr-scoper', 'scope')),
       parseRole('suite-writer.md', roleFile('suite-writer', 'adversarial-suite')),
+      // The flat `nfr-scope` shape (`nfrScopeSchema`) a real Scope can never
+      // produce (its own `id` is regex-constrained) but this schema does not
+      // constrain at all beyond `.min(1)` — the shape review round 3 named
+      // as actually unguarded (`ILL_FORMED_NFR_ID_SCOPE` above).
+      parseRole('flat-nfr-scoper.md', roleFile('flat-nfr-scoper', 'nfr-scope')),
     ]);
 
     const registry = new CapabilityRegistry();
@@ -1153,6 +1265,7 @@ export function clamp(value, min, max) {
         capabilities: registry,
         repo: 'mpgm',
         ref: 'abc123',
+        defectSeverity: 'high' as const,
       },
     };
   }
@@ -1296,4 +1409,253 @@ export function clamp(value, min, max) {
       db.close();
     }
   });
+
+  it('blocks an nfr/suite step missing defectSeverity before dispatch (decision, not a default)', async () => {
+    const { db, common, projectDir, invocations } = testHarness();
+    const { defectSeverity: _defectSeverity, ...withoutSeverity } = common;
+    try {
+      const result = await runPhase({
+        ...withoutSeverity,
+        playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+        testProjectDir: projectDir,
+      });
+
+      expect(result.outcome.status).toBe('blocked');
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+        /needs one supplied rather than assumed/,
+      );
+      expect(result.outcome.status === 'blocked' && result.outcome.reason).toContain(
+        '--defect-severity',
+      );
+      // Caught before dispatch, the same as the other run-option checks
+      // above: no upstream session ran to pay for it.
+      expect(invocations).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it(
+    'blocks an nfr step rather than crashing when a below-threshold row cannot ' +
+      'be filed as a defect (T4.3.4 rework, review round 3)',
+    async () => {
+      const { db, common } = testHarness();
+      try {
+        const result = await runPhase({
+          ...common,
+          playbook: parsePlaybook('test.yaml', ILL_FORMED_NFR_ID_PLAYBOOK),
+        });
+
+        // Not an uncaught rejection escaping `runNfr`'s own try/catch: the
+        // scheduler (`src/orchestrator/scheduler.ts`) already turns a
+        // throwing step runner into a generic 'step runner threw: ...'
+        // blocked reason, so the assertion that actually distinguishes
+        // 'caught here' from 'caught two layers up' is that the reason is
+        // exactly `DefectIdError`'s own message — anchored, not merely
+        // present somewhere inside a wrapping one.
+        expect(result.outcome.status).toBe('blocked');
+        expect(result.outcome.status === 'blocked' && result.outcome.reason).toMatch(
+          /^cannot file a defect for quantified NFR 'PERF 2'/,
+        );
+        // The coverage artifact this step already wrote before filing was
+        // attempted is still on disk — blocking here is a step outcome over
+        // work already done, not a crash that leaves nothing recorded.
+        expect(result.produced.coverage).toBeDefined();
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it(
+    'files a Defect for a failed case and a below-threshold NFR, outside produces, ' +
+      'and the round trip from there reads back off disk (T4.3.4)',
+    async () => {
+      const { db, common, projectDir, log } = testHarness();
+      const { artifacts, gates } = common;
+      // Spied rather than inferred from the packet: `ApprovalPacket` does not
+      // expose the `GateEvidence` it was built from, so the only way to check
+      // what the gate manager actually received is to intercept the call.
+      const presentSpy = vi.spyOn(gates, 'present');
+      // The planted defect: `clamp` no longer refuses a swapped range, so
+      // `refuses-a-swapped-range` fails against the real subject the way
+      // `split.mjs`'s planted rounding defect does in `adversarial.test.ts`.
+      writeFileSync(join(projectDir, 'clamp.mjs'), CLAMP_SOURCE_WITH_DEFECT, 'utf8');
+
+      try {
+        const result = await runPhase({
+          ...common,
+          playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+          testProjectDir: projectDir,
+        });
+
+        expect(result.outcome.status).toBe('gate-presented');
+
+        // Filed outside `step.produces`: neither id is a declared artifact of
+        // this playbook (`coverage`/`verdict` are), and `result.produced`
+        // — exactly what `step.produces` writes — carries neither.
+        expect(
+          result.produced['defect-adversarial-refuses-a-swapped-range'],
+        ).toBeUndefined();
+        expect(result.produced['defect-nfr-PERF-2']).toBeUndefined();
+
+        // Written to disk under artifacts/defect/, at v1 each — the path
+        // `mpgm status --rates` reads a filed defect back from.
+        const adversarialPath = join(
+          artifacts.root,
+          'artifacts',
+          'defect',
+          `${adversarialDefectId('refuses-a-swapped-range')}.v1.md`,
+        );
+        const nfrPath = join(
+          artifacts.root,
+          'artifacts',
+          'defect',
+          `${nfrDefectId('PERF-2')}.v1.md`,
+        );
+        expect(existsSync(adversarialPath)).toBe(true);
+        expect(existsSync(nfrPath)).toBe(true);
+
+        // Read back off disk — not the in-memory value this test just built —
+        // through the same store `runPhase` wrote it with.
+        const adversarialArtifact = artifacts.read(
+          `artifacts/defect/${adversarialDefectId('refuses-a-swapped-range')}.md`,
+        );
+        const adversarialDefect = defectSchema.parse(adversarialArtifact.data);
+        expect(adversarialDefect.status).toBe('open');
+        expect(adversarialDefect.severity).toBe('high');
+        expect(adversarialDefect.title).toContain('refuses-a-swapped-range');
+        expect(adversarialDefect.tracesTo).toStrictEqual(['FUN-CLAMP']);
+        expect(adversarialDefect.evidence.detail).not.toBe('');
+        expect(adversarialDefect.evidence.caseId).toBe('refuses-a-swapped-range');
+
+        const nfrArtifact = artifacts.read(
+          `artifacts/defect/${nfrDefectId('PERF-2')}.md`,
+        );
+        const nfrDefect = defectSchema.parse(nfrArtifact.data);
+        expect(nfrDefect.status).toBe('open');
+        expect(nfrDefect.severity).toBe('high');
+        expect(nfrDefect.tracesTo).toStrictEqual(['PERF-2']);
+        // The mock provider supplied evidence text, so the fallback never
+        // fires here — see `defect-filing.test.ts` for the empty-evidence
+        // case.
+        expect(nfrDefect.evidence.detail).toBe('measured by k6');
+
+        // `no-open-defects` is not a criterion of TEST_PLAYBOOK's own gate
+        // (only `c1`/`c2`, both `artifact-exists`) — so the only way to see
+        // that the T4.3.4 gap `phases/test.yaml`'s own gate description named
+        // is actually closed is to check what `present` was handed directly:
+        // an explicit `defects` array (not `undefined`) naming both filings.
+        expect(presentSpy).toHaveBeenCalledTimes(1);
+        const evidence = presentSpy.mock.calls[0]?.[2];
+        expect(evidence?.defects).toBeDefined();
+        expect(
+          evidence?.defects?.map((defect) => defect.evidence.caseId).sort(),
+        ).toStrictEqual(['PERF-2', 'refuses-a-swapped-range'].sort());
+
+        // Routing and recording the fix are the operator's half of the round
+        // trip (ORC-1), made through `mpgm defect route|fix` — the verb that
+        // prints this artifact's own evidence and walks the same two edges
+        // (`defect`, `src/cli/commands.ts`, tested in `commands.test.ts`).
+        // Applied directly here, over the artifact this run already filed,
+        // because this test is about what the *phase* does on either side of
+        // them. `basePath` is the same
+        // root-relative path `fileAndWriteDefect` wrote v1 under — never
+        // `adversarialArtifact.path`, which `ArtifactStore.read` already
+        // resolved to an absolute path.
+        const basePath = `artifacts/defect/${adversarialDefectId('refuses-a-swapped-range')}.md`;
+        let defect = adversarialDefect;
+        artifacts.write({
+          id: adversarialArtifact.id,
+          basePath,
+          schema: 'defect',
+          data: (defect = routeDefect(
+            defect,
+            { to: 'implement', taskId: 'T-fix-clamp' },
+            'a real implementation bug, not a design assumption',
+          )),
+          producedBy: adversarialArtifact.producedBy,
+          tracesTo: defect.tracesTo,
+        });
+        artifacts.write({
+          id: adversarialArtifact.id,
+          basePath,
+          schema: 'defect',
+          data: (defect = recordFix(defect, {
+            ref: 'abc1234',
+            summary: 'clamp refuses min > max again',
+          })),
+          producedBy: adversarialArtifact.producedBy,
+          tracesTo: defect.tracesTo,
+        });
+        // The re-test is not driven from here: the fix lands in the subject,
+        // and the *phase* runs the same case again and closes the defect
+        // (`verifyFixedDefect`, `src/test/defect-filing.ts`). Nothing below
+        // calls `retestDefect` — a test that asserted `verified` by calling
+        // it would be the out-of-band close TST-5 refuses, wearing a test's
+        // clothes. v4 exists only if the second run wrote it.
+        writeFileSync(join(projectDir, 'clamp.mjs'), CLAMP_SOURCE, 'utf8');
+        log.append({
+          runId: 'run-2',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+        const afterFix = await runPhase({
+          ...common,
+          runId: 'run-2',
+          playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+          testProjectDir: projectDir,
+        });
+        expect(afterFix.outcome.status).toBe('gate-presented');
+
+        // Every version read back off disk, not carried over in memory —
+        // the store's own history, not this test's.
+        expect(defectSchema.parse(artifacts.read(basePath, 1).data).status).toBe('open');
+        expect(defectSchema.parse(artifacts.read(basePath, 2).data).status).toBe(
+          'routed',
+        );
+        expect(defectSchema.parse(artifacts.read(basePath, 3).data).status).toBe(
+          'fix-pending',
+        );
+        const verified = defectSchema.parse(artifacts.read(basePath, 4).data);
+        expect(verified.status).toBe('verified');
+        expect(verified.tracesTo).toStrictEqual(['FUN-CLAMP']);
+        // Written by the second phase run, not by this test: the producer of
+        // record is the suite step that re-ran the case.
+        expect(artifacts.read(basePath, 4).producedBy.runId).toBe('run-2');
+        expect(verified.history.at(-1)?.detail).toContain('passed on re-run');
+      } finally {
+        db.close();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    'leaves GateEvidence.defects undefined for a playbook with no nfr/suite node ' +
+      '(T4.3.4)',
+    async () => {
+      const { db, common } = testHarness();
+      const { gates } = common;
+      const presentSpy = vi.spyOn(gates, 'present');
+
+      try {
+        const result = await runPhase({
+          ...common,
+          playbook: parsePlaybook('test.yaml', NO_DEFECT_SOURCE_PLAYBOOK),
+        });
+
+        expect(result.outcome.status).toBe('gate-presented');
+        expect(presentSpy).toHaveBeenCalledTimes(1);
+        const evidence = presentSpy.mock.calls[0]?.[2];
+        // Not `[]`: `[]` means a source was consulted and found nothing,
+        // `undefined` means no source was wired at all — this playbook never
+        // declared an `nfr`/`suite` node, so it is the latter
+        // (`GateEvidence.defects`'s own doc, `src/gate/manager.ts`).
+        expect(evidence?.defects).toBeUndefined();
+      } finally {
+        db.close();
+      }
+    },
+  );
 });

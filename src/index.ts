@@ -309,6 +309,7 @@ export { DEFAULT_CONCURRENCY, runPhase } from './phase/runner.js';
 export type {
   CliContext,
   CommandResult,
+  DefectCommandOptions,
   RollbackDeps,
   RunOptions,
 } from './cli/commands.js';
@@ -319,6 +320,7 @@ export {
   attest,
   confirm,
   chat,
+  defect,
   DEFAULT_DASHBOARD_PORT,
   intervene,
   recordMerge,
@@ -716,9 +718,28 @@ export {
   designReopenRequest,
   fileDefect,
   recordFix,
+  regressDefect,
   retestDefect,
   routeDefect,
 } from './test/defect.js';
+export type {
+  DefectToFile,
+  DefectToVerify,
+  FiledDefectRecord,
+} from './test/defect-filing.js';
+export {
+  adversarialDefectId,
+  adversarialDefectOptions,
+  DefectIdError,
+  defectsFromAdversarialVerdict,
+  defectsFromNfrCoverage,
+  defectsToVerifyFromAdversarialVerdict,
+  defectsToVerifyFromNfrCoverage,
+  fileAndWriteDefect,
+  nfrDefectId,
+  nfrDefectOptions,
+  verifyFixedDefect,
+} from './test/defect-filing.js';
 export type {
   DashboardGate,
   DashboardRun,

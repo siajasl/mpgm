@@ -75,6 +75,7 @@ const generatedSuite: unknown = {
       about: 'splitting between nobody',
       defect: 'splitEvenly divides by zero instead of refusing an empty split',
       body: 'assert.throws(() => subject.splitEvenly(100, 0), RangeError);',
+      tracesTo: ['LOAN-3'],
     },
     {
       id: 'negative-total-is-refused',
@@ -82,6 +83,7 @@ const generatedSuite: unknown = {
       about: 'splitting a negative amount',
       defect: 'splitEvenly accepts a debt as if it were an amount to distribute',
       body: 'assert.throws(() => subject.splitEvenly(-1, 2), RangeError);',
+      tracesTo: ['LOAN-3'],
     },
     {
       id: 'indivisible-amount-keeps-every-cent',
@@ -89,6 +91,7 @@ const generatedSuite: unknown = {
       about: 'ten cents between three, the first amount that does not divide evenly',
       defect: 'a cent is lost when the amount does not divide evenly',
       body: 'assert.deepEqual(subject.splitEvenly(10, 3), [4, 3, 3]);',
+      tracesTo: ['LOAN-3'],
     },
     {
       id: 'one-cent-between-two',
@@ -96,12 +99,14 @@ const generatedSuite: unknown = {
       about: 'the smallest amount that cannot be shared equally',
       defect: 'a cent is invented: two recipients are each given the only cent there was',
       body: 'assert.deepEqual(subject.splitEvenly(1, 2), [1, 0]);',
+      tracesTo: ['LOAN-3'],
     },
     {
       id: 'shares-always-sum-to-the-total',
       kind: 'property',
       about: 'conservation of money across every amount and every number of ways',
       defect: 'splitting an amount creates or destroys money',
+      tracesTo: ['LOAN-3'],
       body: [
         'for (let total = 0; total <= 60; total += 1) {',
         '  for (let ways = 1; ways <= 7; ways += 1) {',
@@ -117,6 +122,7 @@ const generatedSuite: unknown = {
       kind: 'property',
       about: 'fairness: no recipient is given more than a cent more than another',
       defect: 'the split is not even — one recipient is favoured over another',
+      tracesTo: ['LOAN-3'],
       body: [
         'for (let total = 0; total <= 60; total += 1) {',
         '  for (let ways = 1; ways <= 7; ways += 1) {',
@@ -166,6 +172,23 @@ describe('the adversarial suite schema (TST-4)', () => {
       expect(JSON.stringify(result.error?.issues)).toContain('every kind TST-4 names');
     },
   );
+
+  it('refuses a case naming no requirement (T4.3.4)', () => {
+    // `fileDefect` (`src/test/defect.ts`) requires `tracesTo` non-empty: a
+    // defect naming no requirement gives whichever phase it is routed to
+    // nothing to check the fix against. A case that could not name one would
+    // produce a case result `defect-filing.ts` could never turn into a filed
+    // defect, on exactly the run that found something.
+    const parsed = suite();
+    const untraceable = {
+      ...parsed,
+      cases: parsed.cases.map((entry, index) =>
+        index === 0 ? { ...entry, tracesTo: [] } : entry,
+      ),
+    };
+
+    expect(adversarialSuiteSchema.safeParse(untraceable).success).toBe(false);
+  });
 
   it('refuses two cases sharing an id, since a failure could not be attributed', () => {
     const parsed = suite();
@@ -242,6 +265,22 @@ describe('adversarialVerdict', () => {
     expect(verdict.defects).toHaveLength(1);
     expect(verdict.defects[0]?.defect).toContain('a cent is invented');
     expect(verdict.clean).toBe(false);
+  });
+
+  it('carries the case’s own tracesTo through to the folded result (T4.3.4)', () => {
+    // `defect-filing.ts` files a failed case against the requirement it
+    // names — the fold is where that id has to survive from the declared
+    // case into the result a filing path reads.
+    const parsed = suite();
+    const verdict = adversarialVerdict(
+      parsed,
+      parsed.cases.map((entry) => execution({ id: entry.id, passed: false })),
+    );
+
+    for (const row of verdict.rows) {
+      const declared = parsed.cases.find((entry) => entry.id === row.id);
+      expect(row.tracesTo).toStrictEqual(declared?.tracesTo);
+    }
   });
 
   it('refuses results for a case the suite never declared', () => {
@@ -577,12 +616,14 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           defect:
             'a cent is invented: two recipients are each given the only cent there was',
           body: 'assert.deepEqual(subject.splitEvenly(1, 2), [1, 0]);',
+          tracesTo: ['LOAN-3'],
         },
         {
           id: 'names-the-real-case',
           kind: 'property',
           about: 'a message that happens to read as a TAP result line',
           defect: 'this case always fails; it exists to spell another case’s id',
+          tracesTo: ['LOAN-3'],
           // `assert.ok` renders its message as a single-line quoted YAML
           // scalar (`error: 'ok 9 - …'`), which never matches `resultLine` —
           // that shape does not reproduce the bug. `assert.equal` renders an
@@ -598,6 +639,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           about: 'splitting between nobody',
           defect: 'splitEvenly divides by zero instead of refusing an empty split',
           body: 'assert.throws(() => subject.splitEvenly(100, 0), RangeError);',
+          tracesTo: ['LOAN-3'],
         },
       ],
     });
@@ -675,6 +717,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           kind: 'negative',
           about: 'a body importing a module its suite was never allowed to name',
           defect: 'the assumption changed: something now confines a case body',
+          tracesTo: ['LOAN-3'],
           body: [
             "const fs = await import('node:fs');",
             `fs.writeFileSync(${JSON.stringify(outside)}, 'reached', 'utf8');`,
@@ -686,6 +729,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           about: 'the declared subject is the module the file imported',
           defect: 'the rendered import did not resolve against the project',
           body: "assert.equal(typeof subject.splitEvenly, 'function');",
+          tracesTo: ['LOAN-3'],
         },
         {
           id: 'the-run-reported-every-case',
@@ -693,6 +737,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           about: 'a suite with a side effect is still reported on case by case',
           defect: 'a case ran and the verdict did not hear about it',
           body: 'assert.ok(true);',
+          tracesTo: ['LOAN-3'],
         },
       ],
     });
@@ -730,12 +775,14 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
             about: "reading a variable of the kernel's from inside a case body",
             defect: "the suite's process inherited the kernel's credentials",
             body: 'assert.equal(process.env.MPGM_FAKE_CREDENTIAL, undefined);',
+            tracesTo: ['SAF-2'],
           },
           {
             id: 'nothing-outside-the-allowlist-survives',
             kind: 'boundary',
             about: 'a variable nobody classified, which is the usual kind',
             defect: 'the scrub is a denylist, so an unclassified secret passes',
+            tracesTo: ['SAF-2'],
             body: [
               'const leaked = Object.keys(process.env).filter((name) =>',
               "  name.startsWith('MPGM_'),",
@@ -749,6 +796,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
             about: 'the allowlist keeps what a node child needs to run at all',
             defect: 'the scrub is so tight the suite cannot run',
             body: 'assert.ok(process.env.PATH !== undefined || process.env.Path !== undefined);',
+            tracesTo: ['SAF-2'],
           },
         ],
       });
@@ -783,6 +831,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
             about: 'the one variable the caller chose to pass',
             defect: 'the executor ignored the environment it was handed',
             body: "assert.equal(process.env.MPGM_PROJECT_SETTING, 'configured');",
+            tracesTo: ['SAF-2'],
           },
           {
             id: 'the-undeclared-one-does-not',
@@ -790,6 +839,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
             about: 'everything the caller did not choose to pass',
             defect: "the given environment was merged with the kernel's",
             body: 'assert.equal(process.env.MPGM_FAKE_CREDENTIAL, undefined);',
+            tracesTo: ['SAF-2'],
           },
           {
             id: 'the-subject-still-loads',
@@ -797,6 +847,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
             about: 'a scrubbed environment does not stop the module resolving',
             defect: 'the run cannot import what it was asked to attack',
             body: "assert.equal(typeof subject.splitEvenly, 'function');",
+            tracesTo: ['SAF-2'],
           },
         ],
       });
@@ -871,6 +922,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           kind: 'negative',
           about: 'a body that loops for ever, writing proof of life as it goes',
           defect: 'the wall-clock bound stopped enforcing itself',
+          tracesTo: ['LOAN-3'],
           body: [
             "const fs = await import('node:fs');",
             'while (true) {',
@@ -885,6 +937,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           about: 'the declared subject is the module the file imported',
           defect: 'the rendered import did not resolve against the project',
           body: "assert.equal(typeof subject.splitEvenly, 'function');",
+          tracesTo: ['LOAN-3'],
         },
         {
           id: 'the-suite-still-needs-every-kind',
@@ -892,6 +945,7 @@ describe('the sample project (T3.2.2 completion criterion)', () => {
           about: 'a third, ordinary case, present only so the suite validates',
           defect: 'not a real defect — the schema requires all three kinds',
           body: 'assert.ok(true);',
+          tracesTo: ['LOAN-3'],
         },
       ],
     });

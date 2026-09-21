@@ -36,6 +36,13 @@
       "at": "2026-08-31"
     },
     {
+      "role": "adversarial-tester",
+      "digest": "e8be6d8c268d57093dfe9f3488f0bae6757f79ff56ec832cc078d48cff0a50a9",
+      "approvedBy": "macg",
+      "reason": "T4.3.4 adds `tracesTo` to a case (`adversarialCaseSchema`, `src/test/adversarial.ts`): `fileDefect` requires it non-empty and nothing in the adversarial substrate carried a requirement id before this task, so a failing case could never become a filed defect at all. The prompt now asks the tester for it and says where to find one — the tester reads the whole project (`paths.read: ['**']`) but the `attack-subject` task declares no `consumes`, so the id has to come from reading REQUIREMENTS.md directly rather than from an artifact handed to it in context. Superseding entry, same role, same reason this stays an exemption rather than a frozen digest: the eval harness (T5.2.1a) still has not run against it.",
+      "at": "2026-09-21"
+    },
+    {
       "role": "implementer",
       "digest": "8f41f3825734d61cd9a952fdf75fe3e8d72ed64b418ed0eff4ce7eb56d540524",
       "approvedBy": "macg",
