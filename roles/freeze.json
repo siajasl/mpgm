@@ -52,8 +52,8 @@
     {
       "role": "nfr-scoper",
       "digest": "235703019726863c605dc505132594f9ae47de22d969841d8b61b468d9d750b4",
-      "approvedBy": "macg",
-      "reason": "T4.3.3 gives the Test phase phases/test.yaml, and an 'nfr' node's `requirements` field names a task in the same playbook, never a phase input (`expandPlaybook`, src/playbook/graph.ts) — Scope is an input, so nothing can point an `nfr` node at it directly. This role is that task: it reads the gated Scope artifact and restates its quantified requirements as the flat list `nfr-scope` describes, and is new for the same reason `adversarial-tester` was recorded as an exemption rather than folded into `digests` — the map says what was present when the freeze was taken, and this role was not.",
+      "approvedBy": "macg@enthropic.io",
+      "reason": "No justification for signalling human approval erroneously.",
       "at": "2026-09-21"
     }
   ]
