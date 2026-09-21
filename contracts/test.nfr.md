@@ -130,12 +130,118 @@ trusts — coverage drops, it does not silently stay put. A requirement a
 second, non-quarantined source still verifies is unaffected: quarantine
 removes one test's standing as evidence, not the requirement's.
 
+## Reference provider
+
+[`commandNfrProvider`](../src/test/nfr-provider.ts) is what `mpgm run <phase>`
+binds this capability to (`src/cli/commands.ts`), so a playbook's `nfr` node
+reaches a real measurement from the entry point an operator actually uses —
+before T4.3.2 the contract had a specification, a runner and no provider at
+all.
+
+It runs what the project declares in `test/nfr.yaml`:
+
+```yaml
+measurements:
+  - requirement: PERF-1
+    metric: p95-latency
+    unit: ms
+    direction: at-most       # or at-least; no default
+    command: npm
+    args: ['run', 'bench:latency']
+    evidence: reports/latency.json   # optional
+```
+
+One entry per quantified requirement. The command is run in the project root
+and the last non-empty line of its stdout is the measurement; `direction` is
+what turns that number into `passed`, and it is required rather than defaulted
+because this contract says in as many words that only the provider knows which
+way a threshold reads (CONV-5).
+
+**What it measures is the checkout at that root, and it says so.** `run`
+carries a `repo` and a `ref`, and the kernel blocks a whole phase rather than
+guess either; this provider therefore corroborates the ref instead of
+accepting it as a label. `git rev-parse HEAD` must be the commit `ref` names —
+a full sha, an abbreviation, a branch or a tag, whichever the operator passed,
+resolved in that checkout — and a root that is not a readable git checkout is
+refused outright. Running `mpgm run test --ref <sha>` from a working tree at
+any other commit would otherwise measure the working tree and file the numbers
+as measurements of `<sha>`: the same measured-one-thing-labelled-another
+ambiguity this contract already refuses for a drifted `metric`/`unit` and for
+a mislabelled `requirementId`. Every result's `evidence` names
+`repo@<head sha>` for the same reason, so a row records what was measured and
+not only what it was asked about.
+
+The guarantee is at commit granularity, and the limit is stated rather than
+implied: a *modified* working tree is reported — `evidence` gains `working
+tree modified` — not refused, because a phase writes its own artifacts into
+the project root as it runs and refusing would block a phase on its own
+output.
+
+Six things it refuses rather than answers, all for the reason this contract
+gives above — a measurement that did not happen is never reported as one that
+held (CONV-4):
+
+- a requirement the manifest does not declare (the provider must not invent a
+  measurement for a requirement it did not run);
+- an entry whose `metric`/`unit` disagree with the threshold the kernel sent,
+  which is a manifest that has drifted from the requirement it names and is
+  measuring something else under the right id;
+- a root whose commit cannot be read at all;
+- a root at a commit other than the one `ref` names;
+- a command that failed, timed out, or printed nothing — `Number('')` is `0`,
+  and zero is inside every ceiling there is;
+- a last line that is not a number.
+
+Each throws, which blocks the step — and a blocked step writes no coverage
+artifact at all, which is the point. `nfrCoverage`'s `not-run` row is what a
+*completed* run says about a requirement nothing reported on; it is not a
+softer landing these refusals fall into.
+
+**What the measurement command can read from the environment is decided, not
+left to inheritance.** `command`/`args` come from `test/nfr.yaml` in the
+repository being measured — a directory agent sessions write to, the same
+trust boundary the adversarial suite's `nodeTestExecutor` closes by scrubbing
+its child's environment to an allowlist (`testEnvironment`) rather than
+passing `process.env`, on the grounds that a secret is not there to be read
+and `GITHUB_TOKEN` would otherwise be back within reach on a path the broker
+never sees (SAF-2). `commandNfrProvider` runs an arbitrary repo-declared argv
+the same way `nodeTestExecutor` runs one, so it scrubs the same way:
+`CommandNfrProviderOptions.env` defaults to `testEnvironment()` rather than
+inheriting the kernel's own environment (CONV-4). A measurement that
+legitimately needs a credential — a k6 run against a staging endpoint behind
+auth — is not blocked by this default: a caller constructing the provider can
+pass `env` explicitly, the same override `nodeTestExecutor` offers. `mpgm run`
+does not do so today, so a manifest command that needs a token currently has
+none; that gap is named here rather than closed by guessing at a widened
+default, the way `suite`'s required `testProjectDir`
+(`src/phase/runner.ts`) names its own precondition rather than assuming one.
+
 ## Consumers
 
 - [`src/test/nfr.ts`](../src/test/nfr.ts) — `runNfrSuite` (the orchestration:
   call `run` once per quantified NFR), `nfrCoverage` (TST-3 verdict) and
   `requirementCoverageReport` (the combined TST-2/TST-3 report this contract
   exists to produce).
+- [`src/phase/runner.ts`](../src/phase/runner.ts) — the `nfr` playbook step
+  (T4.3.2), which folds `runNfrSuite` against whatever this capability is
+  bound to and blocks rather than treating an unbound one as nothing to
+  measure. It produces `nfrCoverage`'s rows and stops there:
+  `requirementCoverageReport` — the fold of those rows with the trace graph
+  and the quarantine ledger — has **no caller yet**, and not because a
+  `TraceIndex` is missing: `PhaseRunOptions.traces` already exists and
+  `run()` (`src/cli/commands.ts`) already builds and passes one, so the
+  general trace-graph coverage query is reachable today. What is missing is
+  a quarantine-ledger option on `PhaseRunOptions` (the `quarantined` input
+  has nowhere to arrive from), a registration of `RequirementCoverageReport`
+  in either schema registry (so `writeArtifact` — whose schema comes from
+  the *calling playbook's own* `artifacts` map — would have nothing to write
+  it against even if one were computed), and a playbook node naming which
+  node produces it, over the full Scope requirement list rather than the
+  quantified subset one `nfr` step measures. All three are the Test phase's
+  own wiring (T4.3.3, which already records `RequirementCoverageReport` as an
+  interface in neither schema registry), and are named here rather than left
+  to be discovered: until they land, a Test run reports NFR coverage and not
+  the combined TST-2/TST-3 report.
 - [`src/test/quarantine.ts`](../src/test/quarantine.ts) — `detectFlaky`,
   `quarantineFlaky`/`detectAndQuarantine` (TST-6's ledger) and
   `withoutQuarantined` (the exclusion `requirementCoverageReport` applies).

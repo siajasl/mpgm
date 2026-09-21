@@ -247,6 +247,34 @@ export interface AdversarialVerdict {
   readonly clean: boolean;
 }
 
+const adversarialCaseResultSchema: z.ZodType<AdversarialCaseResult> = z.object({
+  id: z.string().min(1),
+  kind: z.enum(adversarialCaseKinds),
+  about: z.string().min(1),
+  defect: z.string().min(1),
+  outcome: z.enum(['passed', 'failed', 'not-reported']),
+  detail: z.string(),
+});
+
+/**
+ * Runtime counterpart of {@link AdversarialVerdict}, for the artifact a
+ * `suite` step writes when its playbook node declares `produces` (T4.3.2,
+ * `projectArtifactSchemas`, `src/schemas.ts`).
+ *
+ * Typed as `z.ZodType<AdversarialVerdict>` so the two cannot drift: a field
+ * added to the interface and not here stops compiling rather than
+ * disappearing out of every verdict artifact written. `rows` is `.min(1)` for
+ * the same reason `adversarialSuiteSchema` refuses an under-populated suite —
+ * a verdict over no cases is not a clean run, and `clean` would read `true`
+ * for it.
+ */
+export const adversarialVerdictSchema: z.ZodType<AdversarialVerdict> = z.object({
+  rows: z.array(adversarialCaseResultSchema).min(1),
+  defects: z.array(adversarialCaseResultSchema),
+  notReported: z.array(adversarialCaseResultSchema),
+  clean: z.boolean(),
+});
+
 /**
  * Raised when an executor reports a case the suite never declared (CONV-4).
  *
