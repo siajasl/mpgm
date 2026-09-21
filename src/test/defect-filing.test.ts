@@ -5,13 +5,24 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ArtifactStore } from '../artifact/store.js';
 import { projectArtifactSchemas } from '../schemas.js';
 import type { AdversarialCaseResult, AdversarialVerdict } from './adversarial.js';
-import { defectSchema, recordFix, routeDefect } from './defect.js';
+import {
+  blocksGate,
+  defectSchema,
+  fileDefect,
+  recordFix,
+  retestDefect,
+  routeDefect,
+} from './defect.js';
 import {
   adversarialDefectId,
   adversarialDefectOptions,
+  DefectIdError,
   defectsFromAdversarialVerdict,
   defectsFromNfrCoverage,
+  defectsToVerifyFromAdversarialVerdict,
+  defectsToVerifyFromNfrCoverage,
   fileAndWriteDefect,
+  verifyFixedDefect,
   nfrDefectId,
   nfrDefectOptions,
 } from './defect-filing.js';
@@ -103,14 +114,15 @@ describe('adversarialDefectOptions (T4.3.4)', () => {
     expect(options.tracesTo).toStrictEqual(['LOAN-3', 'LOAN-4']);
   });
 
-  it('never throws building options for a case whose detail is empty (the run that found something)', () => {
+  it('files without throwing for a case whose detail is empty (the run that found something)', () => {
     // This is the failure mode T4.3.4 exists to rule out: a filing path that
-    // passes an empty detail through throws on exactly the run that found a
-    // defect. Building options never calls `fileDefect` and so cannot throw
-    // regardless — this pins the guarantee at the options layer, and the
-    // store-backed test below pins it end to end.
+    // passes an empty detail through throws `DefectDataError` on exactly the
+    // run that found a defect. Asserted against `fileDefect` and not against
+    // the options builder alone, because building options never calls a
+    // schema and so could not throw however wrong it was — the assertion
+    // that can fail is the one that files (CONV-6).
     expect(() =>
-      adversarialDefectOptions(failedCase({ detail: '' }), 'low'),
+      fileDefect(adversarialDefectOptions(failedCase({ detail: '' }), 'low')),
     ).not.toThrow();
   });
 });
@@ -179,6 +191,26 @@ describe('defectsFromAdversarialVerdict / defectsFromNfrCoverage (T4.3.4)', () =
     const entries = defectsFromNfrCoverage(rows, 'high');
 
     expect(entries.map((entry) => entry.id)).toStrictEqual([nfrDefectId('PERF-2')]);
+  });
+});
+
+describe('defect ids that would become a path (CONV-4, T4.3.4)', () => {
+  it('refuses a case id that would write outside artifacts/defect/', () => {
+    // An `AdversarialCaseResult.id` is whatever the tester role returned, and
+    // it becomes `artifacts/defect/<id>.md` — so a traversal in it is a
+    // filing that writes somewhere nobody named.
+    expect(() => adversarialDefectId('../../.mpgm/state')).toThrow(DefectIdError);
+    expect(() => nfrDefectId('../../../etc/passwd')).toThrow(DefectIdError);
+    expect(() => adversarialDefectId('')).toThrow(DefectIdError);
+    // Refused, not sanitised: the message says to fix the id at its source.
+    expect(() => nfrDefectId('PERF 2')).toThrow(/at its source/);
+  });
+
+  it('accepts the ids the two producers actually use', () => {
+    expect(adversarialDefectId('refuses-a-swapped-range')).toBe(
+      'defect-adversarial-refuses-a-swapped-range',
+    );
+    expect(nfrDefectId('PERF-2')).toBe('defect-nfr-PERF-2');
   });
 });
 
@@ -324,6 +356,168 @@ describe('fileAndWriteDefect, through a real store (T4.3.4)', () => {
       );
     },
   );
+
+  it(
+    'reopens a verified defect whose case fails again, so the gate sees the ' +
+      'regression instead of a closed defect',
+    () => {
+      const artifacts = store();
+      const entries = defectsFromAdversarialVerdict(
+        { rows: [failedCase()], defects: [failedCase()], notReported: [], clean: false },
+        'high',
+      );
+      const entry = entries[0];
+      expect(entry).toBeDefined();
+      if (entry === undefined) {
+        throw new Error('unreachable: asserted above');
+      }
+      const producedBy = {
+        task: 'run-suite',
+        role: 'kernel',
+        model: '(none)',
+        runId: 'run-1',
+      };
+      const basePath = `artifacts/defect/${entry.id}.md`;
+      const writeNext = (data: unknown, tracesTo: readonly string[]): void => {
+        artifacts.write({
+          id: entry.id,
+          basePath,
+          schema: 'defect',
+          data,
+          producedBy,
+          tracesTo,
+        });
+      };
+
+      // v1 filed by the phase; v2..v4 the round trip, ending verified — the
+      // fix held and the case passed.
+      const filed = fileAndWriteDefect(artifacts, entry.id, entry.file, producedBy);
+      let defect = routeDefect(filed.defect, { to: 'implement', taskId: 'T-fix' }, 'why');
+      writeNext(defect, defect.tracesTo);
+      defect = recordFix(defect, { ref: 'abc1234', summary: 'refuses the empty split' });
+      writeNext(defect, defect.tracesTo);
+      defect = retestDefect(defect, { passed: true, detail: 'the case passes now' });
+      writeNext(defect, defect.tracesTo);
+      expect(artifacts.latestVersion(basePath)).toBe(4);
+      expect(defectSchema.parse(artifacts.read(basePath, 4).data).status).toBe(
+        'verified',
+      );
+
+      // A later run fails the same case: a regression. Against a version that
+      // hands the verified defect straight back, this run produces no new
+      // version at all and `blocksGate` reports nothing while the case is
+      // failing — which is what both assertions below catch (CONV-6).
+      const regressed = fileAndWriteDefect(artifacts, entry.id, entry.file, {
+        ...producedBy,
+        runId: 'run-2',
+      });
+
+      expect(regressed.artifact.version).toBe(5);
+      expect(regressed.defect.status).toBe('reopened');
+      expect(regressed.defect.failedAttempts).toBe(1);
+      // What the phase hands the gate as `GateEvidence.defects` — a
+      // high-severity defect that is not `verified` holds it shut.
+      expect(blocksGate([regressed.defect])).toHaveLength(1);
+      // Read back off disk, and the verified version is still there beneath.
+      expect(defectSchema.parse(artifacts.read(basePath, 5).data).status).toBe(
+        'reopened',
+      );
+      expect(defectSchema.parse(artifacts.read(basePath, 4).data).status).toBe(
+        'verified',
+      );
+    },
+  );
+
+  it('closes a fix-pending defect whose case passed, and only that status', () => {
+    const artifacts = store();
+    const producedBy = {
+      task: 'run-suite',
+      role: 'kernel',
+      model: '(none)',
+      runId: 'run-1',
+    };
+    const id = adversarialDefectId('zero-ways-is-refused');
+    const basePath = `artifacts/defect/${id}.md`;
+    const options = adversarialDefectOptions(failedCase(), 'high');
+
+    // Nothing filed under this id: a passing case is the common case, and it
+    // must write nothing rather than invent a defect to close.
+    expect(verifyFixedDefect(artifacts, id, 'passed', producedBy)).toBeUndefined();
+    expect(artifacts.latestVersion(basePath)).toBe(0);
+
+    // Filed and routed, no fix on record: a pass is the finding not
+    // reproducing, not evidence a fix held, so the defect stays where it is.
+    const filed = fileAndWriteDefect(artifacts, id, options, producedBy);
+    expect(verifyFixedDefect(artifacts, id, 'passed', producedBy)).toBeUndefined();
+    let defect = routeDefect(filed.defect, { to: 'implement', taskId: 'T-fix' }, 'why');
+    artifacts.write({
+      id,
+      basePath,
+      schema: 'defect',
+      data: defect,
+      producedBy,
+      tracesTo: defect.tracesTo,
+    });
+    expect(verifyFixedDefect(artifacts, id, 'passed', producedBy)).toBeUndefined();
+    expect(artifacts.latestVersion(basePath)).toBe(2);
+
+    // A fix is recorded: now the same case passing is a re-test that held.
+    defect = recordFix(defect, { ref: 'abc1234', summary: 'refuses the empty split' });
+    artifacts.write({
+      id,
+      basePath,
+      schema: 'defect',
+      data: defect,
+      producedBy,
+      tracesTo: defect.tracesTo,
+    });
+    const closed = verifyFixedDefect(
+      artifacts,
+      id,
+      'zero-ways-is-refused passed on re-run',
+      producedBy,
+    );
+
+    expect(closed).toBeDefined();
+    if (closed === undefined) {
+      throw new Error('unreachable: asserted above');
+    }
+    expect(closed.defect.status).toBe('verified');
+    expect(closed.artifact.version).toBe(4);
+    expect(defectSchema.parse(artifacts.read(basePath, 4).data).status).toBe('verified');
+    // What the phase then hands the gate: a closed defect holds nothing shut.
+    expect(blocksGate([closed.defect])).toStrictEqual([]);
+
+    // Already closed: a second passing run writes nothing more.
+    expect(verifyFixedDefect(artifacts, id, 'passed again', producedBy)).toBeUndefined();
+    expect(artifacts.latestVersion(basePath)).toBe(4);
+  });
+
+  it('names the defect ids a passing case or a met threshold would close', () => {
+    const passed = failedCase({ id: 'zero-ways-is-refused', outcome: 'passed' });
+    const silent = failedCase({ id: 'never-ran', outcome: 'not-reported' });
+    const verdict: AdversarialVerdict = {
+      rows: [passed, silent, failedCase({ id: 'still-broken', outcome: 'failed' })],
+      defects: [failedCase({ id: 'still-broken', outcome: 'failed' })],
+      notReported: [silent],
+      clean: false,
+    };
+
+    // `not-reported` is not a pass anywhere else in this codebase and is not
+    // one here: closing a defect on a case that never ran would be the
+    // silence-as-success reading CONV-4 refuses.
+    expect(
+      defectsToVerifyFromAdversarialVerdict(verdict).map((row) => row.id),
+    ).toStrictEqual([adversarialDefectId('zero-ways-is-refused')]);
+
+    expect(
+      defectsToVerifyFromNfrCoverage([
+        { id: 'FUN-1', verified: true, verifiedBy: ['k6'] },
+        { id: 'PERF-1', verified: false, problem: 'not-run', verifiedBy: [] },
+        belowThresholdRow({ id: 'PERF-2' }),
+      ]).map((row) => row.id),
+    ).toStrictEqual([nfrDefectId('FUN-1')]);
+  });
 
   it(
     'leaves a routed (not yet fixed) defect untouched on a rerun, rather ' +

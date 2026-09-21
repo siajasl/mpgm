@@ -11,7 +11,11 @@ import {
   exchangeSchema,
 } from './elicit/session.js';
 import { releaseOutcomeSchema } from './release/verify.js';
-import { adversarialSuiteSchema, adversarialVerdictSchema } from './test/adversarial.js';
+import {
+  adversarialSuiteSchema,
+  adversarialVerdictMigrations,
+  adversarialVerdictSchema,
+} from './test/adversarial.js';
 import { defectSchema } from './test/defect.js';
 import { nfrCoverageReportSchema, nfrRequirementSchema } from './test/nfr.js';
 
@@ -743,6 +747,18 @@ export function projectOutputSchemas(): OutputSchemaRegistry {
  *   `PhaseRunOptions` or any `nfr`/`suite` node currently supplies (DESIGN
  *   §9 decision 15's own account of the gap). `phases/test.yaml` writes the
  *   narrower `nfr-coverage` rows `nfrCoverage` already produces instead.
+ *
+ * `adversarial-verdict` is the one family here at version 2 (T4.3.4): its
+ * rows gained a required, non-empty `tracesTo`, without which a failed case
+ * cannot be filed as a Defect at all (`fileDefect`, `src/test/defect.ts`).
+ * Narrowing a registered family in place would make every verdict already
+ * written unreadable — `ArtifactStore.read` migrates and then validates, so a
+ * v1 file would throw inside anything that walks the store rather than merely
+ * missing a field — which is what ART-3 means by "a breaking schema change is
+ * a migration, never a silent reinterpretation of old files"
+ * (`ArtifactSchemaRegistry`). `adversarialVerdictMigrations` is that
+ * migration; `defineArtifactSchema` derives the version from it, so the two
+ * cannot drift.
  */
 export function projectArtifactSchemas(): ArtifactSchemaRegistry {
   return new ArtifactSchemaRegistry([
@@ -757,6 +773,10 @@ export function projectArtifactSchemas(): ArtifactSchemaRegistry {
     defineArtifactSchema('defect', defectSchema),
     defineArtifactSchema('release-outcome', releaseOutcomeSchema),
     defineArtifactSchema('nfr-coverage', nfrCoverageReportSchema),
-    defineArtifactSchema('adversarial-verdict', adversarialVerdictSchema),
+    defineArtifactSchema(
+      'adversarial-verdict',
+      adversarialVerdictSchema,
+      adversarialVerdictMigrations,
+    ),
   ]);
 }

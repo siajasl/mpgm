@@ -31,8 +31,12 @@ import type { Defect, DefectSeverity } from '../test/defect.js';
 import {
   defectsFromAdversarialVerdict,
   defectsFromNfrCoverage,
+  defectsToVerifyFromAdversarialVerdict,
+  defectsToVerifyFromNfrCoverage,
   fileAndWriteDefect,
+  verifyFixedDefect,
   type DefectToFile,
+  type DefectToVerify,
 } from '../test/defect-filing.js';
 import {
   nfrRequirementSourceSchema,
@@ -432,6 +436,44 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     }
   };
 
+  /**
+   * Close every already-filed defect whose case or row passed this run
+   * (`verifyFixedDefect`, `src/test/defect-filing.ts`) — the kernel's half of
+   * TST-5's round trip, and the reason the trip is driven by the phase that
+   * re-runs the evidence rather than by whoever remembers to mark it closed.
+   *
+   * Only a `fix-pending` defect moves; everything else `verifyFixedDefect`
+   * leaves alone and returns `undefined` for, which is why a pass with no
+   * defect behind it — the overwhelmingly common case — writes nothing. A
+   * defect closed here still joins `filedDefects`: `GateEvidence.defects` is
+   * what this run found about every defect it touched, and a `verified` one
+   * is what `blocksGate` reads as not holding the gate shut.
+   */
+  const verifyDefects = (step: GraphStep, entries: readonly DefectToVerify[]): void => {
+    const provenance: Provenance = {
+      task: step.id,
+      role: 'kernel',
+      model: '(none)',
+      runId,
+    };
+    for (const entry of entries) {
+      const closed = verifyFixedDefect(
+        options.artifacts,
+        entry.id,
+        entry.detail,
+        provenance,
+      );
+      if (closed === undefined) {
+        continue;
+      }
+      filedDefects.push(closed.defect);
+      options.traces?.indexArtifactAs(
+        closed.artifact,
+        relative(options.artifacts.root, closed.artifact.path),
+      );
+    }
+  };
+
   /** `TaskCompleted.artifactRefs` naming one written artifact (T4.2.7). */
   const refFor = (artifact: Artifact): ArtifactRef => ({
     id: artifact.id,
@@ -675,6 +717,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     // outside `produces`, under `artifacts/defect/`, never folded into the
     // one `nfr-coverage` artifact just written above.
     fileDefects(step, defectsFromNfrCoverage(rows, options.defectSeverity));
+    // ...and a row that now meets its threshold closes the defect a previous
+    // run filed against it, once a fix is on record for it (TST-5's re-test).
+    verifyDefects(step, defectsToVerifyFromNfrCoverage(rows));
     return { status: 'completed', value: rows };
   };
 
@@ -716,6 +761,9 @@ export async function runPhase(options: PhaseRunOptions): Promise<PhaseResult> {
     // `produces`, under `artifacts/defect/`, one per failure rather than
     // folded into the one `adversarial-verdict` artifact just written above.
     fileDefects(step, defectsFromAdversarialVerdict(verdict, options.defectSeverity));
+    // ...and a case that passes again closes the defect a previous run filed
+    // against it, once a fix is on record for it (TST-5's re-test).
+    verifyDefects(step, defectsToVerifyFromAdversarialVerdict(verdict));
     return { status: 'completed', value: verdict };
   };
 

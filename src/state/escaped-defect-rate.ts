@@ -141,9 +141,11 @@ import { defectSchema, type Defect } from '../test/defect.js';
  * `merged` — and with it `rate` — reads `0`/`null` for that run regardless of
  * what got filed; and every defect an `nfr`/`suite` step files is `undated`
  * by construction, because those are kernel steps that never call
- * `SessionRunner.runTask` — the only call site that appends `TaskCompleted`
- * at all (`src/agent/runner.ts`) — so neither `filedAt` route above ever
- * finds one to date the filing with. That is this module's own `undated`
+ * `SessionRunner.runTask` (`src/agent/runner.ts`), and no other
+ * `TaskCompleted` appender names a step id they use either (`chat`'s fixed
+ * `elicit` task, `src/cli/commands.ts`; the demo workload's own fixture ids,
+ * `src/demo/workload.ts`) — so neither `filedAt` route above ever finds one
+ * to date the filing with. That is this module's own `undated`
  * case (module doc above), not a hypothetical one and not one T4.3.4 closes.
  * T4.2.7 makes `TaskCompleted.artifactRefs` and the `producedBy.task`
  * fallback both *measurable*; a defect filed by a kernel step that never

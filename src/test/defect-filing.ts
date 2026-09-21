@@ -3,6 +3,7 @@ import type { AdversarialCaseResult, AdversarialVerdict } from './adversarial.js
 import {
   defectSchema,
   fileDefect,
+  regressDefect,
   retestDefect,
   type Defect,
   type DefectSeverity,
@@ -50,17 +51,20 @@ import type { NfrCoverageRow } from './nfr.js';
  * one whose `artifactRefs` names the artifact, or, failing that, one whose
  * `taskId`/`runId` match the lowest version's own `producedBy`. `nfr`/`suite`
  * steps are kernel steps: `src/phase/runner.ts` calls `runNfrSuite`/
- * `runAdversarialSuite` directly and never calls `SessionRunner.runTask`,
- * which is the only call site in this codebase that appends `TaskCompleted`
- * at all (`src/agent/runner.ts`). No `TaskCompleted` ever names a step id
- * these steps use, by either route, so a defect filed here is exactly the
+ * `runAdversarialSuite` directly and never calls `SessionRunner.runTask`.
+ * The three call sites that do append a `TaskCompleted` in this codebase all
+ * name something else: `SessionRunner.runTask` names the dispatched task
+ * (`src/agent/runner.ts`), `chat` names the fixed `elicit` task
+ * (`src/cli/commands.ts`), and the demo workload names its own fixture ids
+ * (`src/demo/workload.ts`). No `TaskCompleted` ever names a step id an
+ * `nfr`/`suite` step uses, by either route, so a defect filed here is exactly the
  * "step that writes an artifact but runs no session at all" case
  * `escaped-defect-rate.ts`'s own doc already names as `undated`'s live
  * example (alongside a panel's tally) — not a new case this task adds, and
  * not one this task closes either. It stays `undated` however the defect is
  * later routed: nothing in `src/test/defect.ts`'s round trip appends a
- * `TaskCompleted` either (module doc's closing section — routing is left to
- * a caller this codebase does not yet have).
+ * `TaskCompleted` either, and neither does the operator verb that routes it
+ * (`mpgm defect`, `src/cli/commands.ts` — this module's closing section).
  *
  * Both producers hand back less than `fileDefect` needs, and this module
  * supplies the rest rather than assuming either one grows a field it does not
@@ -94,14 +98,44 @@ import type { NfrCoverageRow } from './nfr.js';
 const ADVERSARIAL_EVIDENCE_KIND = 'adversarial';
 const NFR_EVIDENCE_KIND = 'nfr';
 
+/**
+ * Characters a defect id may be built from.
+ *
+ * The id becomes a path (`artifacts/defect/<id>.md`), and neither producer's
+ * own id is constrained tightly enough to be trusted with one: an
+ * `AdversarialCaseResult.id` is whatever the `adversarial-tester` role
+ * returned (`.min(1)`, nothing more), and an `NfrCoverageRow.id` is whatever
+ * the upstream Scope listed. A case id of `../../.mpgm/state` would otherwise
+ * be a filing that writes outside the store. Refused rather than sanitised
+ * (CONV-4): a silently rewritten id no longer matches the case a re-test
+ * reruns, so two different findings could collapse onto one artifact.
+ */
+const DEFECT_ID_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Raised when a finding's own id cannot be made into a defect artifact id (CONV-3, CONV-4). */
+export class DefectIdError extends Error {}
+
+function safeSegment(kind: string, value: string): string {
+  if (!DEFECT_ID_SEGMENT.test(value) || value.includes('..')) {
+    throw new DefectIdError(
+      `cannot file a defect for ${kind} '${value}': a defect is written to ` +
+        `artifacts/defect/<id>.md, so its id must be letters, digits, '.', '_' or ` +
+        `'-' (starting with a letter or digit) and must not contain '..'. Fix the ` +
+        `id at its source — the suite's own case id, or the requirement id in Scope ` +
+        `— rather than here: a rewritten id no longer names the case a re-test reruns.`,
+    );
+  }
+  return value;
+}
+
 /** `artifacts/defect/<id>.md` for a failed adversarial case, stable across reruns of the same case so a repeat failure versions the same artifact rather than filing a fresh one. */
 export function adversarialDefectId(caseId: string): string {
-  return `defect-adversarial-${caseId}`;
+  return `defect-adversarial-${safeSegment('adversarial case', caseId)}`;
 }
 
 /** `artifacts/defect/<id>.md` for a below-threshold quantified NFR, keyed the same stable way. */
 export function nfrDefectId(requirementId: string): string {
-  return `defect-nfr-${requirementId}`;
+  return `defect-nfr-${safeSegment('quantified NFR', requirementId)}`;
 }
 
 /**
@@ -221,17 +255,24 @@ export interface FiledDefectRecord {
  *   defect to `reopened` rather than discarding the route and fix underneath
  *   it. `options.evidence.detail` — guaranteed non-empty by
  *   `defectEvidenceSchema` — becomes the re-test's own `detail`.
- * - **`routed`, `reopened` or `verified`.** None of these is a status
- *   {@link retestDefect} accepts (only `fix-pending` is), and there is
- *   nothing else in `src/test/defect.ts`'s lifecycle that means "still
- *   failing" from here: `routed` has no fix yet to have failed, `reopened`
- *   already records this same failure, and `verified` closed on a fix this
- *   function was never asked to re-open. Writing a fresh `fileDefect` result
- *   over any of them would silently reset the defect to `open`, discarding
- *   whatever route and fix already got recorded — precisely the edge-skip
- *   the lifecycle union in `src/test/defect.ts` exists to make
- *   unrepresentable (module doc there). So this function leaves the existing
- *   version untouched and hands it back instead of writing anything.
+ * - **`verified`.** The defect closed on a fix that held, and the same case
+ *   or row is failing again: a regression of exactly the behaviour this
+ *   defect covers. {@link regressDefect} moves it to `reopened`, carrying the
+ *   route and fix that regressed. Leaving it alone would be the worse of the
+ *   two failures this function can have, because `verified` is the one status
+ *   `blocksGate` (`src/test/defect.ts`) treats as not blocking: a Test gate
+ *   would read "no open defects" over a case that failed on this very run,
+ *   and the run would have no Defect artifact for that failure at all.
+ * - **`routed` or `reopened`.** Neither is a status {@link retestDefect}
+ *   accepts (only `fix-pending` is), and neither is a regression:
+ *   `routed` has no fix yet to have failed, and `reopened` already records
+ *   this same failure. Both already block the gate, so nothing is hidden by
+ *   leaving them as they are — and writing a fresh `fileDefect` result over
+ *   either would silently reset the defect to `open`, discarding whatever
+ *   route and fix already got recorded, precisely the edge-skip the lifecycle
+ *   union in `src/test/defect.ts` exists to make unrepresentable (module doc
+ *   there). So this function leaves the existing version untouched and hands
+ *   it back instead of writing anything.
  */
 export function fileAndWriteDefect(
   artifacts: ArtifactStore,
@@ -246,11 +287,17 @@ export function fileAndWriteDefect(
     const parsedExisting = defectSchema.safeParse(existingArtifact.data);
     if (parsedExisting.success && parsedExisting.data.status !== 'open') {
       const existingDefect = parsedExisting.data;
-      if (existingDefect.status === 'fix-pending') {
-        const reopened = retestDefect(existingDefect, {
-          passed: false,
-          detail: options.evidence.detail,
-        });
+      if (
+        existingDefect.status === 'fix-pending' ||
+        existingDefect.status === 'verified'
+      ) {
+        const reopened =
+          existingDefect.status === 'fix-pending'
+            ? retestDefect(existingDefect, {
+                passed: false,
+                detail: options.evidence.detail,
+              })
+            : regressDefect(existingDefect, options.evidence.detail);
         const artifact = artifacts.write({
           id,
           basePath,
@@ -277,18 +324,131 @@ export function fileAndWriteDefect(
   return { artifact, defect };
 }
 
+/** One case or row that passed this run, and the defect id its pass would close. */
+export interface DefectToVerify {
+  readonly id: string;
+  /** What passed, in the run's own words — becomes the re-test's `detail`. */
+  readonly detail: string;
+}
+
 /**
- * Where a filed defect goes from here is deliberately not this module's job.
+ * Every passing case in `verdict`, as the defect ids a re-test would close
+ * (T4.3.4).
  *
- * `routeDefect` (`src/test/defect.ts`) needs a judgement call — "does this
- * invalidate a design assumption" — that ORC-1 hands to a person or an agent,
- * never to an inference over the evidence this module just filed. This
- * module only ever produces `open` or `reopened` defects — `reopened` when a
- * rerun finds the same case or row still failing against a route and fix
- * already on record (`fileAndWriteDefect`'s own doc above) — and never
- * decides where either goes next; the caller that decides `implement`
- * vs. `design` and calls `routeDefect` is either an operator (the same class
- * of call as `mpgm approve`/`mpgm reopen`) or a future triage role reading
- * the filed artifact, and either way it runs after this one, over the
- * artifact this one already wrote — never inside it.
+ * `verdict.rows` filtered to `passed`, not `notReported`: the kernel refuses
+ * to read silence as a pass anywhere else (`AdversarialOutcome`'s own doc),
+ * and reading it as one here would close a defect on a case that did not run.
+ */
+export function defectsToVerifyFromAdversarialVerdict(
+  verdict: AdversarialVerdict,
+): readonly DefectToVerify[] {
+  return verdict.rows
+    .filter((row) => row.outcome === 'passed')
+    .map((row) => ({
+      id: adversarialDefectId(row.id),
+      detail: `adversarial case '${row.id}' passed on re-run`,
+    }));
+}
+
+/** Every verified row in `rows`, as the defect ids a re-test would close (T4.3.4). */
+export function defectsToVerifyFromNfrCoverage(
+  rows: readonly NfrCoverageRow[],
+): readonly DefectToVerify[] {
+  return rows
+    .filter((row) => row.verified)
+    .map((row) => ({
+      id: nfrDefectId(row.id),
+      detail:
+        row.measured === undefined
+          ? `quantified NFR '${row.id}' met its threshold on re-run`
+          : `quantified NFR '${row.id}' met its threshold on re-run (measured ${String(row.measured)})`,
+    }));
+}
+
+/**
+ * Close a `fix-pending` defect whose evidence passed this run (TST-5's
+ * second obligation, T4.3.4).
+ *
+ * This is the half of the round trip the phase can decide on its own, and the
+ * reason there is no operator verb for it: {@link retestDefect}'s passing
+ * branch is a *result*, not a judgement — the same case id that caught the
+ * defect ran again against the recorded fix and passed. An operator marking a
+ * defect `verified` by assertion would be exactly the out-of-band close TST-5
+ * refuses, while the suite that caught it is right there and can be re-run.
+ *
+ * Returns `undefined` — writing nothing — for every other state, because none
+ * of them is a re-test:
+ *
+ * - **no defect filed under `id`.** The usual case: a case that passes and
+ *   never failed has nothing to close.
+ * - **`open` or `routed`.** No fix is on record, so a pass is not evidence
+ *   that anything was fixed; it is the same finding not reproducing, which
+ *   {@link retestDefect} has no branch for and this function will not invent
+ *   one for. The defect stays where it is, blocking the gate, until something
+ *   is routed and fixed.
+ * - **`reopened`.** The fix on record already failed once; the defect is
+ *   waiting to be routed again, and the fix it would be re-tested against
+ *   does not exist yet.
+ * - **`verified`.** Already closed. A passing run leaves it exactly as it is
+ *   (a failing one reopens it — {@link fileAndWriteDefect}).
+ */
+export function verifyFixedDefect(
+  artifacts: ArtifactStore,
+  id: string,
+  detail: string,
+  producedBy: Provenance,
+): FiledDefectRecord | undefined {
+  const basePath = `artifacts/defect/${id}.md`;
+  const latest = artifacts.latestVersion(basePath);
+  if (latest === 0) {
+    return undefined;
+  }
+
+  const parsed = defectSchema.safeParse(artifacts.read(basePath, latest).data);
+  if (!parsed.success || parsed.data.status !== 'fix-pending') {
+    return undefined;
+  }
+
+  const verified = retestDefect(parsed.data, { passed: true, detail });
+  const artifact = artifacts.write({
+    id,
+    basePath,
+    schema: 'defect',
+    data: verified,
+    producedBy,
+    tracesTo: verified.tracesTo,
+  });
+  return { artifact, defect: verified };
+}
+
+/**
+ * Who routes a filed defect, and on what evidence.
+ *
+ * **The operator, through `mpgm defect route <id>` (`defect`,
+ * `src/cli/commands.ts`).** Not a role and not an inference: `routeDefect`
+ * (`src/test/defect.ts`) needs the judgement call "does this invalidate a
+ * design assumption, or is it a bug in the implementation", and ORC-1 puts
+ * that with a person, the same class of decision as `mpgm approve` and
+ * `mpgm reopen`. The evidence it is decided on is the filed artifact's own,
+ * which that verb prints before it writes anything: severity, title, the
+ * requirement ids in `tracesTo`, the suite kind and case id that caught it,
+ * and the finder's `detail` — everything {@link fileDefect} recorded, which
+ * is why filing supplies each of those rather than leaving one empty.
+ *
+ * That divides TST-5's round trip in two, and the division is the point:
+ *
+ * - **The kernel files and re-tests.** A `suite`/`nfr` step files what it
+ *   found ({@link fileAndWriteDefect}), reopens a defect whose case is
+ *   failing again — whether the fix never held (`fix-pending`) or held and
+ *   then regressed (`verified`) — and closes a `fix-pending` one whose case
+ *   now passes ({@link verifyFixedDefect}). None of those is a judgement: each
+ *   is the same case id, re-run, reported by the same executor.
+ * - **The operator routes and records the fix.** `mpgm defect route` decides
+ *   where it goes; `mpgm defect fix` names the ref the route produced. Both
+ *   are decisions a run cannot make for itself — which task owns the fix, and
+ *   which commit is the fix.
+ *
+ * There is deliberately no verb that marks a defect `verified`: closing one
+ * is a re-test result, and a verdict asserted by hand over a suite that could
+ * simply be re-run is the out-of-band close TST-5 exists to refuse.
  */

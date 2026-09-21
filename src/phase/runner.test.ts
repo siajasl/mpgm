@@ -26,7 +26,7 @@ import { EventLog } from '../event/store.js';
 import { GateManager } from '../gate/manager.js';
 import { parsePlaybook } from '../playbook/loader.js';
 import { parseRole } from '../role/loader.js';
-import { defectSchema, recordFix, retestDefect, routeDefect } from '../test/defect.js';
+import { defectSchema, recordFix, routeDefect } from '../test/defect.js';
 import { adversarialDefectId, nfrDefectId } from '../test/defect-filing.js';
 import { testNfrContract, type NfrRunInput } from '../test/nfr.js';
 import { projectArtifactSchemas, projectOutputSchemas } from '../schemas.js';
@@ -1373,7 +1373,7 @@ export function clamp(value, min, max) {
     'files a Defect for a failed case and a below-threshold NFR, outside produces, ' +
       'and the round trip from there reads back off disk (T4.3.4)',
     async () => {
-      const { db, common, projectDir } = testHarness();
+      const { db, common, projectDir, log } = testHarness();
       const { artifacts, gates } = common;
       // Spied rather than inferred from the packet: `ApprovalPacket` does not
       // expose the `GateEvidence` it was built from, so the only way to check
@@ -1455,10 +1455,13 @@ export function clamp(value, min, max) {
           evidence?.defects?.map((defect) => defect.evidence.caseId).sort(),
         ).toStrictEqual(['PERF-2', 'refuses-a-swapped-range'].sort());
 
-        // The round trip from here is a caller's judgement call (ORC-1), not
-        // this module's — driven directly here the way an operator or a
-        // future triage role would drive it, over the artifact this run
-        // already filed, through the real store. `basePath` is the same
+        // Routing and recording the fix are the operator's half of the round
+        // trip (ORC-1), made through `mpgm defect route|fix` — the verb that
+        // prints this artifact's own evidence and walks the same two edges
+        // (`defect`, `src/cli/commands.ts`, tested in `commands.test.ts`).
+        // Applied directly here, over the artifact this run already filed,
+        // because this test is about what the *phase* does on either side of
+        // them. `basePath` is the same
         // root-relative path `fileAndWriteDefect` wrote v1 under — never
         // `adversarialArtifact.path`, which `ArtifactStore.read` already
         // resolved to an absolute path.
@@ -1487,17 +1490,25 @@ export function clamp(value, min, max) {
           producedBy: adversarialArtifact.producedBy,
           tracesTo: defect.tracesTo,
         });
-        artifacts.write({
-          id: adversarialArtifact.id,
-          basePath,
-          schema: 'defect',
-          data: (defect = retestDefect(defect, {
-            passed: true,
-            detail: 'refuses-a-swapped-range now passes against the fix',
-          })),
-          producedBy: adversarialArtifact.producedBy,
-          tracesTo: defect.tracesTo,
+        // The re-test is not driven from here: the fix lands in the subject,
+        // and the *phase* runs the same case again and closes the defect
+        // (`verifyFixedDefect`, `src/test/defect-filing.ts`). Nothing below
+        // calls `retestDefect` — a test that asserted `verified` by calling
+        // it would be the out-of-band close TST-5 refuses, wearing a test's
+        // clothes. v4 exists only if the second run wrote it.
+        writeFileSync(join(projectDir, 'clamp.mjs'), CLAMP_SOURCE, 'utf8');
+        log.append({
+          runId: 'run-2',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
         });
+        const afterFix = await runPhase({
+          ...common,
+          runId: 'run-2',
+          playbook: parsePlaybook('test.yaml', TEST_PLAYBOOK),
+          testProjectDir: projectDir,
+        });
+        expect(afterFix.outcome.status).toBe('gate-presented');
 
         // Every version read back off disk, not carried over in memory —
         // the store's own history, not this test's.
@@ -1511,6 +1522,10 @@ export function clamp(value, min, max) {
         const verified = defectSchema.parse(artifacts.read(basePath, 4).data);
         expect(verified.status).toBe('verified');
         expect(verified.tracesTo).toStrictEqual(['FUN-CLAMP']);
+        // Written by the second phase run, not by this test: the producer of
+        // record is the suite step that re-ran the case.
+        expect(artifacts.read(basePath, 4).producedBy.runId).toBe('run-2');
+        expect(verified.history.at(-1)?.detail).toContain('passed on re-run');
       } finally {
         db.close();
       }

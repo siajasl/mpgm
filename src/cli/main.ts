@@ -4,6 +4,7 @@ import {
   attest,
   chat,
   confirm,
+  defect,
   implement,
   intervene,
   recordMerge,
@@ -22,7 +23,7 @@ import { defectSeverities, type DefectSeverity } from '../test/defect.js';
 /**
  * Argument parsing for the operator console (DESIGN §4.4).
  *
- * Deliberately small: sixteen verbs and a handful of flags. A CLI framework would
+ * Deliberately small: nineteen verbs and a handful of flags. A CLI framework would
  * be more than this needs, and every dependency here is one the operator has
  * to trust.
  */
@@ -43,6 +44,7 @@ export const VERBS = [
   'record-merge',
   'reopen',
   'chat',
+  'defect',
   'trace',
   'replay',
   'rollback',
@@ -83,6 +85,13 @@ export const USAGE = `mpgm — agentic SDLC harness
     repository before anything is recorded (T4.2.15)
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
+  mpgm defect route <id> --to implement --task <t> --by <who> --reason <s>
+  mpgm defect route <id> --to design --phase <p> [--changed <id,id>] --by <who> --reason <s>
+  mpgm defect fix <id> --ref <sha|node> --summary <s> --by <who>
+    route a filed defect back through Implement or Design, or record the fix that
+    route produced (TST-5, ORC-1). The kernel files and re-tests defects; where one
+    belongs is an operator call, made on the evidence this verb prints first. There
+    is no 'verify': a defect closes when the suite that caught it passes again
   mpgm trace <id> | --coverage | --dangling
   mpgm replay [--run <id>]             re-derive state from the log alone
   mpgm rollback <env> --to-version <v> --to-image <img> --to-digest <sha256:...>
@@ -256,6 +265,32 @@ export async function runCli(
           .filter((entry) => entry !== ''),
         flags['dry-run'] === 'true',
       );
+
+    case 'defect': {
+      const action = require("'route' or 'fix'", positional[0]);
+      if (action !== 'route' && action !== 'fix') {
+        throw new Error(`defect: expected 'route' or 'fix', got '${action}'\n\n${USAGE}`);
+      }
+      const to = optional('--to', flags.to);
+      if (to !== undefined && to !== 'implement' && to !== 'design') {
+        throw new Error(
+          `defect route: --to must be 'implement' or 'design', got '${to}'\n\n${USAGE}`,
+        );
+      }
+      return defect(context, action, require('a defect id', positional[1]), {
+        by: require('--by', flags.by),
+        ...(to === undefined ? {} : { to }),
+        ...(flags.task === undefined ? {} : { taskId: flags.task }),
+        ...(flags.phase === undefined ? {} : { phase: flags.phase }),
+        changed: (flags.changed ?? '')
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== ''),
+        ...(flags.reason === undefined ? {} : { reason: flags.reason }),
+        ...(flags.ref === undefined ? {} : { ref: flags.ref }),
+        ...(flags.summary === undefined ? {} : { summary: flags.summary }),
+      });
+    }
 
     case 'chat':
       return chat(

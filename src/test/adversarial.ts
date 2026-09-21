@@ -292,6 +292,74 @@ export const adversarialVerdictSchema: z.ZodType<AdversarialVerdict> = z.object(
 });
 
 /**
+ * What a `tracesTo`-less verdict row gets when it is migrated forward
+ * (T4.3.4).
+ *
+ * Deliberately not id-shaped: `looksLikeId` (`src/trace/links.ts`) is what
+ * tells `LOAN-9` — a citation of a requirement that does not exist, and a
+ * real dangling reference — apart from prose that was never going to resolve,
+ * and a migrated row cites no requirement because nobody recorded one, not
+ * because one went missing. Inventing a plausible-looking id here would put a
+ * node in the trace graph that no artifact declares and no reader can check.
+ */
+export const MIGRATED_VERDICT_TRACES_TO =
+  '(not recorded: verdict written before tracesTo existed)';
+
+/**
+ * `adversarial-verdict` v1 -> v2: give every row a `tracesTo` (T4.3.4).
+ *
+ * T4.3.4 made `tracesTo` required and non-empty on
+ * {@link AdversarialCaseResult}, so that a failed case can be filed as a
+ * Defect at all (`fileDefect` requires one). That is a narrowing of a
+ * *registered artifact family*, and a narrowing applied in place would make
+ * every verdict already on disk unreadable — `ArtifactStore.read` validates
+ * through `ArtifactSchemaRegistry`, so anything walking the store (the trace
+ * indexer, a rerun reading a prior verdict) would throw on a v1 file rather
+ * than skip it. ART-3's rule is that a breaking schema change is a migration,
+ * never a silent reinterpretation of old files, and this is the migration:
+ * a v1 row keeps everything it had and gains a stated placeholder
+ * ({@link MIGRATED_VERDICT_TRACES_TO}) saying the field did not exist when it
+ * was written.
+ *
+ * Pure and total, as {@link ArtifactMigration} requires: anything that is not
+ * a row-shaped object is passed through untouched, to be refused by the v2
+ * schema with its own message rather than by a type error in here.
+ */
+function addTracesToPlaceholder(data: unknown): unknown {
+  const withRows = (value: unknown): unknown => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return value;
+    }
+    const row = value as Record<string, unknown>;
+    if (Array.isArray(row.tracesTo) && row.tracesTo.length > 0) {
+      return row;
+    }
+    return { ...row, tracesTo: [MIGRATED_VERDICT_TRACES_TO] };
+  };
+
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    return data;
+  }
+  const verdict = data as Record<string, unknown>;
+  const migrateList = (key: string): Record<string, unknown> => {
+    const list = verdict[key];
+    return Array.isArray(list) ? { [key]: list.map(withRows) } : {};
+  };
+
+  return {
+    ...verdict,
+    ...migrateList('rows'),
+    ...migrateList('defects'),
+    ...migrateList('notReported'),
+  };
+}
+
+/** Migration chain for the `adversarial-verdict` family (`projectArtifactSchemas`, `src/schemas.ts`). */
+export const adversarialVerdictMigrations: readonly ((data: unknown) => unknown)[] = [
+  addTracesToPlaceholder,
+];
+
+/**
  * Raised when an executor reports a case the suite never declared (CONV-4).
  *
  * The kernel knows exactly which cases it asked to be run, so a result under

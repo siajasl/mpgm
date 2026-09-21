@@ -15,7 +15,11 @@ import type { ReopenRequest } from '../gate/reopen.js';
  * having a `fix` recorded, because the zod union below has no branch that
  * skips either step. What {@link routeDefect}, {@link recordFix} and
  * {@link retestDefect} do is walk that union forward one edge at a time, and
- * refuse (CONV-4) any call that would skip one.
+ * refuse (CONV-4) any call that would skip one. {@link regressDefect} is the
+ * one edge back out of `verified`, for a defect whose evidence starts failing
+ * again after it closed (T4.3.4) — an edge and not an exception, for the
+ * reason its own doc gives: without it a regression is either invisible to
+ * {@link blocksGate} or filed over the top of the route and fix it regressed.
  *
  * Where a defect comes from is deliberately out of this module's business —
  * {@link fileDefect} takes an {@link DefectEvidence}, and the two producers
@@ -378,6 +382,56 @@ export function recordFix(defect: Defect, fix: DefectFix): Defect {
     history: [
       ...defect.history,
       { status: 'fix-pending', detail: fix.summary, ref: fix.ref },
+    ],
+  });
+}
+
+/**
+ * Reopen a `verified` defect whose evidence started failing again (T4.3.4).
+ *
+ * The one transition out of `verified`, and it exists because the alternative
+ * is worse than an extra edge: a case that was filed, routed, fixed and
+ * verified, and then fails again on a later run, is a regression of exactly
+ * the behaviour this defect already covers. Without this edge a filer has two
+ * options, and both lie — leave the `verified` defect alone, and
+ * {@link blocksGate} reports the Test gate clean while the case is failing
+ * right now; or write a fresh `fileDefect` over it, and the route and fix that
+ * did hold once are discarded, which is the edge-skip the union above exists
+ * to make unrepresentable.
+ *
+ * `reopened` is the honest status for it: the fix on record no longer holds,
+ * which is what `reopened` already means on {@link retestDefect}'s failing
+ * branch, and it is a status {@link routeDefect} accepts, so the defect can be
+ * sent back out. `failedAttempts` increments for the same reason it does
+ * there — the count is "how much re-work this defect caused", and a fix that
+ * held until it did not has caused another round of it. The route and fix are
+ * carried, on the defect and in the history entry both, so the attempt that
+ * regressed stays nameable after the next route replaces them.
+ *
+ * `detail` is required non-empty (CONV-3): "this passed and now does not" is
+ * only actionable if it says what was seen this time.
+ */
+export function regressDefect(defect: Defect, detail: string): Defect {
+  if (defect.status !== 'verified') {
+    throw new DefectLifecycleError('reopen as a regression', defect.status, ['verified']);
+  }
+  if (detail.trim() === '') {
+    throw new DefectDataError(
+      'reopening a verified defect must say what failed this time (CONV-3, ' +
+        'mirrors routeDefect): a regression entry saying nothing leaves whoever ' +
+        'it is routed to re-deriving which case broke and how.',
+    );
+  }
+
+  return build({
+    ...commonFieldsOf(defect),
+    failedAttempts: defect.failedAttempts + 1,
+    status: 'reopened',
+    route: defect.route,
+    fix: defect.fix,
+    history: [
+      ...defect.history,
+      { status: 'reopened', detail, ref: defect.fix.ref, route: defect.route },
     ],
   });
 }
