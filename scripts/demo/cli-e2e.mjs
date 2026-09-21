@@ -1356,9 +1356,10 @@ try {
     defectNoReason.result === undefined &&
       defectNoReason.error?.message.includes('--reason') &&
       defectNoReason.error?.message.includes('is required') &&
-      new ArtifactStore({ root: workspace, schemas: projectArtifactSchemas() }).latestVersion(
-        `artifacts/defect/${demoDefectId}.md`,
-      ) === 1,
+      new ArtifactStore({
+        root: workspace,
+        schemas: projectArtifactSchemas(),
+      }).latestVersion(`artifacts/defect/${demoDefectId}.md`) === 1,
     defectNoReason.error?.message,
   );
 
@@ -1403,9 +1404,11 @@ try {
     defectNoSummary.result === undefined &&
       defectNoSummary.error?.message.includes('--summary') &&
       defectNoSummary.error?.message.includes('is required') &&
-      new ArtifactStore({ root: workspace, schemas: projectArtifactSchemas() }).latestVersion(
-        `artifacts/defect/${demoDefectId}.md`,
-      ) === defectFixedRoutedVersion,
+      new ArtifactStore({
+        root: workspace,
+        schemas: projectArtifactSchemas(),
+      }).latestVersion(`artifacts/defect/${demoDefectId}.md`) ===
+        defectFixedRoutedVersion,
     defectNoSummary.error?.message,
   );
 
