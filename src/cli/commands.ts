@@ -68,6 +68,7 @@ import { verifyOperatorMerge } from '../implement/merge.js';
 import { renderProgress } from '../implement/progress.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { branchNameFor, WorktreeManager } from '../implement/worktree.js';
+import { planEverDeclared } from '../plan/declared-history.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
 import { computeGateRates, type RunGateRates } from '../state/gate-rates.js';
 import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
@@ -2108,6 +2109,20 @@ export async function recordMerge(
  * session of a task the Plan still declares is a live review in flight, not
  * a folded id the Plan has dropped, however the review session's own id
  * — never declared anywhere — reads against the Plan on its own.
+ *
+ * Both of those checks can only refuse an id the Plan *declares*, which
+ * leaves them vacuous for every id it never had: a phase-step id ('draft',
+ * 'critique', … dispatched under the step's node id by `phase/runner.ts`) or
+ * a mistyped dispatch reads as "not declared" exactly as a superseded task
+ * does, and a blocked phase step retired here would leave `successRate`
+ * reading high for a reason nobody checked — the wrong-but-plausible figure
+ * this verb exists to correct, reintroduced through the verb. So the claim
+ * is also checked from the positive side (`planEverDeclared`,
+ * `plan/declared-history.ts`): some stored version or committed revision of
+ * the Plan artifact must have declared the id — its *parent* id for a review
+ * session — as a task. That is what tells "an id the Plan dropped" from "an
+ * id the Plan never had", and mpgm's own split, applied in place to
+ * `plan.v1.md`, is found in the second place rather than the first.
  */
 export function supersede(
   context: CliContext,
@@ -2177,6 +2192,38 @@ export function supersede(
         return { ok: false, detail: 'still declared' };
       }
     }
+    // Absence from the current Plan is not evidence the Plan ever declared
+    // it. The two checks above can only refuse ids the Plan *does* declare,
+    // so for a phase-step id ('draft', 'critique', … — `phase/runner.ts`
+    // dispatches those through `SessionRunner.runTask` under the step's own
+    // node id) or a mistyped dispatch they pass unconditionally, and a
+    // genuinely blocked step would be retired out of `successRate`'s
+    // denominator on the operator's word alone: the permit-on-ambiguity
+    // CONV-4 forbids, in the control meant to prevent it. So the claim is
+    // checked from the positive side — some version or committed revision of
+    // the gated Plan declared this id as a task (`plan/declared-history.ts`,
+    // which is also where mpgm's own in-place T4.1.4 split is found).
+    const evidenceId = isReviewSessionTaskId(taskId)
+      ? reviewSessionParentTaskId(taskId)
+      : taskId;
+    const evidence = planEverDeclared({
+      root: context.root,
+      artifacts,
+      basePath: PLAN_ARTIFACT,
+      taskId: evidenceId,
+    });
+    if (!evidence.declared) {
+      context.write(
+        `refusing to supersede ${taskId}: no version or committed revision of ` +
+          `the gated Plan at ${PLAN_ARTIFACT} has ever declared ` +
+          `${evidenceId === taskId ? 'it' : `its parent task ${evidenceId}`} — ` +
+          `${evidence.detail}. An id the plan never had is a mistyped dispatch ` +
+          `or a phase step, not a superseded task, and retiring it would hide ` +
+          `the defect this verb exists to surface`,
+      );
+      return { ok: false, detail: 'never declared' };
+    }
+
     const unknownSuccessors = supersededBy.filter(
       (id) => !graph.tasks.some((candidate) => candidate.id === id),
     );

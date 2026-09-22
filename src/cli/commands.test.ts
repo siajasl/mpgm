@@ -1004,12 +1004,38 @@ describe('supersede', () => {
     ],
   });
 
-  function writeGatedPlan(root: string): void {
-    new ArtifactStore({ root, schemas: projectArtifactSchemas() }).write({
+  /** The same plan before the split: T4.1.4, one task, undivided. */
+  const PLAN_BEFORE_SPLIT = planSchema.parse({
+    summary: 'One phase, one milestone, not yet split.',
+    risks: [{ id: 'R1', assumption: 'It works.', validatedBy: ['M4.1'] }],
+    phases: [
+      {
+        id: 'P4',
+        title: 'Implement',
+        intent: 'Build it.',
+        milestones: [
+          {
+            id: 'M4.1',
+            title: 'Split milestone',
+            verification: 'It works.',
+            validatesRisk: 'R1',
+            tasks: [splitTask('T4.1.4')],
+          },
+        ],
+      },
+    ],
+  });
+
+  function planStore(root: string): ArtifactStore {
+    return new ArtifactStore({ root, schemas: projectArtifactSchemas() });
+  }
+
+  function planRequest(data: unknown) {
+    return {
       id: 'plan',
       basePath: 'artifacts/plan/plan.md',
       schema: 'plan',
-      data: PLAN_AFTER_SPLIT,
+      data,
       producedBy: {
         task: 'plan',
         role: 'planner',
@@ -1017,7 +1043,38 @@ describe('supersede', () => {
         runId: 'r1',
       },
       tracesTo: ['PLN-4'],
-    });
+    };
+  }
+
+  /**
+   * The plan as a replan leaves it: v1 declaring T4.1.4, v2 declaring
+   * T4.1.4a/b/c and no T4.1.4 at all.
+   *
+   * v1 is written deliberately rather than as scene-setting. `supersede`
+   * refuses an id no Plan ever declared — otherwise a blocked phase step or
+   * a mistyped dispatch, equally absent from the current Plan, would be
+   * retired out of the success denominator on the operator's word (CONV-4)
+   * — so the predecessor version *is* the evidence the split happened.
+   */
+  function writeGatedPlan(root: string): void {
+    const store = planStore(root);
+    store.write(planRequest(PLAN_BEFORE_SPLIT));
+    store.write(planRequest(PLAN_AFTER_SPLIT));
+  }
+
+  /** `git init` + one commit of everything, isolated from the operator's own
+   * signing config (the same shape `mpgm verify`'s fixture uses). */
+  function commitAll(root: string, message: string): void {
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+    if (!existsSync(join(root, '.git'))) {
+      git('init', '--quiet');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      git('config', 'commit.gpgsign', 'false');
+    }
+    git('add', '--all');
+    git('commit', '--quiet', '--allow-empty', '-m', message);
   }
 
   function eventsOf(root: string): readonly unknown[] {
@@ -1162,6 +1219,28 @@ describe('supersede', () => {
     // The dashboard's blocked count falls to zero on a run whose work is
     // done (T4.3.7's own framing).
     expect(summaryOf(run).blockedTasks).toBe(0);
+
+    // The intervention is in the audit log with who decided it and why
+    // (HIL-5): a retirement recorded as a bare status change would leave the
+    // figure corrected and the authority for correcting it nowhere.
+    expect(
+      (events as { type: string; payload: unknown }[])
+        .filter((event) => event.type === 'TaskSuperseded')
+        .map((event) => event.payload),
+    ).toEqual([
+      {
+        taskId: 'T4.1.4',
+        by: 'macg',
+        reason: 'PLN-4 split into T4.1.4a/T4.1.4b/T4.1.4c',
+        supersededBy: ['T4.1.4a', 'T4.1.4b', 'T4.1.4c'],
+      },
+      {
+        taskId: 'T4.1.4-review-2',
+        by: 'macg',
+        reason: 'PLN-4 split into T4.1.4a/T4.1.4b/T4.1.4c',
+        supersededBy: ['T4.1.4a', 'T4.1.4b', 'T4.1.4c'],
+      },
+    ]);
 
     const after = computeRunMetrics(run, events as never);
     expect(after.overall.blocked).toBe(0);
@@ -1351,6 +1430,107 @@ describe('supersede', () => {
 
     expect(result.ok).toBe(false);
     expect(result.detail).toBe('unknown task');
+  });
+
+  /**
+   * The hole the Plan-membership checks cannot close on their own: they can
+   * only refuse an id the Plan *declares*, so for an id it never declared
+   * they pass unconditionally. A phase step is dispatched under its node id
+   * ('draft', 'critique', … — `phase/runner.ts` calls `SessionRunner.runTask`
+   * with `taskId: step.id`) and is never a plan task, so a genuinely blocked
+   * step would be retired out of `successRate`'s denominator on the
+   * operator's word alone — the wrong-but-plausible figure this whole task
+   * exists to close, arriving through the control meant to prevent it
+   * (CONV-4). The Plan history here is committed as well as versioned, so
+   * the refusal is not an artefact of there being no git history to search.
+   */
+  it('refuses a blocked phase-step id no version or revision of the Plan ever declared', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-supersede-'));
+    writeGatedPlan(root);
+    twoOrphanedShapes(root);
+    commitAll(root, 'Split T4.1.4 into T4.1.4a/b/c');
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'draft', role: 'drafter', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskBlocked',
+          payload: { taskId: 'draft', reason: 'max_turns' },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const writes: string[] = [];
+    const result = supersede(
+      newContext(root, writes),
+      'r1',
+      'draft',
+      'macg',
+      'claims a phase step was superseded',
+      ['T4.1.4a'],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('never declared');
+    expect(writes.join('\n')).toContain('has ever declared it');
+
+    // Nothing was appended, and the figure stays honest: the blocked step
+    // is still blocked and still in the denominator.
+    const events = eventsOf(root);
+    expect((events as { type: string }[]).some((e) => e.type === 'TaskSuperseded')).toBe(
+      false,
+    );
+    const run = fold(events as never).runs.r1;
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+    expect(run.tasks.draft?.status).toBe('blocked');
+    expect(computeRunMetrics(run, events as never).overall.blocked).toBe(2);
+  });
+
+  /**
+   * mpgm's own shape, which the version check alone cannot see: the T4.1.4
+   * split was applied *in place* to `artifacts/plan/plan.v1.md` (commit
+   * `4fe2c61`), so on disk there is one version and it does not declare
+   * T4.1.4. The only surviving record that T4.1.4 was ever a task is the
+   * blob under an earlier commit of that same file — which is why the
+   * evidence search reads committed revisions too, and why refusing
+   * everything absent from the stored versions would have refused the very
+   * case this task was filed for.
+   */
+  it('accepts an id only a committed earlier revision of the Plan file declared', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-supersede-'));
+    const store = planStore(root);
+    store.write(planRequest(PLAN_BEFORE_SPLIT));
+    commitAll(root, 'Plan T4.1.4');
+    // The revision that made it stop being a task: same file, same version.
+    store.overwrite(planRequest(PLAN_AFTER_SPLIT), 1);
+    commitAll(root, 'Split T4.1.4, which three sessions could not close');
+    twoOrphanedShapes(root);
+
+    expect(store.latestVersion('artifacts/plan/plan.md')).toBe(1);
+
+    const writes: string[] = [];
+    const result = supersede(
+      newContext(root, writes),
+      'r1',
+      'T4.1.4',
+      'macg',
+      'PLN-4 split into T4.1.4a/T4.1.4b/T4.1.4c',
+      ['T4.1.4a', 'T4.1.4b', 'T4.1.4c'],
+    );
+
+    expect(result.ok).toBe(true);
+    const run = fold(eventsOf(root) as never).runs.r1;
+    expect(run?.tasks['T4.1.4']?.status).toBe('superseded');
   });
 });
 

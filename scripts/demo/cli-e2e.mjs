@@ -1083,7 +1083,62 @@ try {
   // T9.1.1 as the "successor": the point under test is that a real,
   // currently-declared id is required, not that the id names new work.
   {
-    const supersedeTaskId = 'T9.1.1-old';
+    const supersedeTaskId = 'T9.1.2';
+
+    // The plan history the claim is checked against. A superseded id is one
+    // some gated Plan *did* declare and this one no longer does, so the
+    // evidence has to exist: v2 declares T9.1.2 alongside T9.1.1, v3 is
+    // the revision that dropped it. Without this the verb refuses — which is
+    // the point, since an id no plan ever declared is a mistyped dispatch or
+    // a phase step rather than a retired task.
+    const planStore = new ArtifactStore({
+      root: workspace,
+      schemas: projectArtifactSchemas(),
+    });
+    const producedBy = {
+      task: 'seeded',
+      role: 'operator',
+      model: '(hand-authored)',
+      runId: 'r1',
+    };
+    const milestone = SAMPLE_PLAN.phases[0].milestones[0];
+    planStore.write({
+      id: 'sample-plan',
+      basePath: 'artifacts/plan/plan.md',
+      schema: 'plan',
+      data: {
+        ...SAMPLE_PLAN,
+        phases: [
+          {
+            ...SAMPLE_PLAN.phases[0],
+            milestones: [
+              {
+                ...milestone,
+                tasks: [
+                  ...milestone.tasks,
+                  {
+                    id: supersedeTaskId,
+                    title: 'The task the split retired',
+                    completionCriteria: ['It was done under three other ids.'],
+                    dependsOn: [],
+                    tracesTo: ['ORC-1'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      producedBy,
+    });
+    planStore.write({
+      id: 'sample-plan',
+      basePath: 'artifacts/plan/plan.md',
+      schema: 'plan',
+      data: SAMPLE_PLAN,
+      producedBy,
+    });
+
     const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
     const log = EventLog.attach(db, { registry: kernelRegistry() });
     log.appendMany([
@@ -1106,6 +1161,18 @@ try {
         type: 'TaskBlocked',
         payload: { taskId: supersedeTaskId, reason: 'max_turns' },
       },
+      // A blocked phase step, for the refusal below: same folded shape, and
+      // never a plan task.
+      {
+        runId: 'r1',
+        type: 'TaskDispatched',
+        payload: { taskId: 'draft', role: 'implementer', model: 'claude-sonnet-5' },
+      },
+      {
+        runId: 'r1',
+        type: 'TaskBlocked',
+        payload: { taskId: 'draft', reason: 'max_turns' },
+      },
     ]);
     db.close();
 
@@ -1125,6 +1192,29 @@ try {
       'supersede refuses a successor id the gated Plan does not declare',
       !unknownSuccessor.result.ok && unknownSuccessor.output.includes('T9.1.1-invented'),
       unknownSuccessor.output,
+    );
+
+    // A phase step ('draft', dispatched under its node id by the phase
+    // runner) is absent from the Plan exactly as a superseded task is, and
+    // was never a task at all. Retiring it would take a genuinely blocked
+    // step out of the success denominator on the operator's word, so the
+    // claim is checked from the positive side and this one has no evidence.
+    const neverDeclared = await call([
+      'supersede',
+      'draft',
+      '--by',
+      'macg',
+      '--reason',
+      'claims a phase step was superseded',
+      '--superseded-by',
+      'T9.1.1',
+      '--run',
+      'r1',
+    ]);
+    check(
+      'supersede refuses an id no version or revision of the Plan ever declared',
+      !neverDeclared.result.ok && neverDeclared.output.includes('has ever declared'),
+      neverDeclared.output,
     );
 
     const superseded = await call([
