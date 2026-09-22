@@ -20,8 +20,32 @@ export interface Usage {
  * distinguishable everywhere else — a task nobody dispatched has no session,
  * no usage and no review, and reading it as `completed` would claim
  * otherwise.
+ *
+ * `superseded` is a folded id the gated Plan artifact no longer declares,
+ * retired by an operator's `TaskSuperseded` (T4.3.7, PLN-4) rather than left
+ * on `blocked` or `dispatched` forever. Distinct from both of those it can
+ * follow: unlike `blocked`, it is excluded from `successRate`'s denominator
+ * (`state/metrics.ts`) rather than counted as a failure whose work is
+ * nowhere; unlike `attested`, the sessions behind it ran inside the harness
+ * and their cost is already in the ledger, only the id they ran under
+ * stopped being the plan's.
  */
-export type TaskStatus = 'dispatched' | 'completed' | 'blocked' | 'attested';
+export type TaskStatus =
+  'dispatched' | 'completed' | 'blocked' | 'attested' | 'superseded';
+
+/**
+ * What retired a folded task id the gated Plan artifact no longer declares
+ * (T4.3.7, HIL-5). `null` until a `TaskSuperseded` lands; set once and never
+ * cleared, the same discipline `merged` already keeps.
+ */
+export interface SupersededState {
+  /** Who decided the id is retired. */
+  readonly by: string;
+  /** Why the id no longer appears in the gated Plan, e.g. a PLN-4 split. */
+  readonly reason: string;
+  /** The task ids that now carry this task's work. */
+  readonly supersededBy: readonly string[];
+}
 
 /**
  * The last merge verdict CI produced for a task's change (IMP-2).
@@ -119,6 +143,8 @@ export interface TaskState {
   readonly review: ReviewState | null;
   /** Null until the change has been merged. */
   readonly merged: MergeState | null;
+  /** Null unless the gated Plan no longer declares this id (T4.3.7). */
+  readonly superseded: SupersededState | null;
   readonly usage: Usage;
 }
 

@@ -110,6 +110,7 @@ describe('computeRunMetrics', () => {
       blocked: 1,
       attested: 0,
       dispatched: 0,
+      superseded: 0,
       successRate: 0.5,
       avgLatencyMs: 2500,
     });
@@ -125,6 +126,7 @@ describe('computeRunMetrics', () => {
       blocked: 0,
       attested: 0,
       dispatched: 0,
+      superseded: 0,
       successRate: 1,
       avgLatencyMs: 3000,
     });
@@ -138,6 +140,7 @@ describe('computeRunMetrics', () => {
       blocked: 1,
       attested: 0,
       dispatched: 0,
+      superseded: 0,
       successRate: 0,
       avgLatencyMs: 2000,
     });

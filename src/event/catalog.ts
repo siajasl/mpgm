@@ -298,6 +298,86 @@ export const taskBlocked = defineEvent(
 );
 
 /**
+ * A folded task id the gated Plan artifact no longer declares, retired
+ * rather than left to read `blocked` or `dispatched` forever (T4.3.7, PLN-4,
+ * OBS-1, OBS-4).
+ *
+ * PLN-4 lets a milestone's tasks be split autonomously and logged; mpgm's own
+ * T4.1.4 was split into T4.1.4a/b/c as a document revision instead, before
+ * the classifier this task cites existed to log it — so the fold never heard
+ * about it. T4.1.4 itself sat on `blocked` after `BudgetExceeded{kind:
+ * 'steps'}`, and its own review task, T4.1.4-review-2, sat on `dispatched`
+ * with no terminal event at all: two different shapes of the same defect,
+ * both a permanent denominator entry `aggregate()` (`state/metrics.ts`) can
+ * never settle, because nothing this id ever does again can make it
+ * `completed`.
+ *
+ * Neither of the two verbs already in the catalog fits. `ChangeMergedByOperator`
+ * (T4.2.15) records a merge that landed under *this* task's own id — there is
+ * no such merge to record here, `verifyOperatorMerge` would rightly refuse a
+ * sha for a branch this id never had, and the work landed under three other
+ * ids' own merges, already recorded there. `TaskAttested` records a plan task
+ * completed *outside* the harness; every session behind T4.1.4 and
+ * T4.1.4-review-2 ran inside it, already logged and already costed — nothing
+ * about the work itself was unwitnessed, only the id it was filed under
+ * stopped existing.
+ *
+ * An operator verb (`mpgm supersede`, `cli/commands.ts`), not the kernel
+ * noticing on its own that a folded id is absent from the gated Plan and
+ * retiring it. A background rule with that shape cannot tell "this id was
+ * split" from "this id was mistyped at dispatch" or "the Plan artifact
+ * itself regressed" — every one of those is *also* an id the fold holds that
+ * the Plan no longer declares, and silently retiring all three alike would
+ * hide the second and third, which is exactly the defect a fold-vs-Plan
+ * check exists to surface. So the decision is an operator's, recorded as one
+ * (HIL-5): `by` says who, `reason` says why, and `supersededBy` says which
+ * ids now carry the work — required and non-empty, because "superseded by
+ * nothing" is not this event, it is `TaskBlocked` standing as written.
+ *
+ * `mpgm supersede` fails closed on both ends of that claim rather than
+ * taking the operator's word for either: it refuses a `taskId` the gated
+ * Plan artifact still declares (an id still live is not superseded, whatever
+ * an operator believes), and it refuses any `supersededBy` id the Plan does
+ * not declare (a successor that is not itself a real, currently-declared
+ * task is not evidence the work has a home, only a second unverifiable
+ * claim). Only a task this run actually dispatched and left `blocked` or
+ * `dispatched` is eligible — nothing here retires a task the harness
+ * completed, or one no session of this run ever touched.
+ *
+ * The log is append-only (DESIGN §6): this is appended weeks after T4.1.4's
+ * own last event, with its own later timestamp, not backdated to sit beside
+ * `BudgetExceeded` or the original `TaskDispatched`. `avgLatencyMs`
+ * (`state/metrics.ts`) never reads that timestamp as when the task
+ * "finished" — folding in three weeks of silence as how long the task took
+ * would replace one wrong figure with another. It reads the two shapes
+ * apart instead: T4.1.4's own shape reached `TaskBlocked`/`BudgetExceeded`
+ * before this, and keeps exactly the duration that measured, unmoved by
+ * what later retired its id; T4.1.4-review-2's shape — superseded straight
+ * out of `dispatched`, with no terminal event ever appended — reads null
+ * exactly as it did before, because there is no true duration to keep.
+ * `costUsd` is the opposite case: `computeRunMetrics` already sums every
+ * `SessionUsage` a taskId carries regardless of status, so the sessions'
+ * real spend stays in the ledger without this event doing anything further
+ * to keep it there — the work was really done, and its successors carry it.
+ */
+export const taskSuperseded = defineEvent(
+  'TaskSuperseded',
+  z.object({
+    taskId: nonEmpty,
+    /** Who decided the id is retired — an operator call, not an inference (HIL-5). */
+    by: nonEmpty,
+    /** Why the id no longer appears in the gated Plan, e.g. a PLN-4 split. */
+    reason: nonEmpty,
+    /**
+     * The task ids that now carry this task's work. Required and non-empty:
+     * `mpgm supersede` refuses to append this without at least one, and
+     * refuses any id here the gated Plan artifact does not itself declare.
+     */
+    supersededBy: z.array(nonEmpty).min(1),
+  }),
+);
+
+/**
  * Intent-before-effect (DESIGN §6).
  *
  * A side-effectful step records its intention *before* acting, so a crash
@@ -950,6 +1030,7 @@ export const kernelEvents = [
   taskBlocked,
   taskCompleted,
   taskDispatched,
+  taskSuperseded,
   toolCallLogged,
   validationFailed,
   voteTallied,

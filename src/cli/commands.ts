@@ -68,12 +68,15 @@ import { verifyOperatorMerge } from '../implement/merge.js';
 import { renderProgress } from '../implement/progress.js';
 import { targetRefusal, type TargetFacts } from '../implement/target.js';
 import { branchNameFor, WorktreeManager } from '../implement/worktree.js';
+import { planEverDeclared } from '../plan/declared-history.js';
 import { completedTaskIds, ingestPlan, readyTasks } from '../plan/ingest.js';
 import { computeGateRates, type RunGateRates } from '../state/gate-rates.js';
 import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
 import {
   computeHarnessOverhead,
+  isReviewSessionTaskId,
   NFR3_OVERHEAD_THRESHOLD,
+  reviewSessionParentTaskId,
   type HarnessOverhead,
 } from '../state/overhead.js';
 import { Projector } from '../state/projector.js';
@@ -2062,6 +2065,186 @@ export async function recordMerge(
       `${taskId} recorded merged by ${by} at ${resolved.slice(0, 12)} (${verification.detail})`,
     );
     return { ok: true, detail: 'merged' };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `mpgm supersede <task> --by <who> --reason <s> --superseded-by <id,id,...>`
+ * — retire a folded task id the gated Plan artifact no longer declares
+ * (T4.3.7, PLN-4, HIL-5, OBS-1, OBS-4).
+ *
+ * mpgm's own T4.1.4 was split into T4.1.4a/b/c by a document revision, and
+ * nothing told the log: folded state held T4.1.4 at `blocked` and
+ * T4.1.4-review-2 at `dispatched`, both permanent entries `aggregate()`
+ * (`state/metrics.ts`) can never settle, since nothing an id absent from the
+ * plan does can ever make it `completed`.
+ *
+ * An operator verb, not the kernel watching the fold against the Plan on its
+ * own — the same choice `record-merge`'s own doc makes and for the same
+ * reason: an id the fold holds that the Plan no longer declares is equally
+ * the signature of a mistyped dispatch or a plan regression, and a
+ * background rule that retired anything it could not find in the Plan would
+ * hide those two behind the one this verb exists for. So an operator says
+ * so, and says why and to what — and the verb does not take their word for
+ * either end of that claim (CONV-4): it refuses a `taskId` the gated Plan
+ * still declares (an id still live is not superseded), and it refuses any
+ * `supersededBy` id the Plan does not itself declare (a successor that is
+ * not a real, currently-declared task is not evidence the work has a home).
+ * It also refuses a task this run never dispatched, or one already
+ * `completed`, `attested` or `superseded` — there is nothing here to retire.
+ *
+ * A review-session id (`${task}-review` or `${task}-review-<n>`,
+ * `implement/loop.ts`'s own `reviewTaskId`) is never itself declared in the
+ * Plan — the Plan declares tasks, not review rounds of them — so the
+ * membership check above cannot be run against `taskId` directly: it would
+ * pass unconditionally for every review session, live or not, which is
+ * exactly the silent permit-on-ambiguity CONV-4 forbids and the fail-closed
+ * claim this doc makes for every other shape. For that shape the check
+ * instead resolves the *parent* task id (`state/overhead.ts`'s
+ * `isReviewSessionTaskId`/`reviewSessionParentTaskId`, the same predicate
+ * that already tells `computeHarnessOverhead` a review session from a plan
+ * task) and refuses when the gated Plan still declares the parent: a review
+ * session of a task the Plan still declares is a live review in flight, not
+ * a folded id the Plan has dropped, however the review session's own id
+ * — never declared anywhere — reads against the Plan on its own.
+ *
+ * Both of those checks can only refuse an id the Plan *declares*, which
+ * leaves them vacuous for every id it never had: a phase-step id ('draft',
+ * 'critique', … dispatched under the step's node id by `phase/runner.ts`) or
+ * a mistyped dispatch reads as "not declared" exactly as a superseded task
+ * does, and a blocked phase step retired here would leave `successRate`
+ * reading high for a reason nobody checked — the wrong-but-plausible figure
+ * this verb exists to correct, reintroduced through the verb. So the claim
+ * is also checked from the positive side (`planEverDeclared`,
+ * `plan/declared-history.ts`): some stored version or committed revision of
+ * the Plan artifact must have declared the id — its *parent* id for a review
+ * session — as a task. That is what tells "an id the Plan dropped" from "an
+ * id the Plan never had", and mpgm's own split, applied in place to
+ * `plan.v1.md`, is found in the second place rather than the first.
+ */
+export function supersede(
+  context: CliContext,
+  runId: string,
+  taskId: string,
+  by: string,
+  reason: string,
+  supersededBy: readonly string[],
+): CommandResult {
+  const { db, log, projector } = open(context);
+  try {
+    const task = projector.project().runs[runId]?.tasks[taskId];
+    if (task === undefined) {
+      context.write(
+        `no task '${taskId}' has run in run '${runId}' — supersede is for a ` +
+          `task the harness dispatched, not one it never ran`,
+      );
+      return { ok: false, detail: 'unknown task' };
+    }
+    if (task.status !== 'blocked' && task.status !== 'dispatched') {
+      context.write(
+        `${taskId} is '${task.status}', not 'blocked' or 'dispatched' — ` +
+          `there is nothing to supersede`,
+      );
+      return { ok: false, detail: 'not supersedable' };
+    }
+
+    const artifacts = new ArtifactStore({
+      root: context.root,
+      schemas: context.artifactSchemas,
+    });
+    let graph;
+    try {
+      graph = ingestPlan(artifacts.read(PLAN_ARTIFACT).data as never);
+    } catch (error) {
+      context.write(
+        `could not read the gated Plan at ${PLAN_ARTIFACT}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return { ok: false, detail: 'no plan' };
+    }
+
+    // Fails closed on both ends of the claim: an id the Plan still declares
+    // is not superseded whatever an operator believes, and a successor the
+    // Plan does not declare is not evidence the work has a home.
+    if (graph.tasks.some((candidate) => candidate.id === taskId)) {
+      context.write(
+        `refusing to supersede ${taskId}: the gated Plan at ${PLAN_ARTIFACT} ` +
+          `still declares it`,
+      );
+      return { ok: false, detail: 'still declared' };
+    }
+    // A review-session id (`${task}-review[-n]`) is never itself declared in
+    // the Plan, so the check above always passes for one — checked here
+    // against its *parent* task id instead, or a live review of a task the
+    // Plan still declares would be superseded on the operator's word alone
+    // (see this function's own doc).
+    if (isReviewSessionTaskId(taskId)) {
+      const parentTaskId = reviewSessionParentTaskId(taskId);
+      if (graph.tasks.some((candidate) => candidate.id === parentTaskId)) {
+        context.write(
+          `refusing to supersede ${taskId}: it is a review session of ` +
+            `${parentTaskId}, and the gated Plan at ${PLAN_ARTIFACT} still ` +
+            `declares ${parentTaskId} — a live review of a live task is not ` +
+            `superseded`,
+        );
+        return { ok: false, detail: 'still declared' };
+      }
+    }
+    // Absence from the current Plan is not evidence the Plan ever declared
+    // it. The two checks above can only refuse ids the Plan *does* declare,
+    // so for a phase-step id ('draft', 'critique', … — `phase/runner.ts`
+    // dispatches those through `SessionRunner.runTask` under the step's own
+    // node id) or a mistyped dispatch they pass unconditionally, and a
+    // genuinely blocked step would be retired out of `successRate`'s
+    // denominator on the operator's word alone: the permit-on-ambiguity
+    // CONV-4 forbids, in the control meant to prevent it. So the claim is
+    // checked from the positive side — some version or committed revision of
+    // the gated Plan declared this id as a task (`plan/declared-history.ts`,
+    // which is also where mpgm's own in-place T4.1.4 split is found).
+    const evidenceId = isReviewSessionTaskId(taskId)
+      ? reviewSessionParentTaskId(taskId)
+      : taskId;
+    const evidence = planEverDeclared({
+      root: context.root,
+      artifacts,
+      basePath: PLAN_ARTIFACT,
+      taskId: evidenceId,
+    });
+    if (!evidence.declared) {
+      context.write(
+        `refusing to supersede ${taskId}: no version or committed revision of ` +
+          `the gated Plan at ${PLAN_ARTIFACT} has ever declared ` +
+          `${evidenceId === taskId ? 'it' : `its parent task ${evidenceId}`} — ` +
+          `${evidence.detail}. An id the plan never had is a mistyped dispatch ` +
+          `or a phase step, not a superseded task, and retiring it would hide ` +
+          `the defect this verb exists to surface`,
+      );
+      return { ok: false, detail: 'never declared' };
+    }
+
+    const unknownSuccessors = supersededBy.filter(
+      (id) => !graph.tasks.some((candidate) => candidate.id === id),
+    );
+    if (unknownSuccessors.length > 0) {
+      context.write(
+        `refusing to supersede ${taskId}: ${unknownSuccessors.join(', ')} ` +
+          `not declared in the gated Plan at ${PLAN_ARTIFACT}`,
+      );
+      return { ok: false, detail: 'unknown successor' };
+    }
+
+    log.append({
+      runId,
+      type: 'TaskSuperseded',
+      payload: { taskId, by, reason, supersededBy },
+    });
+
+    context.write(
+      `${taskId} superseded by ${supersededBy.join(', ')} (recorded by ${by})`,
+    );
+    return { ok: true, detail: 'superseded' };
   } finally {
     db.close();
   }

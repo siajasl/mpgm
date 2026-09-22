@@ -17,6 +17,7 @@ function emptyMetric(overrides: Partial<AggregateMetric> = {}): AggregateMetric 
     blocked: 0,
     attested: 0,
     dispatched: 0,
+    superseded: 0,
     successRate: null,
     avgLatencyMs: null,
     ...overrides,
