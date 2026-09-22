@@ -265,8 +265,26 @@ export const budgetExceeded = defineEvent(
      * exactly as any other budget breach does, so a change that cannot be
      * repaired or cannot satisfy a reviewer escalates to the operator rather
      * than being quietly abandoned (NFR-1).
+     *
+     * `escalation` is `implement/loop.ts` refusing to dispatch the last
+     * rework round's model-tier escalation (T4.2.13) because the implementer
+     * role's own allowance is not estimated to fund it (T4.3.8) — a decision
+     * taken *before* any session for that round runs. It is what tells this
+     * apart, by `kind` alone, from `cost`: a `cost` breach is `SessionRunner`
+     * reporting a session that was dispatched, ran, and was truncated at the
+     * cap (`AGT-4`) — `TaskDispatched` and `SessionUsage` precede it. An
+     * `escalation` refusal has no `TaskDispatched` for that round at all,
+     * because the round the kernel could not fund never started.
      */
-    kind: z.enum(['tokens', 'cost', 'steps', 'wallClock', 'repairs', 'reviews']),
+    kind: z.enum([
+      'tokens',
+      'cost',
+      'steps',
+      'wallClock',
+      'repairs',
+      'reviews',
+      'escalation',
+    ]),
     limit: z.number().nonnegative(),
     observed: z.number().nonnegative(),
   }),

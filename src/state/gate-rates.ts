@@ -67,15 +67,18 @@ export interface PhaseGateRate {
  * dispatches a fresh session on both, so both are refusals the change was
  * sent back for).
  *
- * `BudgetExceeded{kind: 'repairs' | 'reviews'}` is read too, because it is
- * the event that marks a task giving up on the merge gate entirely — but it
- * adds no count of its own. By the time either fires, every refusal it
- * represents has already been written as a `ChecksReported` or
- * `ChangeReviewed` on the way there (a repairs budget exhausts only after
- * every attempt it bounds has reported red; a reviews budget exhausts only
- * after every round it bounds has been sent back). Counting it again would
- * double the refusals it is the last event of, so `budgetExhausted` below is
- * kept only as a count for a reader to see, not folded into `refusals`.
+ * `BudgetExceeded{kind: 'repairs' | 'reviews' | 'escalation'}` is read too,
+ * because each marks a task giving up on the merge gate entirely — but none
+ * adds a count of its own. By the time any of the three fires, every refusal
+ * it represents has already been written as a `ChecksReported` or
+ * `ChangeReviewed` on the way there: a repairs budget exhausts only after
+ * every attempt it bounds has reported red, a reviews budget exhausts only
+ * after every round it bounds has been sent back, and an escalation refusal
+ * (T4.3.8) follows the same `ChangeReviewed{approved: false}` that would
+ * otherwise have earned the reworked round it refuses to fund. Counting any
+ * of them again would double the refusal it is the last event of, so
+ * `budgetExhausted` below is kept only as a count for a reader to see, not
+ * folded into `refusals`.
  *
  * `unobservable` names the `MergeRefusal` cases nothing in the log can show:
  * `checks-are-stale` and `review-is-stale` compare a verdict or a review's
@@ -95,8 +98,9 @@ export interface MergeGateRate {
   /** `MergeRefusal` cases this reconstruction cannot see (see above). */
   readonly unobservable: readonly MergeRefusal[];
   /**
-   * Count of `BudgetExceeded{kind: 'repairs' | 'reviews'}` this run. Already
-   * reflected in `refusals` via the events that preceded each — see above.
+   * Count of `BudgetExceeded{kind: 'repairs' | 'reviews' | 'escalation'}`
+   * this run. Already reflected in `refusals` via the events that preceded
+   * each — see above.
    */
   readonly budgetExhausted: number;
 }
@@ -217,7 +221,11 @@ export function computeGateRates(
       }
       case 'BudgetExceeded': {
         const payload = event.payload as BudgetExceededPayload;
-        if (payload.kind === 'repairs' || payload.kind === 'reviews') {
+        if (
+          payload.kind === 'repairs' ||
+          payload.kind === 'reviews' ||
+          payload.kind === 'escalation'
+        ) {
           budgetExhausted += 1;
         }
         break;
