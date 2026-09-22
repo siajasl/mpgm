@@ -1256,6 +1256,60 @@ describe('supersede', () => {
     expect(fold(events as never).runs.r1?.tasks['T4.1.4a']?.status).toBe('blocked');
   });
 
+  // A review-session id is never itself declared in the Plan (the Plan
+  // declares tasks, not review rounds), so the membership check above
+  // would pass unconditionally for one unless it is resolved against its
+  // *parent* task id instead — this pins that resolution down, alongside
+  // T4.1.4-review-2's own case above (still refused: the Plan does not
+  // declare T4.1.4-review-2's parent, T4.1.4, at all).
+  it('refuses a review session of a task the gated Plan still declares, even though its own id is undeclared', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-supersede-'));
+    writeGatedPlan(root);
+    twoOrphanedShapes(root);
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T4.1.4a', role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: {
+            taskId: 'T4.1.4a-review-1',
+            role: 'reviewer',
+            model: 'claude-sonnet-5',
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const writes: string[] = [];
+    const result = supersede(
+      newContext(root, writes),
+      'r1',
+      'T4.1.4a-review-1', // genuinely dispatched, and its own id is undeclared
+      'macg',
+      'wrongly claimed superseded',
+      ['T4.1.4b'],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('still declared');
+    expect(writes.join('\n')).toContain('still declares T4.1.4a');
+
+    const events = eventsOf(root) as { type: string }[];
+    expect(events.some((event) => event.type === 'TaskSuperseded')).toBe(false);
+    expect(fold(events as never).runs.r1?.tasks['T4.1.4a-review-1']?.status).toBe(
+      'dispatched',
+    );
+  });
+
   it('refuses a successor id the gated Plan does not declare, and appends nothing', () => {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-supersede-'));
     writeGatedPlan(root);

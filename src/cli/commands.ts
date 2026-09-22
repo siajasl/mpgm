@@ -73,7 +73,9 @@ import { computeGateRates, type RunGateRates } from '../state/gate-rates.js';
 import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
 import {
   computeHarnessOverhead,
+  isReviewSessionTaskId,
   NFR3_OVERHEAD_THRESHOLD,
+  reviewSessionParentTaskId,
   type HarnessOverhead,
 } from '../state/overhead.js';
 import { Projector } from '../state/projector.js';
@@ -2091,6 +2093,21 @@ export async function recordMerge(
  * not a real, currently-declared task is not evidence the work has a home).
  * It also refuses a task this run never dispatched, or one already
  * `completed`, `attested` or `superseded` — there is nothing here to retire.
+ *
+ * A review-session id (`${task}-review` or `${task}-review-<n>`,
+ * `implement/loop.ts`'s own `reviewTaskId`) is never itself declared in the
+ * Plan — the Plan declares tasks, not review rounds of them — so the
+ * membership check above cannot be run against `taskId` directly: it would
+ * pass unconditionally for every review session, live or not, which is
+ * exactly the silent permit-on-ambiguity CONV-4 forbids and the fail-closed
+ * claim this doc makes for every other shape. For that shape the check
+ * instead resolves the *parent* task id (`state/overhead.ts`'s
+ * `isReviewSessionTaskId`/`reviewSessionParentTaskId`, the same predicate
+ * that already tells `computeHarnessOverhead` a review session from a plan
+ * task) and refuses when the gated Plan still declares the parent: a review
+ * session of a task the Plan still declares is a live review in flight, not
+ * a folded id the Plan has dropped, however the review session's own id
+ * — never declared anywhere — reads against the Plan on its own.
  */
 export function supersede(
   context: CliContext,
@@ -2142,6 +2159,23 @@ export function supersede(
           `still declares it`,
       );
       return { ok: false, detail: 'still declared' };
+    }
+    // A review-session id (`${task}-review[-n]`) is never itself declared in
+    // the Plan, so the check above always passes for one — checked here
+    // against its *parent* task id instead, or a live review of a task the
+    // Plan still declares would be superseded on the operator's word alone
+    // (see this function's own doc).
+    if (isReviewSessionTaskId(taskId)) {
+      const parentTaskId = reviewSessionParentTaskId(taskId);
+      if (graph.tasks.some((candidate) => candidate.id === parentTaskId)) {
+        context.write(
+          `refusing to supersede ${taskId}: it is a review session of ` +
+            `${parentTaskId}, and the gated Plan at ${PLAN_ARTIFACT} still ` +
+            `declares ${parentTaskId} — a live review of a live task is not ` +
+            `superseded`,
+        );
+        return { ok: false, detail: 'still declared' };
+      }
     }
     const unknownSuccessors = supersededBy.filter(
       (id) => !graph.tasks.some((candidate) => candidate.id === id),

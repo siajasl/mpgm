@@ -86,6 +86,18 @@ function blocked(taskId: string, runId: string = RUN): EventInput {
   return { runId, type: 'TaskBlocked', payload: { taskId, reason: 'blocked' } };
 }
 
+function superseded(
+  taskId: string,
+  supersededBy: readonly string[],
+  runId: string = RUN,
+): EventInput {
+  return {
+    runId,
+    type: 'TaskSuperseded',
+    payload: { taskId, by: 'macg', reason: 'PLN-4 split', supersededBy },
+  };
+}
+
 function contextAssembled(
   taskId: string,
   durationMs: number,
@@ -382,6 +394,62 @@ describe('computeHarnessOverhead — a review session’s own taskId does not di
     // is not population-matched — so both their spans are still counted:
     // 1000 (T1) + 500 (T1-review) + 300 (T1-review-2) = 1800ms, disjoint.
     expect(overhead.observedMs).toBe(1800);
+  });
+});
+
+describe('computeHarnessOverhead — a superseded task (T4.3.7) keeps the busy time it already earned', () => {
+  it('counts a task superseded out of blocked in observedMs, settledTaskCount and ratio — the same as if it had stayed blocked', () => {
+    // T4.1.4's own shape: dispatched, instrumented, reaches BudgetExceeded
+    // (a real terminal event, closeRound fires), then retired weeks later
+    // by TaskSuperseded. Its round already has a firm end before the
+    // retirement — the same reason `blocked` itself is settled — so
+    // dropping it out of the settled population here would move NFR-3's own
+    // ratio by exactly the retirement T4.3.7 exists to make cost-neutral
+    // everywhere else.
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        contextAssembled('T1', 100), // 1_100 -> backdated start 1_000
+        dispatched('T1'), // 1_150
+        toolCallLogged('T1'), // 2_000 -> closeRound ends the interval here
+        blocked('T1'), // 2_001 -> T1 span [1000, 2000) = 1000ms, overhead 100ms
+        superseded('T1', ['T1a', 'T1b'], RUN), // 1_000_000, weeks later
+      ],
+      [0, 1_100, 1_150, 2_000, 2_001, 1_000_000],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+    expect(run.tasks.T1?.status).toBe('superseded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Exactly what T1 would have reported had it stayed `blocked` — the
+    // later TaskSuperseded moves status, not the round's own timing.
+    expect(overhead.components.settledTaskCount).toBe(1);
+    expect(overhead.components.instrumentedTaskCount).toBe(1);
+    expect(overhead.overheadMs).toBe(100);
+    expect(overhead.instrumentedSpanMs).toBe(1000);
+    expect(overhead.ratio).toBeCloseTo(0.1);
+    expect(overhead.observedMs).toBe(1000);
+  });
+
+  it('does not invent a duration for a task superseded straight out of dispatched, with no terminal event of its own', () => {
+    // T4.1.4-review-2's own shape: dispatched, never reaches a terminal
+    // event, retired by TaskSuperseded alone. Its round is still open when
+    // the log ends — never pushed into a closed interval — so counting it
+    // as settled here costs nothing: there is no round to time.
+    const events = logWithTimestamps(
+      [runStarted(), dispatched('T1'), superseded('T1', ['T1a'], RUN)],
+      [0, 1_000, 1_000_000],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+    expect(run.tasks.T1?.status).toBe('superseded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    expect(overhead.components.settledTaskCount).toBe(0);
+    expect(overhead.observedMs).toBeNull();
   });
 });
 

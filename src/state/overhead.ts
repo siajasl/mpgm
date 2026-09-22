@@ -477,9 +477,26 @@ interface TaskIdPayload {
  * ones — coverage of 0/25, not 0/90. They still contribute their own real
  * busy time to `observedMs` below, which is not population-matched and is
  * not limited to what `ratio` measures.
+ *
+ * Exported for `cli/commands.ts`'s `supersede` (T4.3.7): a review-session id
+ * is never itself declared in the gated Plan artifact — `implement/loop.ts`
+ * mints it, the Plan never does — so the same predicate that keeps a review
+ * session out of overhead's settled population also tells `supersede` when a
+ * `taskId` it was asked to retire names a review round rather than a plan
+ * task, so it can check the *parent* task's own membership instead.
  */
-function isReviewSessionTaskId(taskId: string): boolean {
+export function isReviewSessionTaskId(taskId: string): boolean {
   return /-review(-\d+)?$/.test(taskId);
+}
+
+/**
+ * The plan task a review-session id belongs to: strips the same
+ * `-review(-\d+)?` suffix `isReviewSessionTaskId` matches. Callers must
+ * check `isReviewSessionTaskId(taskId)` first — this does not validate its
+ * input and returns `taskId` unchanged when it does not match.
+ */
+export function reviewSessionParentTaskId(taskId: string): string {
+  return taskId.replace(/-review(-\d+)?$/, '');
 }
 
 /**
@@ -789,9 +806,32 @@ export function computeHarnessOverhead(
   let contextAssemblyCount = 0;
 
   for (const task of Object.values(run.tasks)) {
-    if (task.status !== 'completed' && task.status !== 'blocked') {
+    if (
+      task.status !== 'completed' &&
+      task.status !== 'blocked' &&
+      task.status !== 'superseded'
+    ) {
       // Not settled (or attested, with no dispatch at all): no firm end to
       // close a busy interval with, the same reason `avgLatencyMs` skips it.
+      //
+      // `superseded` (T4.3.7) is decided the same way as `blocked`, not
+      // excluded alongside `attested`: a task `mpgm supersede` retires out of
+      // `blocked` reached a real terminal event (`TaskBlocked`,
+      // `BudgetExceeded`) before its id was retired, so `roundsByTask` below
+      // already has a closed interval with a firm end for it — the harness's
+      // own busy time really happened, and this change's own argument for
+      // keeping `costUsd` in the ledger (`metrics.ts`) applies exactly as
+      // much to the rounds that earned it. Dropping it here would move
+      // `observedMs`, `settledTaskCount` and (if any round carried a
+      // `ContextAssembled`) `instrumentedTaskCount`/`ratio` by the same
+      // retirement that this task exists to make cost-neutral elsewhere.
+      // A task superseded straight out of `dispatched` (never reaching a
+      // terminal event of its own — T4.1.4-review-2's shape) costs nothing
+      // to include here either: its round is still open in `openRounds`,
+      // never pushed into `roundsByTask`, so the `rounds === undefined`
+      // check just below skips it exactly as it already does for any other
+      // settled-by-fold task with no closed round in this event slice —
+      // nothing invents a duration for it.
       continue;
     }
     const rounds = roundsByTask.get(task.taskId);
