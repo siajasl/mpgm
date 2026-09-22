@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArtifactStore } from '../artifact/store.js';
+import { TRACE_SCHEMA_VERSION } from './ddl.js';
 import { changedPaths, headCommit, readCommits } from './git-history.js';
 import type { TraceIndex } from './index-store.js';
 import type { UnindexedTrailerValue, UnrecognisedTrailer } from './links.js';
@@ -37,11 +38,14 @@ export interface IndexReport {
   readonly indexedAt: string | null;
   /**
    * Trailer values read from the commits this pass touched that were not
-   * id-shaped, so the graph gained no edge from them. Reported here rather
-   * than stored: a value like `DESIGN section 4.1` is not wrong, it just has
-   * no node to name, and only the commits an incremental `update` actually
-   * re-reads are represented — a full `rebuild` reports every one still
-   * reachable from HEAD.
+   * id-shaped, so the graph gained no edge from them. A value like `DESIGN
+   * section 4.1` is not wrong, it just has no node to name.
+   *
+   * Only the commits this pass actually re-read are represented, which for
+   * an index already at HEAD is none. That is the right answer to "what did
+   * this pass read" and the wrong one to "what does the history hold" — ask
+   * `TraceIndex.unreadClaims()` for the second (T4.3.6), which is what
+   * `mpgm trace` reports and what M4.2's verification leg asks for.
    */
   readonly unindexedTrailerValues: readonly UnindexedTrailerValue[];
   /**
@@ -89,6 +93,7 @@ export class TraceIndexer {
     }
 
     this.#index.indexedAt = head;
+    this.#index.stampSchemaVersion();
     return {
       artifacts,
       commits,
@@ -106,12 +111,21 @@ export class TraceIndexer {
    * commit, or a recorded one git no longer knows (a rewritten history). A
    * silent partial update against a commit that no longer exists would leave
    * an index that looks current and is not.
+   *
+   * And when an older reader wrote the index. A table this reader knows and
+   * that one did not is empty in every row an incremental update would not
+   * touch, and an index already at HEAD touches none — so it would answer
+   * from a table nothing ever filled while reporting itself current, which
+   * is the same "looks current and is not" the clause above refuses.
    */
   update(): IndexReport {
     const from = this.#index.indexedAt;
     const head = headCommit(this.#repo);
 
     if (from === null || head === null) {
+      return this.rebuild();
+    }
+    if (this.#index.schemaVersion !== TRACE_SCHEMA_VERSION) {
       return this.rebuild();
     }
     if (from === head) {
@@ -171,6 +185,7 @@ export class TraceIndexer {
     }
 
     this.#index.indexedAt = head;
+    this.#index.stampSchemaVersion();
     return {
       artifacts,
       commits,

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Artifact } from '../artifact/store.js';
-import { TRACE_DDL } from './ddl.js';
+import { TRACE_DDL, TRACE_SCHEMA_VERSION } from './ddl.js';
 import {
   extractArtifactLinks,
   extractCommitLinks,
@@ -12,6 +12,8 @@ import {
   type Retraction,
   type TraceLink,
   type TraceNode,
+  type UnindexedTrailerValue,
+  type UnrecognisedTrailer,
 } from './links.js';
 
 /**
@@ -94,6 +96,26 @@ export class TraceIndex {
     return new TraceIndex(db);
   }
 
+  /**
+   * The reader version that wrote this index, or null for one written before
+   * the field existed. Compared against {@link TRACE_SCHEMA_VERSION} by
+   * `TraceIndexer.update`, which rebuilds rather than trusting rows an older
+   * reader could not have written.
+   */
+  get schemaVersion(): string | null {
+    const row = this.#db
+      .prepare('SELECT value FROM trace_meta WHERE key = ?')
+      .get('schemaVersion') as unknown as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  /** Stamp this index with the reader version that wrote it. */
+  stampSchemaVersion(): void {
+    this.#db
+      .prepare('INSERT OR REPLACE INTO trace_meta (key, value) VALUES (?, ?)')
+      .run('schemaVersion', TRACE_SCHEMA_VERSION);
+  }
+
   /** The commit the index was last brought up to, or null if never. */
   get indexedAt(): string | null {
     const row = this.#db
@@ -141,6 +163,7 @@ export class TraceIndex {
     this.#db.prepare('DELETE FROM trace_nodes WHERE source = ?').run(source);
     this.#db.prepare('DELETE FROM trace_links WHERE source = ?').run(source);
     this.#db.prepare('DELETE FROM trace_retractions WHERE source = ?').run(source);
+    this.#db.prepare('DELETE FROM trace_unread_claims WHERE source = ?').run(source);
   }
 
   indexArtifact(artifact: Artifact): void {
@@ -178,7 +201,60 @@ export class TraceIndex {
     for (const entry of extracted.retractions) {
       retraction.run(entry.claimSource, entry.id, entry.author, entry.why, commit.sha);
     }
+    // Persisted as well as returned (T4.3.6). The returned reports say what
+    // *this pass* read, which is what a caller walking commits wants; the
+    // rows say what the history holds, which is what `mpgm trace` wants on
+    // an invocation that re-read nothing.
+    const unread = this.#db.prepare(
+      `INSERT OR REPLACE INTO trace_unread_claims (kind, key, value, source)
+         VALUES (?, ?, ?, ?)`,
+    );
+    for (const entry of extracted.reports.unindexed) {
+      unread.run('unindexed-value', entry.key, entry.value, commit.sha);
+    }
+    for (const entry of extracted.reports.unrecognised) {
+      unread.run('unrecognised-key', entry.key, '', commit.sha);
+    }
     return extracted.reports;
+  }
+
+  /**
+   * Every trace claim the index has read and could not turn into an edge
+   * (T4.3.6), over the whole history it holds rather than the commits one
+   * pass happened to re-read.
+   *
+   * This is what `mpgm trace` reports. `TraceIndexer`'s per-call
+   * {@link IndexReport} answers a different question — what did *this* pass
+   * read — and answers it correctly with nothing when the index is already
+   * at HEAD, which is exactly why a durable reading has to come from
+   * somewhere else.
+   *
+   * Reading this raises no coverage figure and is not allowed to: a row here
+   * means the claim was reported rather than indexed (T4.2.5).
+   */
+  unreadClaims(): {
+    unindexed: readonly UnindexedTrailerValue[];
+    unrecognised: readonly UnrecognisedTrailer[];
+  } {
+    const rows = this.#db
+      .prepare(
+        `SELECT kind, key, value, source FROM trace_unread_claims
+          ORDER BY source, kind, key, value`,
+      )
+      .all() as unknown as {
+      kind: string;
+      key: string;
+      value: string;
+      source: string;
+    }[];
+    return {
+      unindexed: rows
+        .filter((row) => row.kind === 'unindexed-value')
+        .map((row) => ({ key: row.key, value: row.value, sha: row.source })),
+      unrecognised: rows
+        .filter((row) => row.kind === 'unrecognised-key')
+        .map((row) => ({ key: row.key, sha: row.source })),
+    };
   }
 
   /** Every source currently represented in the index. */
@@ -195,7 +271,8 @@ export class TraceIndex {
   clear(): void {
     this.#db.exec(
       'DELETE FROM trace_nodes; DELETE FROM trace_links; ' +
-        'DELETE FROM trace_retractions; DELETE FROM trace_meta;',
+        'DELETE FROM trace_retractions; DELETE FROM trace_unread_claims; ' +
+        'DELETE FROM trace_meta;',
     );
   }
 
