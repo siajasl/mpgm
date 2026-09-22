@@ -57,7 +57,7 @@ export function readCommits(repo: string, range?: string): CommitRecord[] {
     'log',
     '--reverse',
     '--no-merges',
-    `--format=${RECORD}%H${FIELD}%s${FIELD}%b`,
+    `--format=${RECORD}%H${FIELD}%s${FIELD}%an <%ae>${FIELD}%b`,
     ...(range === undefined ? [] : [range]),
   ]);
 
@@ -65,8 +65,8 @@ export function readCommits(repo: string, range?: string): CommitRecord[] {
     .split(RECORD)
     .slice(1)
     .map((record) => {
-      const [sha = '', subject = '', body = ''] = record.split(FIELD);
-      return { sha: sha.trim(), subject: subject.trim(), body };
+      const [sha = '', subject = '', author = '', body = ''] = record.split(FIELD);
+      return { sha: sha.trim(), subject: subject.trim(), author: author.trim(), body };
     })
     .filter((commit) => commit.sha !== '');
 }

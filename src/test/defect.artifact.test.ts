@@ -125,6 +125,7 @@ describe('a Defect as an artifact (TST-5, ART-2)', () => {
         id: 'LOAN-3',
         verifiedBy: [],
         tracedBy: ['defect-1@1'],
+        retractions: [],
         verified: false,
       });
     } finally {

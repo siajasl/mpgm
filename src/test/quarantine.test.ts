@@ -250,7 +250,14 @@ describe('withoutQuarantined (TST-6)', () => {
 });
 
 function graphRow(id: string, overrides: Partial<CoverageRow> = {}): CoverageRow {
-  return { id, verifiedBy: [], tracedBy: [], verified: false, ...overrides };
+  return {
+    id,
+    verifiedBy: [],
+    tracedBy: [],
+    retractions: [],
+    verified: false,
+    ...overrides,
+  };
 }
 
 describe('requirementCoverageReport with a quarantine ledger (TST-2, TST-3, TST-6)', () => {

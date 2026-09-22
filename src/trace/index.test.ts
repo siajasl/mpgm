@@ -559,6 +559,7 @@ describe('coverage (TST-2)', () => {
         id: 'LOAN-1',
         verifiedBy: ['commit-1'],
         tracedBy: ['design@1'],
+        retractions: [],
         verified: true,
       });
       // Cited by ADR-1 and nothing else. Designed for is not checked.
@@ -566,6 +567,7 @@ describe('coverage (TST-2)', () => {
         id: 'NFR-1',
         verifiedBy: [],
         tracedBy: ['ADR-1'],
+        retractions: [],
         verified: false,
       });
     } finally {
@@ -623,6 +625,7 @@ describe('a Traces: trailer against a repository the test builds (T4.2.5)', () =
         id: 'LOAN-1',
         verifiedBy: [],
         tracedBy: [],
+        retractions: [],
         verified: false,
       });
 
@@ -884,6 +887,177 @@ describe("this repository's own history (T4.2.16)", () => {
       }
     } finally {
       db.close();
+    }
+  });
+});
+
+/**
+ * Withdrawing a verification claim (T4.3.12).
+ *
+ * The defect these close: `Verifies:` links are keyed by the commit that
+ * wrote them, `coverage` marks a requirement verified on `verifiedBy.length >
+ * 0`, and nothing read a later commit as taking a claim back — so a claim its
+ * own author had publicly retracted went on counting. This repository has
+ * three such rows (`627e6cd`'s TST-1/TST-2, `264d947`'s NFR-3/PLN-4), each
+ * retracted in a later commit body that the index could not see.
+ *
+ * Driven against a real repository rather than hand-built `CommitRecord`s
+ * because the matching is by sha prefix: a retraction names the claim the way
+ * a person reads it (`627e6cd`) and the link carries the full forty
+ * characters, and a fixture that invented both would never exercise that.
+ */
+describe('a retracted Verifies: claim (T4.3.12)', () => {
+  const shaOf = (root: string): string =>
+    execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim();
+
+  it('stops counting as coverage, and says who withdrew it and why', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      commit('Check the loan ledger\n\nVerifies: LOAN-1\n');
+      const claim = shaOf(root);
+
+      new TraceIndexer({ repo: root, index, artifacts: store }).rebuild();
+      // Verified while the claim stands — the state every row in this
+      // repository's coverage report is in today.
+      expect(index.coverage(['LOAN-1'])[0]?.verified).toBe(true);
+
+      commit(
+        `Retract the LOAN-1 claim: the test asserts nothing\n\nRetracts-Verifies: ${claim}:LOAN-1\n`,
+      );
+      new TraceIndexer({ repo: root, index, artifacts: store }).rebuild();
+
+      const row = index.coverage(['LOAN-1'])[0];
+      expect(row?.verified).toBe(false);
+      expect(row?.verifiedBy).toStrictEqual([]);
+      // Named, not merely subtracted. A figure that moved downward with no
+      // account of who moved it is the laundering this field exists to
+      // prevent (HIL-5).
+      expect(row?.retractions).toHaveLength(1);
+      expect(row?.retractions[0]).toMatchObject({
+        claimSource: claim,
+        id: 'LOAN-1',
+        author: 'trace test <trace@example.com>',
+        why: 'Retract the LOAN-1 claim: the test asserts nothing',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('withdraws one of a commit’s several claims and leaves the rest', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      // The `627e6cd` shape: three claims on one commit, two of them untrue.
+      commit('Check two things\n\nVerifies: LOAN-1, NFR-1\n');
+      const claim = shaOf(root);
+      commit(`Retract only LOAN-1\n\nRetracts-Verifies: ${claim}:LOAN-1\n`);
+
+      new TraceIndexer({ repo: root, index, artifacts: store }).rebuild();
+
+      const [loan, nfr] = index.coverage(['LOAN-1', 'NFR-1']);
+      expect(loan?.verified).toBe(false);
+      // The claim that was true is untouched. A retraction naming only the
+      // requirement, or only the commit, would have taken this with it.
+      expect(nfr?.verified).toBe(true);
+      expect(nfr?.retractions).toStrictEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reports a withdrawal that matches no claim rather than dropping it', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      const unrelated = shaOf(root);
+      commit(`Withdraw a claim nobody made\n\nRetracts-Verifies: ${unrelated}:LOAN-1\n`);
+
+      new TraceIndexer({ repo: root, index, artifacts: store }).rebuild();
+
+      const row = index.coverage(['LOAN-1'])[0];
+      // Unverified either way, so the interesting assertion is the second:
+      // somebody wrote this and the report says so. Silently discarding it
+      // is the disappearance the reporting exists to prevent.
+      expect(row?.verified).toBe(false);
+      expect(row?.retractions).toHaveLength(1);
+      expect(row?.retractions[0]?.claimSource).toBe(unrelated);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('survives an incremental update identically to a full rebuild', () => {
+    const { root, store, commit } = repository();
+    const incremental = openDatabase(MEMORY);
+    const full = openDatabase(MEMORY);
+    try {
+      const incrementalIndex = TraceIndex.attach(incremental);
+      const fullIndex = TraceIndex.attach(full);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      commit('Check the loan ledger\n\nVerifies: LOAN-1\n');
+      const claim = shaOf(root);
+
+      // The incremental index sees the claim before the withdrawal exists,
+      // which is the ordering a real repository is always in.
+      new TraceIndexer({
+        repo: root,
+        index: incrementalIndex,
+        artifacts: store,
+      }).update();
+      commit(`Retract it\n\nRetracts-Verifies: ${claim}:LOAN-1\n`);
+      new TraceIndexer({
+        repo: root,
+        index: incrementalIndex,
+        artifacts: store,
+      }).update();
+      new TraceIndexer({ repo: root, index: fullIndex, artifacts: store }).rebuild();
+
+      expect(incrementalIndex.coverage(['LOAN-1'])).toStrictEqual(
+        fullIndex.coverage(['LOAN-1']),
+      );
+      expect(incrementalIndex.coverage(['LOAN-1'])[0]?.verified).toBe(false);
+    } finally {
+      incremental.close();
+      full.close();
     }
   });
 });
