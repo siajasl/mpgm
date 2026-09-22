@@ -1631,6 +1631,194 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('estimates from the round before the escalation, not from every round averaged (T4.3.8)', async () => {
+    // The multiplier is a ratio between two adjacent rounds — T4.3.2's Opus
+    // round over the Sonnet round right before it — so the quantity it
+    // multiplies has to be one round. Averaging the task's whole spend
+    // instead compounds conservatism nobody measured: here the opening
+    // implementation cost $6 and the rework round after it $0.30, so the
+    // average says $25.20 and refuses, and the preceding round says $2.40
+    // and funds a round that comfortably fits. Measured against this repo's
+    // own log the difference is 30 tasks of 38 above the line against 13 —
+    // the difference between guarding the escalated round and retiring it.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const implementerRole = RoleRegistry.fromDirectory(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+    ).get('implementer');
+    const escalated = escalateModel(implementerRole.model);
+    expect(escalated).not.toBe(implementerRole.model);
+
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const reject = scriptedSuccess({
+      ref: head,
+      verdict: 'request-changes',
+      summary: 'no',
+      findings: [
+        { file: 'README.md', concern: 'no', remedy: 'yes', severity: 'blocker' },
+      ],
+      deviations: [],
+    });
+    const provider = new ScriptedProvider([
+      // The expensive opening round, which an average would carry into every
+      // estimate the task ever makes.
+      scriptedSuccess(change, {
+        usage: { inputTokens: 3000, outputTokens: 1500, costUsd: 6 },
+      }),
+      reject,
+      // The cheap round immediately before the escalation: what the
+      // multiplier was actually measured against.
+      scriptedSuccess(change, {
+        usage: { inputTokens: 300, outputTokens: 150, costUsd: 0.3 },
+      }),
+      reject,
+      // The escalated round, which this estimate has to let run.
+      scriptedSuccess(change, {
+        usage: { inputTokens: 400, outputTokens: 200, costUsd: 0.5 },
+      }),
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [],
+      }),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 3,
+      });
+
+      expect(result.status).toBe('merged');
+
+      // The escalated round ran, on the stronger tier, rather than being
+      // refused on an estimate built from a round two rounds back.
+      const models = log
+        .read()
+        .filter(
+          (event) =>
+            event.type === 'TaskDispatched' &&
+            (event.payload as { taskId: string }).taskId === 'T1',
+        )
+        .map((event) => (event.payload as { model: string }).model);
+      expect(models).toEqual([implementerRole.model, implementerRole.model, escalated]);
+      expect(
+        log
+          .read()
+          .filter((event) => event.type === 'BudgetExceeded')
+          .map((event) => (event.payload as { kind: string }).kind),
+      ).toEqual([]);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('neither escalates nor refuses the declaration round the cap buys (T4.2.4, T4.3.8)', async () => {
+    // The declaration round is granted by adding one to `attempts`, which
+    // makes `round === attempts - 1` true of the round it just bought — so
+    // an escalation keyed on that arithmetic escalates the one round whose
+    // work is known to be trivial, and a funding guard behind it can then
+    // refuse a change the reviewer has already approved, for want of a
+    // sentence naming a convention. T4.2.4 bought that round with $29.52 of
+    // review; this drives a task to it with a preceding round expensive
+    // enough ($2, so 8x is $16 against the implementer's $8) that the guard
+    // would certainly fire if it applied.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const implementerRole = RoleRegistry.fromDirectory(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+    ).get('implementer');
+    expect(escalateModel(implementerRole.model)).not.toBe(implementerRole.model);
+
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const approvingWithCONV6 = () =>
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [{ convention: 'CONV-6', where: 'the branch' }],
+      });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change, {
+        usage: { inputTokens: 1000, outputTokens: 500, costUsd: 2 },
+      }),
+      // At the cap: approved, and reporting a convention nothing declared.
+      // This is what buys the extra round.
+      approvingWithCONV6(),
+      // The declaration round itself: the sentence, and nothing else.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'CONV-6', why: 'declared' }],
+      }),
+      approvingWithCONV6(),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      // The change merges: the declaration round happened and was not
+      // refused for want of budget.
+      expect(result.status).toBe('merged');
+      expect(
+        log
+          .read()
+          .filter((event) => event.type === 'BudgetExceeded')
+          .map((event) => (event.payload as { kind: string }).kind),
+      ).toEqual([]);
+
+      // And it ran on the tier the role is funded for. Escalating it would
+      // spend the stronger model on a change nobody disputes, and is what
+      // put it in front of the guard in the first place.
+      const models = log
+        .read()
+        .filter(
+          (event) =>
+            event.type === 'TaskDispatched' &&
+            (event.payload as { taskId: string }).taskId === 'T1',
+        )
+        .map((event) => (event.payload as { model: string }).model);
+      expect(models).toEqual([implementerRole.model, implementerRole.model]);
+    } finally {
+      log.close();
+    }
+  });
+
   it('pushes what a killed rework session already committed, rather than stranding it in the worktree (T4.3.2, T4.3.8)', async () => {
     // The other half: an allowance the guard above judges sufficient still
     // dispatches the escalated round, and a round that is dispatched can
@@ -1746,9 +1934,12 @@ describe('a review that never approves (NFR-1)', () => {
       // saying what actually happened: this round ran and was truncated,
       // rather than being refused before it was dispatched.
       expect(result.reason).not.toMatch(/refused before dispatch/);
-      expect(result.reason).toMatch(
-        /already committed up to .+, pushed for review rather than left only in the worktree/,
+      // Says where the work went, by commit and by branch, so an operator
+      // can go and look at it without reading the loop (CONV-3).
+      expect(result.reason).toContain(
+        `already committed up to ${String(stranded)}, pushed to ${worktrees.branchFor('T1')} for review`,
       );
+      expect(result.reason).toContain(worktrees.pathFor('T1'));
       expect(result.ref).toBe(stranded);
 
       // Pushed rather than left for only the local worktree to show: the

@@ -51,12 +51,20 @@ export function canEscalate(model: string): boolean {
  *
  * T4.3.2's rework: two Sonnet rounds cost $5.64 and $1.06, and the third —
  * escalated to Opus, per T4.2.13 — cost $8.0142675 against an implementer
- * budget of $8 that had not moved. That is roughly eight times the round
- * immediately before it, on an allowance sized for the tier that round ran
- * on. One incident is a floor, not a distribution, and this multiplier is
- * kept here rather than folded into a bigger number in `roles/freeze.json`
- * until the eval harness (T5.2.1a) has more than one escalated round to fit
- * a real ratio to.
+ * budget of $8 that had not moved. That is 7.6 times the round immediately
+ * before it, on an allowance sized for the tier that round ran on, rounded
+ * up to 8 here.
+ *
+ * A ceiling, not an expectation. Across every escalated round this project
+ * has recorded (22 in `.mpgm/state.db`, 21 with a preceding round to
+ * measure against), T4.3.2's 7.6x is the largest ratio and the median is
+ * about 1.2x — so a guard built on this multiplier refuses rounds that
+ * would in fact have fit, and the caller that uses it
+ * (`implement/loop.ts`) says how often, because that frequency is the
+ * design and not a detail of it. One incident is a floor, not a
+ * distribution, and this multiplier is kept here rather than folded into a
+ * bigger number in `roles/freeze.json` until the eval harness (T5.2.1a) has
+ * more than one escalated round to fit a real ratio to.
  */
 export const ESCALATION_COST_MULTIPLIER = 8;
 
@@ -69,9 +77,17 @@ export const ESCALATION_COST_MULTIPLIER = 8;
  * `ESCALATION_COST_MULTIPLIER`'s own measurement, to end the same way
  * T4.3.2's Opus round did: started on the full allowance and truncated at
  * the cap. `precedingRoundCostUsd` is read off this task's own event log
- * (`implement/loop.ts`), not off a table of prices, because the kernel has
- * no such table — the SDK is the only thing that knows what a session
- * actually cost.
+ * (`implementerPrecedingRoundCostUsd`, `implement/loop.ts`), not off a
+ * table of prices, because the kernel has no such table — the SDK is the
+ * only thing that knows what a session actually cost.
+ *
+ * The preceding round specifically, and the caller is held to that.
+ * `ESCALATION_COST_MULTIPLIER` is a ratio between two adjacent rounds, so
+ * multiplying it by anything else — a lifetime average over every round,
+ * repair and validation retry the task has run, say — compounds
+ * conservatism that was never measured: for T4.3.2 the two quantities are
+ * $8.45 and $26.80, and the difference between them is the difference
+ * between guarding escalation and retiring it.
  */
 export function estimateEscalatedCostUsd(precedingRoundCostUsd: number): number {
   return precedingRoundCostUsd * ESCALATION_COST_MULTIPLIER;
