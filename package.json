@@ -45,6 +45,7 @@
     "demo:scope": "node scripts/demo/scope-phase.mjs",
     "demo:design": "node scripts/demo/design-phase.mjs",
     "demo:plan": "node scripts/demo/plan-phase.mjs",
+    "demo:test-phase": "node scripts/demo/test-phase.mjs",
     "probe:sdk": "node scripts/demo/probe-sdk.mjs"
   },
   "devDependencies": {

@@ -119,9 +119,10 @@ repository config alone. Without a daemon those four fail.
 Use `npm run check:fast` on an instance with no Docker (it is also 26s against 94s), and run the
 full `check` where a daemon exists before anything merges.
 
-The live demos — `demo:agent`, `demo:definition`, `demo:scope`, `demo:design`, `demo:plan` — make
-real model calls and need model credentials rather than Docker. `npm run probe:sdk` is the cheap
-live check that the SDK layer is wired correctly at all; run it first when a live demo fails.
+The live demos — `demo:agent`, `demo:definition`, `demo:scope`, `demo:design`, `demo:plan`,
+`demo:test-phase` — make real model calls and need model credentials rather than Docker. `npm run
+probe:sdk` is the cheap live check that the SDK layer is wired correctly at all; run it first when
+a live demo fails.
 
 ## 6. Time, and the operator
 
