@@ -69,10 +69,10 @@ NFR-6) — if you want to see it before running it on your own.
 `npm run check` runs the same pipeline as CI: format, lint, typecheck, build, test, a secret
 scan, and nine of the milestone verification demos in `scripts/demo/` — every one that needs no
 model credentials. It excludes `demo:definition`, `demo:scope`, `demo:design`, `demo:plan`,
-`demo:agent`, `demo:test-phase` and `probe:sdk`, which drive real chat sessions like the one above and need
-`ANTHROPIC_API_KEY`; run those yourself. Four of the nine `check` runs (`demo:env`,
-`demo:release`, `demo:verify`, `demo:gate`) shell to a real Docker daemon and fail without one —
-use `npm run check:fast` where no daemon is available, and see
+`demo:agent`, `demo:test-phase` and `probe:sdk`, which drive real chat sessions like the one
+above and need `ANTHROPIC_API_KEY`; run those yourself. Four of the nine `check` runs
+(`demo:env`, `demo:release`, `demo:verify`, `demo:gate`) shell to a real Docker daemon and fail
+without one — use `npm run check:fast` where no daemon is available, and see
 [DEVELOPMENT-CLOUD.md](DEVELOPMENT-CLOUD.md) for what else that changes.
 
 ## Development

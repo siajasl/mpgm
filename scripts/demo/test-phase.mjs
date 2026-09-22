@@ -246,29 +246,76 @@ const SUBJECT_FIXED = SUBJECT_BUGGY.replace(
   'return openLoans < maxLoans;',
 );
 
-const NFR_MANIFEST = `measurements:
-  - requirement: NFR-1
-    metric: loan records lost per term
-    unit: records
-    direction: at-most
-    command: node
-    args: ['-e', 'console.log(1)']
-    evidence: 'demo fixture — stands in for a real kill -9 durability run'
-  - requirement: NFR-2
-    metric: p95 loan-recording latency
-    unit: ms
-    direction: at-most
-    command: node
-    args: ['-e', 'console.log(180)']
-    evidence: 'demo fixture — stands in for a real desk-load test'
-  - requirement: NFR-3
-    metric: resident memory under normal load
-    unit: MB
-    direction: at-most
-    command: node
-    args: ['-e', 'console.log(300)']
-    evidence: 'demo fixture — stands in for a real memory profile'
-`;
+/**
+ * Every quantified requirement Scope declares (a `threshold`), which is what
+ * section 2's "was every one measured" check expects a coverage row for —
+ * read off `SCOPE` itself rather than restated as a literal count, so a
+ * requirement added or removed there moves the expectation with it (CONV-6).
+ */
+const quantifiedRequirements = SCOPE.requirements.filter(
+  (entry) => entry.threshold !== undefined,
+);
+
+/**
+ * The measured value this fixture's `test/nfr.yaml` manifest reports for
+ * each quantified requirement, via a `node -e 'console.log(N)'` stand-in for
+ * a real measurement (see header doc, "The below-threshold NFR"). NFR-1's is
+ * planted above its `SCOPE` threshold on purpose; NFR-2 and NFR-3 are
+ * planted within theirs. The manifest text and the verified/unverified split
+ * the coverage report is expected to show are both built from this single
+ * table below, rather than the split being restated separately as a literal
+ * — a value changed here moves both, and they cannot drift apart from each
+ * other.
+ */
+const NFR_MEASURED_VALUES = {
+  'NFR-1': {
+    value: 1,
+    evidence: 'demo fixture — stands in for a real kill -9 durability run',
+  },
+  'NFR-2': { value: 180, evidence: 'demo fixture — stands in for a real desk-load test' },
+  'NFR-3': { value: 300, evidence: 'demo fixture — stands in for a real memory profile' },
+};
+
+for (const entry of quantifiedRequirements) {
+  if (NFR_MEASURED_VALUES[entry.id] === undefined) {
+    throw new Error(
+      `test-phase demo fixture has no measured value for quantified requirement ` +
+        `'${entry.id}' — add one to NFR_MEASURED_VALUES in scripts/demo/test-phase.mjs ` +
+        `so 'test/nfr.yaml' can measure it`,
+    );
+  }
+}
+
+const NFR_MANIFEST =
+  'measurements:\n' +
+  quantifiedRequirements
+    .map((entry) => {
+      const measured = NFR_MEASURED_VALUES[entry.id];
+      return (
+        `  - requirement: ${entry.id}\n` +
+        `    metric: ${entry.threshold.metric}\n` +
+        `    unit: ${entry.threshold.unit}\n` +
+        `    direction: at-most\n` +
+        `    command: node\n` +
+        `    args: ['-e', 'console.log(${String(measured.value)})']\n` +
+        `    evidence: '${measured.evidence}'\n`
+      );
+    })
+    .join('');
+
+/**
+ * The verified/unverified split this run's `nfr-coverage` report is expected
+ * to show — computed from the measured values above against `SCOPE`'s own
+ * declared thresholds, mirroring `commandNfrProvider`'s own at-most
+ * comparison (`src/test/nfr-provider.ts`) rather than restating its answer as
+ * a literal (CONV-6, per review finding).
+ */
+const expectedNfrVerified = new Map(
+  quantifiedRequirements.map((entry) => [
+    entry.id,
+    NFR_MEASURED_VALUES[entry.id].value <= entry.threshold.value,
+  ]),
+);
 
 const REQUIREMENTS_DOC = [
   '# Requirements',
@@ -278,6 +325,10 @@ const REQUIREMENTS_DOC = [
   ...SCOPE.requirements.map((r) => `- **${r.id}** (${r.priority}): ${r.statement}`),
   '',
 ].join('\n');
+
+// Populated in section 6, read in the closing summary if the run fails there
+// or later — declared here so a failure after the try block still has it.
+let roundTripDiagnostics;
 
 const workspace = mkdtempSync(join(tmpdir(), 'mpgm-t435-subject-'));
 process.stdout.write(
@@ -390,9 +441,17 @@ try {
     rmSync(workspace, { recursive: true, force: true });
     process.exit(1);
   }
+  // Asserted on the playbook's own setting, not on `packet.autoApproved`:
+  // `autoApproved` is `playbook.gate.autoApprove && allMet` (src/gate/
+  // manager.ts), and `allMet` is necessarily false at this first
+  // presentation — the below-threshold NFR-1 measurement has just filed an
+  // open defect — so `packet.autoApproved === false` would hold even with
+  // `autoApprove: true` and could never catch that case (CONV-6).
   check(
-    'the gate was not auto-approved (HIL-1)',
-    phaseResult.outcome.packet.autoApproved === false,
+    'the playbook does not auto-approve its own gate (HIL-1) — a rule the presented ' +
+      'packet cannot demonstrate on its own, since this defect set already forces ' +
+      '`allMet` false',
+    playbook.gate.autoApprove === false,
   );
 
   process.stdout.write(
@@ -411,25 +470,36 @@ try {
         `${row.problem ? ` (${row.problem})` : ''}\n`,
     );
   }
+  const expectedVerifiedIds = [...expectedNfrVerified]
+    .filter(([, verified]) => verified)
+    .map(([id]) => id)
+    .sort();
+  const expectedUnverifiedIds = [...expectedNfrVerified]
+    .filter(([, verified]) => !verified)
+    .map(([id]) => id)
+    .sort();
   check(
     'every quantified NFR Scope declares was measured',
-    coverageRows.length === 3,
-    coverageRows.map((row) => row.id).join(', '),
+    coverageRows.length === quantifiedRequirements.length,
+    `${coverageRows.map((row) => row.id).join(', ')} (expected ${quantifiedRequirements.length}: ` +
+      `${quantifiedRequirements.map((entry) => entry.id).join(', ')})`,
   );
   check(
-    'NFR-2 and NFR-3 measured within threshold — verified',
+    `${expectedVerifiedIds.join(' and ')} measured within threshold — verified`,
     coverageRows
       .filter((row) => row.verified)
       .map((row) => row.id)
       .sort()
-      .join(',') === 'NFR-2,NFR-3',
+      .join(',') === expectedVerifiedIds.join(','),
   );
   check(
-    'NFR-1 measured below threshold — unverified: the coverage report names both, ' +
-      'not a clean sweep',
-    coverageRows.some(
-      (row) =>
-        row.id === 'NFR-1' && row.verified === false && row.problem === 'below-threshold',
+    `${expectedUnverifiedIds.join(', ')} measured below threshold — unverified: the ` +
+      'coverage report names both, not a clean sweep',
+    expectedUnverifiedIds.every((id) =>
+      coverageRows.some(
+        (row) =>
+          row.id === id && row.verified === false && row.problem === 'below-threshold',
+      ),
     ),
   );
   check(
@@ -699,6 +769,24 @@ try {
       {},
     ).status,
   }));
+  // Kept for the closing summary (see below the `try` block): which case an
+  // unverified defect id traces back to, and what the re-test actually
+  // reported for that case — the data needed to tell "the fix did not close
+  // this case" apart from "the case never got re-run" without re-deriving it
+  // from the two lists above.
+  const caseIdByAdversarialId = new Map(
+    defectRows.map((row) => [adversarialDefectId(row.id), row.id]),
+  );
+  roundTripDiagnostics = adversarialAfterRetest.map((entry) => {
+    const caseId = caseIdByAdversarialId.get(entry.id);
+    const retested = retestVerdict.rows.find((row) => row.id === caseId);
+    return {
+      ...entry,
+      caseId,
+      retestOutcome: retested?.outcome,
+      retestDetail: retested?.detail,
+    };
+  });
   check(
     'every adversarially found defect closed to verified by the re-test — never by an ' +
       'operator asserting it, and never by leaving one out of the evidence',
@@ -798,12 +886,17 @@ try {
   // `no-open-defects`' `detail` lists blocking defects by `title`, never by
   // artifact id (`src/gate/manager.ts`), and opens with their count. So the
   // blocking set the gate reports can be compared, defect for defect, against
-  // the set section 7 read off disk: the count must match, every still-open
-  // defect's title must appear, and no verified defect's title may. That
-  // fails if the round trip left an adversarial defect open (its title would
-  // be in `detail` and the count would not match), and fails if NFR-1 dropped
-  // out of the blocking set — which would mean this run quietly weakened the
-  // gate rather than reporting what it found.
+  // `stillOpen`, the same set section 7 already read off disk. That is what
+  // this check can and cannot catch: `stillOpen` is computed from that same
+  // disk read, so if the round trip left an adversarial defect open, it would
+  // be open in `stillOpen` too — the count and every title would still match,
+  // and this check would still pass. It proves the gate's blocking set was
+  // not filtered before being shown to it — that the evidence the gate
+  // presents agrees with what is on disk — not that the round trip closed
+  // every adversarial defect; section 7's check above is the one that fails
+  // in that state. This check does still fail if NFR-1 dropped out of the
+  // blocking set on disk, which would mean this run quietly weakened the gate
+  // rather than reporting what it found.
   const detail = noOpenDefects?.detail ?? '';
   const verifiedTitles = finalFiled
     .filter((entry) => entry.defect.status === 'verified')
@@ -878,14 +971,46 @@ try {
   rmSync(workspace, { recursive: true, force: true });
 }
 
-process.stdout.write(
-  failures.length === 0
-    ? '\nT4.3.5 verification passed — with one finding standing (see section 2):\n' +
-        "  M3.2's Test phase verifies TST-3, TST-4 and TST-5 over a real subject, and\n" +
-        "  cannot report TST-2's requirement coverage at all. REQUIREMENTS' Test gate\n" +
-        '  asks for all Must-have requirements verified; this playbook measures the\n' +
-        '  quantified subset and says so (phases/test.yaml, DESIGN §9 decision 15).\n' +
-        '  The gate was not weakened to close the milestone: the clause is open.\n\n'
-    : `\nT4.3.5 verification FAILED: ${String(failures.length)} check(s)\n\n`,
-);
+if (failures.length === 0) {
+  process.stdout.write(
+    '\nT4.3.5 verification passed — with one finding standing (see section 2):\n' +
+      "  M3.2's Test phase verifies TST-3, TST-4 and TST-5 over a real subject, and\n" +
+      "  cannot report TST-2's requirement coverage at all. REQUIREMENTS' Test gate\n" +
+      '  asks for all Must-have requirements verified; this playbook measures the\n' +
+      '  quantified subset and says so (phases/test.yaml, DESIGN §9 decision 15).\n' +
+      '  The gate was not weakened to close the milestone: the clause is open.\n\n',
+  );
+} else {
+  process.stdout.write(
+    `\nT4.3.5 verification FAILED: ${String(failures.length)} check(s)\n`,
+  );
+  // Named, not just counted: a live tester's own case can fail for a reason
+  // the fix does not address (a wrong expectation of the case itself, not a
+  // real defect), and that reads identically at the bottom of the run as a
+  // real gap unless the two are told apart here. `roundTripDiagnostics` (set
+  // in section 6) has what each conjunct needs: whether the case ran again
+  // at all, and what it reported when it did.
+  const unresolved = (roundTripDiagnostics ?? []).filter(
+    (entry) => entry.status !== 'verified',
+  );
+  if (unresolved.length > 0) {
+    process.stdout.write(
+      '  adversarially found defect(s) left unresolved by the round trip:\n',
+    );
+    for (const entry of unresolved) {
+      const mode =
+        entry.retestOutcome === undefined
+          ? 'the round trip did not run: the case never appeared in the re-test'
+          : entry.retestOutcome === 'passed'
+            ? `the re-test passed but the defect was not closed to verified (status: ` +
+              `${String(entry.status)})`
+            : `the fix did not close this case: still '${String(entry.retestOutcome)}' after ` +
+              `the fix${entry.retestDetail ? ` — ${entry.retestDetail}` : ''}`;
+      process.stdout.write(
+        `    ${entry.id} (case ${String(entry.caseId)}, status ${String(entry.status)}): ${mode}\n`,
+      );
+    }
+  }
+  process.stdout.write('\n');
+}
 process.exit(failures.length === 0 ? 0 : 1);
