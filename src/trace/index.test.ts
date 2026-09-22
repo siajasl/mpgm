@@ -889,6 +889,64 @@ describe("this repository's own history (T4.2.16)", () => {
       db.close();
     }
   });
+
+  /**
+   * The coverage figure says what it rests on (T4.3.11).
+   *
+   * Asserted against this repository rather than a fixture, which is the
+   * whole point: the defect was measured here — 3 commits in 337 carrying
+   * `Verifies:` while 1,300-odd tests passed, so `2/84` counted how often
+   * somebody wrote one word — and a synthetic repository seeded with one
+   * verifying commit passes whatever the real history holds. That is the
+   * test this defect already survived.
+   *
+   * What is asserted is the gap, not a number: the number moves every time
+   * a task writes a trailer, and pinning it would make this a test about
+   * today's history rather than about the figure's honesty.
+   */
+  it('reports the basis the coverage figure rests on', () => {
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      const artifacts = new ArtifactStore({
+        root: projectRoot,
+        schemas: projectArtifactSchemas(),
+      });
+      new TraceIndexer({ repo: projectRoot, index, artifacts }).rebuild();
+
+      const basis = index.coverageBasis();
+      // Real history, not a fixture: no seeded repository in this suite is
+      // anywhere near this size, so a test that quietly started reading one
+      // would fail here rather than pass quietly.
+      expect(basis.commits).toBeGreaterThan(100);
+
+      // The gap the figure has to declare. Most commits claim nothing the
+      // index reads; most of those that do claim to *serve* rather than to
+      // *check*, and `Verifies:` is the only key coverage counts.
+      expect(basis.withTraceClaim).toBeLessThan(basis.commits);
+      expect(basis.withVerifies).toBeLessThan(basis.withTraceClaim);
+
+      // And the figure is exactly as wide as those claims — which is the
+      // sentence the report now carries: it counts claims, not checks.
+      const scopeSources = new Set(
+        artifacts
+          .list('artifacts')
+          .filter((entry) => entry.artifact.schema === 'scope')
+          .map((entry) => entry.relativePath),
+      );
+      const requirements = index
+        .declaredElements()
+        .filter((element) => scopeSources.has(element.source))
+        .map((element) => element.id);
+      const rows = index.coverage(requirements);
+      expect(rows.length).toBeGreaterThan(50);
+      expect(rows.filter((row) => row.verified).length).toBeLessThanOrEqual(
+        basis.withVerifies,
+      );
+    } finally {
+      db.close();
+    }
+  });
 });
 
 /**

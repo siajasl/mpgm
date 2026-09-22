@@ -219,6 +219,64 @@ export class TraceIndex {
   }
 
   /**
+   * What the coverage figure was computed from (TST-2, T4.3.11).
+   *
+   * The figure counts `Verifies:` and nothing else, which is correct and is
+   * not the whole truth: over this repository 3 commits in 337 carry that
+   * trailer while 1,300-odd tests pass, so `2/84` measures how often somebody
+   * wrote one word rather than how much is checked. A figure that says only
+   * `2/84` invites the reading it cannot support, so it is reported with the
+   * basis beside it.
+   *
+   * Three ways out were available and this is the third. **Requiring the
+   * trailer of the implementer role** reaches only forward and cannot be
+   * done from inside a task at all: `roles/implementer.md` is frozen by
+   * digest, and an exemption counts only when an operator appends
+   * `RoleApproved`, which a task cannot write (`src/role/freeze.ts`). It is
+   * also not free — it asks a session to judge whether its work *checks* a
+   * requirement or merely *serves* one, and T4.3.3's role was asked that
+   * four times in one task and did not answer. **Artifacts declaring
+   * verification** is already available (`extractArtifactLinks` reads a
+   * `verifies` key off artifact data), and is refused here because the claim
+   * would have to be true: an artifact asserting eighty-four requirements
+   * verified, written to move a number, is the unwithdrawable overclaim
+   * T4.3.12 exists to stop, at scale. What is left is to say what the figure
+   * rests on, which the history permits today without anybody claiming
+   * anything they have not checked.
+   *
+   * This raises no figure and is not meant to. The 337 commits are not
+   * rewritten.
+   */
+  coverageBasis(): {
+    /** Commits the index holds. */
+    readonly commits: number;
+    /** Of those, how many carry any trace claim it could read. */
+    readonly withTraceClaim: number;
+    /** Of those, how many carry `Verifies:` — the only key coverage counts. */
+    readonly withVerifies: number;
+    /** Claims withdrawn by a later commit (T4.3.12), which coverage subtracts. */
+    readonly retracted: number;
+  } {
+    const one = (sql: string): number => {
+      const row = this.#db.prepare(sql).get() as unknown as { n: number } | undefined;
+      return row?.n ?? 0;
+    };
+    return {
+      commits: one("SELECT COUNT(*) AS n FROM trace_nodes WHERE kind = 'commit'"),
+      withTraceClaim: one(
+        `SELECT COUNT(DISTINCT src) AS n FROM trace_links
+          WHERE src IN (SELECT id FROM trace_nodes WHERE kind = 'commit')`,
+      ),
+      withVerifies: one(
+        `SELECT COUNT(DISTINCT src) AS n FROM trace_links
+          WHERE relation = 'verifies'
+            AND src IN (SELECT id FROM trace_nodes WHERE kind = 'commit')`,
+      ),
+      retracted: one('SELECT COUNT(*) AS n FROM trace_retractions'),
+    };
+  }
+
+  /**
    * Every trace claim the index has read and could not turn into an edge
    * (T4.3.6), over the whole history it holds rather than the commits one
    * pass happened to re-read.

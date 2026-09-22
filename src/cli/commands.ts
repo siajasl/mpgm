@@ -1659,6 +1659,23 @@ export function trace(
       context.write(
         `Requirement coverage: ${String(verified)}/${String(rows.length)} verified (TST-2)`,
       );
+      // Said beside the figure rather than left for a reader to infer
+      // (T4.3.11). `Verifies:` is the only trailer this counts, and over
+      // this repository 3 commits in 337 carry one while 1,300-odd tests
+      // pass — so the number is a count of claims, and a reader who takes it
+      // for a count of checks has been misled by a figure that told them
+      // nothing to the contrary.
+      const basis = index.coverageBasis();
+      context.write(
+        `  Basis: ${String(basis.withVerifies)} of ${String(basis.commits)} commits ` +
+          `carry \`Verifies:\`, the only trailer this figure counts (CLAUDE.md, ` +
+          `Documents); ${String(basis.withTraceClaim)} carry some trace claim` +
+          (basis.retracted > 0
+            ? `, and ${String(basis.retracted)} claim(s) have been withdrawn by a later commit`
+            : '') +
+          `. A requirement checked by a test that no commit or artifact claims ` +
+          `reads UNVERIFIED here: this counts claims, not checks.`,
+      );
       for (const row of rows) {
         context.write(
           `  ${row.verified ? 'verified  ' : 'UNVERIFIED'} ${row.id}` +
