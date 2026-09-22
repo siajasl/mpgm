@@ -1582,17 +1582,25 @@ export function trace(
       root: context.root,
       schemas: context.artifactSchemas,
     });
-    const report = new TraceIndexer({ repo: context.root, index, artifacts }).update();
+    new TraceIndexer({ repo: context.root, index, artifacts }).update();
 
     // Surfaced ahead of whatever mode was asked for: a trailer that read as
     // nothing is not something a coverage figure or a dangling-reference
     // count would ever reveal on its own.
-    for (const entry of report.unrecognisedTrailers) {
+    //
+    // Read from the index rather than from the update's own return (T4.3.6).
+    // That return says what this pass re-read, which is nothing at all when
+    // the index is already at HEAD — so the warm invocation, which is every
+    // invocation after the first, named no unread claim while a cold rebuild
+    // named seventeen. Both were right about the history and only one was
+    // asked.
+    const report = index.unreadClaims();
+    for (const entry of report.unrecognised) {
       context.write(
         `NOTE: unrecognised trailer '${entry.key}:' with an id-shaped value in ${entry.sha} — not read as a trace claim.`,
       );
     }
-    for (const entry of report.unindexedTrailerValues) {
+    for (const entry of report.unindexed) {
       context.write(
         `NOTE: '${entry.key}: ${entry.value}' in ${entry.sha} is not id-shaped — reported, not indexed.`,
       );

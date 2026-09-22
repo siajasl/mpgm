@@ -1061,3 +1061,161 @@ describe('a retracted Verifies: claim (T4.3.12)', () => {
     }
   });
 });
+
+/**
+ * An unread trace claim survives a second look (T4.3.6).
+ *
+ * M4.2's verification asks for a run over this repository's own history that
+ * names every commit whose trace claim could not be read. It held on a cold
+ * index and nowhere else: `mpgm trace --dangling` printed seventeen NOTE
+ * lines against a rebuild and none against the warm index beside it, because
+ * the lines came from `TraceIndexer.update()`'s per-call return and an index
+ * already at HEAD re-reads no commit. Neither report was wrong about the
+ * history; only one had been asked to read it.
+ *
+ * Persisted rather than recomputed: recomputing would walk the whole history
+ * on a command that is otherwise incremental, while a row keyed by its source
+ * commit inherits the forget path `update()` already reports as `forgotten`,
+ * which is what CLAUDE.md already requires of this index and what makes an
+ * incremental update equal a full rebuild.
+ */
+describe('an unread trace claim is named on every invocation (T4.3.6)', () => {
+  it('names the same claims on a second pass that read no new commit', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      // Both shapes: a recognised key whose value is not id-shaped, and an
+      // unrecognised key carrying one.
+      commit('Serve the design\n\nTraces: DESIGN §4.7\n');
+      commit('Refer to a requirement\n\nRefs: LOAN-1\n');
+
+      const first = new TraceIndexer({ repo: root, index, artifacts: store }).update();
+      expect(first.unindexedTrailerValues).toHaveLength(1);
+      expect(first.unrecognisedTrailers).toHaveLength(1);
+
+      // Nothing has moved. The per-call report is empty and correct — it
+      // answers what this pass read — and the durable one is not.
+      const second = new TraceIndexer({ repo: root, index, artifacts: store }).update();
+      expect(second.unindexedTrailerValues).toStrictEqual([]);
+      expect(second.unrecognisedTrailers).toStrictEqual([]);
+
+      const claims = index.unreadClaims();
+      expect(claims.unindexed).toHaveLength(1);
+      expect(claims.unindexed[0]).toMatchObject({
+        key: 'Traces',
+        value: 'DESIGN §4.7',
+      });
+      expect(claims.unrecognised).toHaveLength(1);
+      expect(claims.unrecognised[0]).toMatchObject({ key: 'Refs' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('holds the same claims after an incremental update as after a rebuild', () => {
+    const { root, store, commit } = repository();
+    const incremental = openDatabase(MEMORY);
+    const full = openDatabase(MEMORY);
+    try {
+      const incrementalIndex = TraceIndex.attach(incremental);
+      const fullIndex = TraceIndex.attach(full);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      commit('Serve the design\n\nTraces: DESIGN §4.7\n');
+
+      new TraceIndexer({
+        repo: root,
+        index: incrementalIndex,
+        artifacts: store,
+      }).update();
+      commit('Serve another section\n\nTraces: PLAN M1.1 verification\n');
+      new TraceIndexer({
+        repo: root,
+        index: incrementalIndex,
+        artifacts: store,
+      }).update();
+      new TraceIndexer({ repo: root, index: fullIndex, artifacts: store }).rebuild();
+
+      expect(incrementalIndex.unreadClaims()).toStrictEqual(fullIndex.unreadClaims());
+      expect(incrementalIndex.unreadClaims().unindexed).toHaveLength(2);
+    } finally {
+      incremental.close();
+      full.close();
+    }
+  });
+
+  it('does not let a reported claim raise a coverage figure', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      // Reported *because* it was not indexed (T4.2.5). Making the report
+      // durable must not quietly make the claim count.
+      commit('Claim a section\n\nVerifies: DESIGN §4.7\n');
+
+      new TraceIndexer({ repo: root, index, artifacts: store }).update();
+
+      expect(index.unreadClaims().unindexed).toHaveLength(1);
+      expect(index.coverage(['LOAN-1'])[0]?.verified).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rebuilds rather than trusting an index an older reader wrote', () => {
+    const { root, store, commit } = repository();
+    const db = openDatabase(MEMORY);
+    try {
+      const index = TraceIndex.attach(db);
+      store.write({
+        id: 'scope',
+        basePath: 'artifacts/scope/requirements.md',
+        schema: 'scope',
+        data: SCOPE,
+        producedBy: provenance,
+      });
+      commit('Add the requirement set');
+      commit('Serve the design\n\nTraces: DESIGN §4.7\n');
+      new TraceIndexer({ repo: root, index, artifacts: store }).update();
+
+      // Exactly the state an index written before this task is in: current
+      // at HEAD, and holding nothing in a table its reader did not know. An
+      // update that trusted `indexedAt` alone would re-read no commit and
+      // report an empty table as the history's own answer.
+      db.exec(
+        "DELETE FROM trace_unread_claims; DELETE FROM trace_meta WHERE key = 'schemaVersion'",
+      );
+      expect(index.unreadClaims().unindexed).toStrictEqual([]);
+
+      const report = new TraceIndexer({ repo: root, index, artifacts: store }).update();
+
+      expect(report.commits).toBeGreaterThan(0);
+      expect(index.unreadClaims().unindexed).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+});
