@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  carriedDeclarations,
   earnsDeclarationRound,
+  idlessUndeclared,
   renderDeclarationRound,
   type LateDeviationInput,
 } from './late-deviation.js';
@@ -107,5 +109,58 @@ describe('what the author is told', () => {
     // would pass however the text were written.
     const mentioned = new Set(rendered.match(/\bCONV-[0-9]+\b/g) ?? []);
     expect([...mentioned]).toStrictEqual(['CONV-1']);
+  });
+});
+
+describe('idlessUndeclared (T4.3.13)', () => {
+  it('keeps a deviation with no leading id', () => {
+    expect(idlessUndeclared(['a rule stated only in CLAUDE.md'])).toEqual([
+      'a rule stated only in CLAUDE.md',
+    ]);
+  });
+
+  it('drops a deviation that names a registered convention', () => {
+    expect(
+      idlessUndeclared(['CONV-1', 'CONV-1 (one logical change per commit)']),
+    ).toEqual([]);
+  });
+
+  it('keeps only the id-less entries out of a mixed list', () => {
+    expect(idlessUndeclared(['CONV-1', 'a rule with no id'])).toEqual([
+      'a rule with no id',
+    ]);
+  });
+});
+
+describe('carriedDeclarations (T4.3.13)', () => {
+  it('carries forward an id-less finding shown in the round just granted', () => {
+    // The scenario this exists for: round one reports the wording, the grace
+    // round shows it to the author, and round two's fresh reviewer session
+    // reports the identical wording again — with no round left to declare it
+    // in and no reason to ask a second time for a signature already asked for.
+    const shown = new Set(['a trailer must sit in a paragraph of its own']);
+    expect(
+      carriedDeclarations(shown, ['a trailer must sit in a paragraph of its own']),
+    ).toEqual(['a trailer must sit in a paragraph of its own']);
+  });
+
+  it('does not carry a numbered convention', () => {
+    // CONV-1 is exactly as typeable the second round as the first, so it keeps
+    // needing an explicit declaration whenever it is the sole refusal.
+    const shown = new Set(['CONV-1']);
+    expect(carriedDeclarations(shown, ['CONV-1'])).toEqual([]);
+  });
+
+  it('does not carry a reworded finding', () => {
+    // Deciding two different sentences describe the same rule is the
+    // judgement call the id scheme exists to keep out of this path.
+    const shown = new Set(['a trailer must sit in a paragraph of its own']);
+    expect(
+      carriedDeclarations(shown, ['trailers belong in their own paragraph']),
+    ).toEqual([]);
+  });
+
+  it('does not carry a finding nothing showed the author', () => {
+    expect(carriedDeclarations(new Set(), ['a rule nobody was shown'])).toEqual([]);
   });
 });

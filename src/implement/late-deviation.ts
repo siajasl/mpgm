@@ -1,3 +1,4 @@
+import { conventionIdOf } from '../context/conventions.js';
 import type { MergeDecision } from './merge.js';
 
 /**
@@ -105,4 +106,91 @@ export function renderDeclarationRound(undeclared: readonly string[]): string {
     'look at, and a round granted to close the task is not one to reopen it',
     'with.',
   ].join('\n');
+}
+
+/**
+ * The entries in a deviation list that name no registered convention
+ * (T4.3.13).
+ *
+ * `conventionIdOf` reads a leading `CONV-1`-shaped id; an entry with none is
+ * a rule the reviewer describes in its own words because there is nowhere
+ * for it to point — most often one stated only in CLAUDE.md, which `kb/`
+ * does not carry (IMP-4 puts binding conventions there).
+ *
+ * Three ways to close that were open, and this took the first two together
+ * rather than the third alone:
+ *
+ * - **Give the rule an id.** `kb/conventions.md` now registers this
+ *   project's two live CLAUDE.md-only rules — the trace-trailer paragraph
+ *   rule and `Verifies:` semantics — as CONV-8 and CONV-9, the same move
+ *   `81bac97` made for CONV-7. This is the real fix for a *known* rule: once
+ *   registered, it is exactly as declarable as CONV-1 always was, and
+ *   nothing below has to run for it again.
+ * - **Constrain the reviewer to cite only registered conventions.** Refused.
+ *   That would not close the gap, it would hide it: a reviewer that found a
+ *   real CLAUDE.md-only departure and could not name it would either say
+ *   nothing — the silent introduction IMP-4 forbids — or fall back to
+ *   `request-changes` prose the author cannot act on by declaring, which
+ *   only relabels today's failure. A rule not yet in the knowledge base does
+ *   not stop being binding for want of an id.
+ * - **Treat a finding repeated unchanged after a declaration round as
+ *   declared, in general.** Refused alone, for the reason `earnsAnotherRound`
+ *   is capped in the first place: it is the elasticity a per-task grace must
+ *   not become, and it would let any undeclared deviation through on
+ *   sufficient repetition, id or no id. Taken narrowly instead —
+ *   `carriedDeclarations` below only ever excuses an *id-less* entry, and
+ *   only the exact wording the one grace round already showed the author, for
+ *   one round. That price is what makes it safe to combine with the first
+ *   two rather than a replacement for them: a *new* CLAUDE.md-only rule, or
+ *   any other prose a reviewer surfaces without a number, is still possible
+ *   the moment it is written, and this is what covers the round it takes to
+ *   register or fix it.
+ */
+export function idlessUndeclared(entries: readonly string[]): string[] {
+  return entries.filter((entry) => conventionIdOf(entry) === undefined);
+}
+
+/**
+ * An id-less finding the last declaration round already showed the author,
+ * reported again with the same wording (T4.3.13).
+ *
+ * `undeclaredDeviations` (`src/context/conventions.ts`) matches an id-less
+ * entry to a declaration only by exact text, because there is no id to key
+ * on. That is fine the first time: `earnsDeclarationRound` grants a round for
+ * exactly this, and the round hands the author the reviewer's own wording
+ * (`renderDeclarationRound`) to declare verbatim. It stops being fine the
+ * second time, because the author's declaration is written *before* the next
+ * review runs, and that next review is a fresh session describing what it
+ * finds in its own words — words that need not match the first review's,
+ * however carefully the author copied them. A rule stated only in CLAUDE.md
+ * then has no wording the author could have pinned down twice, which is what
+ * T4.3.5 spent 16 sessions and $37.12 discovering: `BudgetExceeded{kind:
+ * 'reviews'}` on an approved change, with the sole refusal an id-less
+ * deviation the loop had already spent its one grace round asking about.
+ *
+ * So when the *same* id-less wording survives the round meant to close it,
+ * this treats it as answered rather than asking a second time for a
+ * signature that round already tried to collect. Deliberately narrow, so it
+ * is not the general "repetition excuses silence" grace `earnsDeclarationRound`'s
+ * own comment refuses to become:
+ *
+ * - **id-less only.** A numbered convention (`CONV-1`) is exactly as typeable
+ *   on the second round as the first, so it keeps needing an explicit
+ *   declaration every time it is the sole thing refusing — this is what
+ *   `rework.test.ts`'s "does not grant it twice" already holds the loop to,
+ *   and nothing here weakens it.
+ * - **exact text, not "close enough".** A reworded finding is a new finding;
+ *   deciding two different sentences describe the same rule is the judgement
+ *   call the id scheme exists to keep out of this path; it does not sneak
+ *   back in as a fuzzy match.
+ * - **one round's worth.** `shown` is whatever the *immediately preceding*
+ *   granted round put in front of the author, not everything ever reported,
+ *   so this cannot silently absolve a deviation that first appeared several
+ *   rounds ago and was simply never picked up by a grant.
+ */
+export function carriedDeclarations(
+  shown: ReadonlySet<string>,
+  reported: readonly string[],
+): string[] {
+  return idlessUndeclared(reported).filter((entry) => shown.has(entry.trim()));
 }

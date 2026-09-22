@@ -917,6 +917,74 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('carries an id-less deviation forward when the next review repeats it verbatim', async () => {
+    // T4.3.13: `CONV-1` above is typeable in every round, because it has an id
+    // `undeclaredDeviations` can key on. A rule stated only in CLAUDE.md has
+    // none, and the author writes `deviations` *before* the review that first
+    // reports one exists — so round one's finding cannot be declared in round
+    // one by construction, whatever the author types. The grace round hands
+    // the author round one's exact wording to sign; here the author signs a
+    // paraphrase instead (a real author copying by hand, not a machine), and
+    // round two's fresh reviewer session reports the *original* wording again
+    // rather than the paraphrase, since it is deliberately not told what was
+    // declared. Nothing textual matches, and there is no round left —
+    // `extensionSpent` is already spent — so this is exactly T4.3.5's
+    // `BudgetExceeded{kind: 'reviews'}` on an approved change unless the loop
+    // recognises the reviewer's own wording recurring unchanged from the round
+    // that already showed it to the author.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const rule = 'a trailer only counts if it sits in a paragraph of its own';
+    const approving = scriptedSuccess({
+      ref: head,
+      verdict: 'approve',
+      summary: 'good',
+      findings: [],
+      deviations: [{ convention: rule, where: 'the commit trailers' }],
+    });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      approving,
+      // The grace round: the author signs its own paraphrase, not the
+      // reviewer's exact words.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'the trailer paragraph rule', why: 'deliberate' }],
+      }),
+      // A fresh review session, reporting the identical original wording
+      // again rather than the paraphrase.
+      approving,
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      expect(result.status).toBe('merged');
+      expect(result.rounds).toHaveLength(2);
+    } finally {
+      log.close();
+    }
+  });
+
   it('grants the grace once, even when a second deviation is also new', async () => {
     // The guard that makes this bounded, at the cap where it costs a round
     // rather than replaces one. Without it a reviewer reporting a fresh
