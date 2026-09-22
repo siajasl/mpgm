@@ -133,22 +133,52 @@ describe('idlessUndeclared (T4.3.13)', () => {
 });
 
 describe('carriedDeclarations (T4.3.13)', () => {
-  it('carries forward an id-less finding shown in the round just granted', () => {
+  it('carries forward an id-less finding shown in the round just granted, when the author attempted a declaration', () => {
     // The scenario this exists for: round one reports the wording, the grace
-    // round shows it to the author, and round two's fresh reviewer session
-    // reports the identical wording again — with no round left to declare it
+    // round shows it to the author, the author signs a paraphrase (a real
+    // author copying by hand), and round two's fresh reviewer session reports
+    // the identical original wording again — with no round left to declare it
     // in and no reason to ask a second time for a signature already asked for.
     const shown = new Set(['a trailer must sit in a paragraph of its own']);
     expect(
-      carriedDeclarations(shown, ['a trailer must sit in a paragraph of its own']),
+      carriedDeclarations(
+        shown,
+        ['a trailer must sit in a paragraph of its own'],
+        ['the trailer paragraph rule'],
+      ),
     ).toEqual(['a trailer must sit in a paragraph of its own']);
+  });
+
+  it('does not carry anything when the grace round made no attempt at all', () => {
+    // Rework attempt 1 on this task found the carry firing unconditionally on
+    // the reviewer's wording, so a grace round the author let pass with
+    // `deviations: []` — never signing anything — merged exactly as if it had
+    // declared. That is the silent introduction IMP-4 forbids, not a fix for
+    // an undeclarable one: the round asked for a signature and none was given.
+    const shown = new Set(['a trailer must sit in a paragraph of its own']);
+    expect(
+      carriedDeclarations(shown, ['a trailer must sit in a paragraph of its own'], []),
+    ).toEqual([]);
+  });
+
+  it('does not carry anything when the grace round only named registered conventions', () => {
+    // Signing CONV-1 is not an attempt at the id-less wording the round was
+    // granted for; it is a different, already-declarable, declaration.
+    const shown = new Set(['a trailer must sit in a paragraph of its own']);
+    expect(
+      carriedDeclarations(
+        shown,
+        ['a trailer must sit in a paragraph of its own'],
+        ['CONV-1'],
+      ),
+    ).toEqual([]);
   });
 
   it('does not carry a numbered convention', () => {
     // CONV-1 is exactly as typeable the second round as the first, so it keeps
     // needing an explicit declaration whenever it is the sole refusal.
     const shown = new Set(['CONV-1']);
-    expect(carriedDeclarations(shown, ['CONV-1'])).toEqual([]);
+    expect(carriedDeclarations(shown, ['CONV-1'], ['a paraphrase, id-less'])).toEqual([]);
   });
 
   it('does not carry a reworded finding', () => {
@@ -156,11 +186,17 @@ describe('carriedDeclarations (T4.3.13)', () => {
     // judgement call the id scheme exists to keep out of this path.
     const shown = new Set(['a trailer must sit in a paragraph of its own']);
     expect(
-      carriedDeclarations(shown, ['trailers belong in their own paragraph']),
+      carriedDeclarations(
+        shown,
+        ['trailers belong in their own paragraph'],
+        ['the trailer paragraph rule'],
+      ),
     ).toEqual([]);
   });
 
   it('does not carry a finding nothing showed the author', () => {
-    expect(carriedDeclarations(new Set(), ['a rule nobody was shown'])).toEqual([]);
+    expect(
+      carriedDeclarations(new Set(), ['a rule nobody was shown'], ['an attempt']),
+    ).toEqual([]);
   });
 });

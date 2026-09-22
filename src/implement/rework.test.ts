@@ -985,6 +985,63 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('does not carry an id-less finding when the grace round declared nothing at all', async () => {
+    // Rework attempt 1's review: the carry above fired on the reviewer's
+    // wording alone, never checking what the author actually wrote in the
+    // grace round. Reproduced here with the grace round's `deviations` left
+    // `[]` — the author made no attempt to sign anything — and the same
+    // wording reported again verbatim. Unlike the test above, this must
+    // *not* merge: a finding reported twice with no declaration ever made by
+    // anyone is the silent introduction IMP-4 forbids, not T4.3.5's
+    // paraphrase-mismatch scenario.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const rule = 'a trailer only counts if it sits in a paragraph of its own';
+    const approving = scriptedSuccess({
+      ref: head,
+      verdict: 'approve',
+      summary: 'good',
+      findings: [],
+      deviations: [{ convention: rule, where: 'the commit trailers' }],
+    });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      approving,
+      // The grace round: the author declares nothing at all.
+      scriptedSuccess(change),
+      // A fresh review session, reporting the identical wording again.
+      approving,
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toMatch(/review still refuses/);
+    } finally {
+      log.close();
+    }
+  });
+
   it('grants the grace once, even when a second deviation is also new', async () => {
     // The guard that makes this bounded, at the cap where it costs a round
     // rather than replaces one. Without it a reviewer reporting a fresh

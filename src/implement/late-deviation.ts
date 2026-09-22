@@ -187,10 +187,26 @@ export function idlessUndeclared(entries: readonly string[]): string[] {
  *   granted round put in front of the author, not everything ever reported,
  *   so this cannot silently absolve a deviation that first appeared several
  *   rounds ago and was simply never picked up by a grant.
+ * - **conditional on the author having tried.** `attempted` is what the grace
+ *   round's own rework session put in its `deviations` field — the answer the
+ *   round asked for. Rework attempt 1 found this reading only the reviewer's
+ *   wording: an author that let the grace round pass with `deviations: []`,
+ *   never signing anything, merged exactly as if it had. That is the silent
+ *   introduction IMP-4 forbids, not a fix for an undeclarable one — the round
+ *   asked for a signature and none was given. So this only ever carries
+ *   forward a wording the author *tried* to declare against: at least one
+ *   id-less entry present in `attempted`, whether or not its text happens to
+ *   match `shown` (a paraphrase is exactly T4.3.5's scenario). No id-less
+ *   entry at all in `attempted` means no attempt was made, and nothing here
+ *   substitutes for one.
  */
 export function carriedDeclarations(
   shown: ReadonlySet<string>,
   reported: readonly string[],
+  attempted: readonly string[],
 ): string[] {
+  if (idlessUndeclared(attempted).length === 0) {
+    return [];
+  }
   return idlessUndeclared(reported).filter((entry) => shown.has(entry.trim()));
 }

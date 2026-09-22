@@ -800,7 +800,20 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // round immediately after the one that showed it — `shownIdless` is
     // cleared below whether or not anything in it matched, so it never
     // reaches a third round.
-    for (const entry of carriedDeclarations(shownIdless, reportedDeviations)) {
+    //
+    // `latest.deviations` (the grace round's own rework result, already
+    // folded into `declaredSoFar` above) is passed as the third argument so
+    // the carry only fires when that round's author actually tried to
+    // declare something id-less. Rework attempt 1 on this task found the
+    // carry firing with the grace round returning `deviations: []` — a
+    // finding reported twice merging with no declaration ever made by
+    // anyone, which is the silent introduction IMP-4 forbids rather than a
+    // fix for an undeclarable one.
+    for (const entry of carriedDeclarations(
+      shownIdless,
+      reportedDeviations,
+      latest.deviations.map((entry) => entry.convention),
+    )) {
       declaredSoFar.set(entry.trim(), entry);
     }
     shownIdless = new Set();
