@@ -44,3 +44,35 @@ export function escalateModel(model: string): string {
 export function canEscalate(model: string): boolean {
   return escalateModel(model) !== model;
 }
+
+/**
+ * How much more a round costs one tier up, measured rather than invented
+ * (T4.3.2, T4.3.8).
+ *
+ * T4.3.2's rework: two Sonnet rounds cost $5.64 and $1.06, and the third —
+ * escalated to Opus, per T4.2.13 — cost $8.0142675 against an implementer
+ * budget of $8 that had not moved. That is roughly eight times the round
+ * immediately before it, on an allowance sized for the tier that round ran
+ * on. One incident is a floor, not a distribution, and this multiplier is
+ * kept here rather than folded into a bigger number in `roles/freeze.json`
+ * until the eval harness (T5.2.1a) has more than one escalated round to fit
+ * a real ratio to.
+ */
+export const ESCALATION_COST_MULTIPLIER = 8;
+
+/**
+ * What escalating one tier is expected to need, given what the weaker tier
+ * actually spent on the round right before it.
+ *
+ * Not a forecast of what the stronger tier will spend — nothing here has
+ * seen it run — but a threshold below which dispatching it is known, from
+ * `ESCALATION_COST_MULTIPLIER`'s own measurement, to end the same way
+ * T4.3.2's Opus round did: started on the full allowance and truncated at
+ * the cap. `precedingRoundCostUsd` is read off this task's own event log
+ * (`implement/loop.ts`), not off a table of prices, because the kernel has
+ * no such table — the SDK is the only thing that knows what a session
+ * actually cost.
+ */
+export function estimateEscalatedCostUsd(precedingRoundCostUsd: number): number {
+  return precedingRoundCostUsd * ESCALATION_COST_MULTIPLIER;
+}

@@ -24,6 +24,13 @@ import type { SessionResult, SessionUsageReport } from './session.js';
  * `steps` appears here although the ledger never raises it: a session stopped
  * by the SDK's own turn limit is still a step breach, and it is reported as
  * one.
+ *
+ * This is narrower than `BudgetExceeded`'s own `kind` field (`event/
+ * catalog.ts`), which also admits `'repairs'`, `'reviews'` and
+ * `'escalation'` — none of them a bound this ledger enforces on a session
+ * already running, so `BudgetLedger.breach()` never returns one. Those are
+ * `implement/loop.ts` and `implement/repair.ts` writing the event directly,
+ * about a loop giving up rather than a session's own spend.
  */
 export type BudgetKind = 'tokens' | 'cost' | 'steps' | 'wallClock';
 

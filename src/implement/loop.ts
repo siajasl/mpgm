@@ -1,8 +1,13 @@
 import type { SessionRunner, TaskOutcome } from '../agent/runner.js';
-import { escalateModel } from '../agent/models.js';
+import {
+  ESCALATION_COST_MULTIPLIER,
+  escalateModel,
+  estimateEscalatedCostUsd,
+} from '../agent/models.js';
 import { assembleContext } from '../context/assembler.js';
 import type { EgressPolicy } from '../context/egress.js';
 import type { KbDocument } from '../context/knowledge-base.js';
+import type { StoredEvent } from '../event/envelope.js';
 import type { EventLog } from '../event/store.js';
 import type { RoleRegistry } from '../role/loader.js';
 import { fold, redirectNoteFor, runControl } from '../state/reduce.js';
@@ -300,6 +305,55 @@ export function reviewPrompt(
   );
 
   return lines.join('\n');
+}
+
+/**
+ * What the implementer role has actually spent on this task's rounds so
+ * far, averaged per `TaskDispatched` — the weaker tier's own measured going
+ * rate for this task, read off the event log rather than off a table of
+ * prices the kernel does not have (`estimateEscalatedCostUsd`, `agent/
+ * models.ts`).
+ *
+ * Every session this loop dispatches for the task carries `taskId: task.id`
+ * except a review, which runs under `${task.id}-review[-n]` (see `track`
+ * above) — so filtering on `task.id` alone already excludes the reviewer's
+ * own spend, with no need to filter on role as well.
+ *
+ * Divided by dispatch count rather than summed: what the escalation guard
+ * below needs is "what one more round like the ones already run would
+ * cost", not "what the task has spent in total" — the two differ once a
+ * round has needed more than one CI repair attempt.
+ */
+function implementerRoundCostSoFar(
+  events: readonly StoredEvent[],
+  runId: string,
+  taskId: string,
+): number {
+  let costUsd = 0;
+  let dispatches = 0;
+  for (const event of events) {
+    if (event.runId !== runId) {
+      continue;
+    }
+    if (
+      event.type === 'TaskDispatched' &&
+      (event.payload as { taskId: string }).taskId === taskId
+    ) {
+      dispatches += 1;
+    } else if (
+      event.type === 'SessionUsage' &&
+      (event.payload as { taskId: string }).taskId === taskId
+    ) {
+      costUsd += (event.payload as { costUsd: number }).costUsd;
+    }
+  }
+  // Unreachable once a rework round is in play: the implementing session
+  // that opens every task always dispatches and is always counted first, so
+  // by the time any round can be "final" at least one dispatch is already on
+  // record. Answering 0 rather than throwing keeps this a measurement
+  // rather than an assertion — a caller finding no evidence estimates
+  // nothing, rather than refusing a round it cannot say anything about.
+  return dispatches === 0 ? 0 : costUsd / dispatches;
 }
 
 /**
@@ -865,10 +919,14 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // loop's own last attempt and for the same reason (PLAN §3, T3.1.2b,
     // AGT-5): the model is a dispatch-time session parameter rather than a
     // role field, so trying a stronger one before the review budget runs out
-    // costs nothing beyond the round that was going to be spent regardless.
-    // Escalating every round would spend the stronger model on rounds the
-    // weaker one would have closed on its own; escalating none is what this
-    // task found — every round pinned to the implementer role's frozen
+    // costs nothing beyond the round that was going to be spent regardless —
+    // true of the round count, which is T4.2.13's own claim, and never true
+    // of the money: the same round on a stronger tier can cost roughly eight
+    // times what its predecessor did, against an allowance that was sized
+    // for the weaker one and does not move (T4.3.2, T4.3.8). Escalating
+    // every round would spend the stronger model on rounds the weaker one
+    // would have closed on its own; escalating none is what this task
+    // found — every round pinned to the implementer role's frozen
     // `claude-sonnet-5` however many times it came back from review.
     //
     // "Last" is a round of the *budget*, not of the reviewer's patience: the
@@ -889,17 +947,68 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // scope in the same commit, would make the column binding by accident —
     // so the escalation stays role-relative, one tier above whatever this
     // role already runs on, whatever the column happens to say for this task.
-    //
-    // No separate cost check guards the escalated round: `SessionRunner`
-    // already caps what one session may spend against the implementer role's
-    // own budget regardless of which model runs it (`maxBudgetUsd:
-    // ledger.remainingCostUsd`, AGT-4), so a round that would exceed what
-    // is left is refused there — the session is blocked and `BudgetExceeded`
-    // is written, never silently re-run on the cheaper tier instead.
     const isFinalRework = round === attempts - 1;
     const reworkModel = isFinalRework
       ? escalateModel(implementerRole.model)
       : implementerRole.model;
+
+    // What actually guards the escalated round. An earlier revision of this
+    // comment claimed `SessionRunner` already did: it does not, and T4.3.2 is
+    // the measurement that shows it. `SessionRunner.runTask` (`agent/
+    // runner.ts`) builds a fresh `BudgetLedger` from the implementer role's
+    // own budget on *every* dispatch — "one ledger per task" there means one
+    // per dispatch, since a review round is a fresh call sharing nothing with
+    // the last one — and refuses to start only when `remainingCostUsd <= 0`,
+    // which a brand-new ledger never is. So the escalated round always had
+    // the whole allowance in front of it, and nothing ever asked whether that
+    // allowance could fund the tier about to spend it: T4.3.2's Opus round
+    // started on the implementer role's full $8, ran, and was truncated at
+    // the cap after $8.0142675 — by which point it had already committed
+    // twice and pushed neither.
+    //
+    // Guarded on an estimate of what the stronger tier needs, measured from
+    // this task's own log (`implementerRoundCostSoFar`,
+    // `estimateEscalatedCostUsd`) rather than invented, and refused outright
+    // — not dispatched and left to be truncated — when the allowance the
+    // estimate is checked against is the one already sized for the weaker
+    // tier. The other two ways this could have gone are declined rather than
+    // silently: raising the implementer role's `costUsd` to whatever this one
+    // incident happened to cost would be sized for T4.3.2 and nothing else,
+    // and a tier-relative allowance is a `roles/freeze.json` change that
+    // needs an operator's name on it, not a decision this loop can make for
+    // them. Refused is logged rather than dropped back a tier without saying
+    // so — T4.2.13 already forbids that — so an operator who wants the
+    // escalated tier funded can raise the allowance deliberately, the same
+    // way every other role budget in `roles/freeze.json` was.
+    if (isFinalRework && reworkModel !== implementerRole.model) {
+      const precedingRoundCostUsd = implementerRoundCostSoFar(
+        options.log.read(),
+        runId,
+        task.id,
+      );
+      const estimatedCostUsd = estimateEscalatedCostUsd(precedingRoundCostUsd);
+      if (estimatedCostUsd > implementerRole.budgets.costUsd) {
+        options.log.append({
+          runId,
+          type: 'BudgetExceeded',
+          payload: {
+            taskId: task.id,
+            kind: 'escalation',
+            limit: implementerRole.budgets.costUsd,
+            observed: estimatedCostUsd,
+          },
+        });
+        return stop(
+          `the final rework round would escalate to ${reworkModel}, estimated at ` +
+            `$${estimatedCostUsd.toFixed(4)} (${String(ESCALATION_COST_MULTIPLIER)}x this ` +
+            `task's own $${precedingRoundCostUsd.toFixed(4)} per round on ` +
+            `${implementerRole.model}) — more than the implementer role's ` +
+            `$${implementerRole.budgets.costUsd.toFixed(2)} allowance can fund, so the round ` +
+            `is refused before dispatch rather than started and truncated at the cap`,
+          { ref: repair.ref, review, repair },
+        );
+      }
+    }
 
     // Back to the author, with what the reviewer found. Without this the review
     // is written, recorded and read by nobody, and the next attempt at the task
@@ -920,11 +1029,39 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     });
 
     if (reworked.status !== 'completed') {
-      return stop(`the rework session blocked: ${reworked.reason}`, {
-        ref: repair.ref,
-        review,
-        repair,
-      });
+      // A kill lands after the session has already committed — T4.3.2's own
+      // Opus round left two commits, 1,278 insertions over 16 files,
+      // answering every blocking finding the second review had raised, when
+      // the cap ended it before it pushed. The worktree outlives the session
+      // that was working in it (DESIGN §6), so what it holds is read here
+      // rather than reporting the block against `repair.ref` — the last
+      // commit this loop itself published — which would leave finished work
+      // visible only to whoever happens to look in the local worktree.
+      //
+      // Pushed rather than merely reported: publishing makes the branch
+      // visible to CI and to a pull request the same way every other round's
+      // commit is (`options.publish` above) — it is not a merge, and nothing
+      // here approves what the killed session wrote. An operator or a later
+      // run still has to look at it; what this closes is the gap where
+      // nothing *could*, because only `git log` against a path nobody but
+      // this worktree had would show it.
+      const strandedTip = await options.worktrees.head(task.id);
+      const strandedNewWork = strandedTip !== undefined && strandedTip !== repair.ref;
+      const strandedControl = runControl(fold(options.log.read()), runId);
+      if (strandedNewWork && strandedControl === 'running') {
+        await options.publish?.(worktree.branch, strandedTip);
+      }
+      return stop(
+        `the rework session blocked: ${reworked.reason}` +
+          (strandedNewWork
+            ? ` — it had already committed up to ${strandedTip}, pushed for review rather than left only in the worktree`
+            : ''),
+        {
+          ref: strandedTip ?? repair.ref,
+          review,
+          repair,
+        },
+      );
     }
 
     const revised = changeSchema.safeParse(reworked.output);
