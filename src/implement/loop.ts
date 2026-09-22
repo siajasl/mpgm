@@ -803,12 +803,14 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     //
     // `latest.deviations` (the grace round's own rework result, already
     // folded into `declaredSoFar` above) is passed as the third argument so
-    // the carry only fires when that round's author actually tried to
-    // declare something id-less. Rework attempt 1 on this task found the
-    // carry firing with the grace round returning `deviations: []` — a
-    // finding reported twice merging with no declaration ever made by
-    // anyone, which is the silent introduction IMP-4 forbids rather than a
-    // fix for an undeclarable one.
+    // the carry is bounded by what that round's author actually signed: at
+    // most one entry per id-less declaration it made. Rework attempt 1 on
+    // this task found the carry firing with the grace round returning
+    // `deviations: []`, and attempt 2 found it carrying every entry the
+    // round showed on the strength of a single signature — both are one
+    // finding merging with no declaration ever made by anyone, which is the
+    // silent introduction IMP-4 forbids rather than a fix for an
+    // undeclarable one.
     for (const entry of carriedDeclarations(
       shownIdless,
       reportedDeviations,

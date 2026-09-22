@@ -1042,6 +1042,74 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('does not carry a second id-less finding the grace round left unsigned', async () => {
+    // Rework attempt 2's review: the guard above was per round rather than per
+    // entry, so one id-less signature excused every id-less finding the round
+    // showed. Here the reviewer reports two unregistered rules — which
+    // `renderDeclarationRound` puts to the author as a list — and the grace
+    // round signs a paraphrase of the first only. The first is carried; the
+    // second was never declared by anyone and must still refuse, or this is
+    // the silent introduction IMP-4 forbids rather than a fix for an
+    // undeclarable declaration.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const approving = scriptedSuccess({
+      ref: head,
+      verdict: 'approve',
+      summary: 'good',
+      findings: [],
+      deviations: [
+        {
+          convention: 'a trailer only counts if it sits in a paragraph of its own',
+          where: 'the commit trailers',
+        },
+        {
+          convention: 'Verifies names the case a re-test reruns, not the requirement',
+          where: 'the commit trailers',
+        },
+      ],
+    });
+    const provider = new ScriptedProvider([
+      scriptedSuccess(change),
+      approving,
+      // The grace round: one signature, for the first rule only.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'the trailer paragraph rule', why: 'deliberate' }],
+      }),
+      // A fresh review session, reporting both rules verbatim again.
+      approving,
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 1,
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toMatch(/review still refuses/);
+    } finally {
+      log.close();
+    }
+  });
+
   it('grants the grace once, even when a second deviation is also new', async () => {
     // The guard that makes this bounded, at the cap where it costs a round
     // rather than replaces one. Without it a reviewer reporting a fresh

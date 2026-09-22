@@ -161,6 +161,52 @@ describe('carriedDeclarations (T4.3.13)', () => {
     ).toEqual([]);
   });
 
+  it('carries no more entries than the grace round signed', () => {
+    // Rework attempt 2: the guard above asked only whether the round declared
+    // *something* id-less and then carried everything the round showed, so an
+    // author shown two rules and signing one merged both — the second with no
+    // declaration ever made by anyone. `renderDeclarationRound` lists every
+    // undeclared entry, so a two-rule round is reachable whenever a reviewer
+    // describes two unregistered rules at once.
+    const shown = new Set([
+      'a trailer must sit in a paragraph of its own',
+      'Verifies names the case, not the requirement',
+    ]);
+    expect(
+      carriedDeclarations(
+        shown,
+        [
+          'a trailer must sit in a paragraph of its own',
+          'Verifies names the case, not the requirement',
+        ],
+        ['the trailer paragraph rule'],
+      ),
+    ).toEqual(['a trailer must sit in a paragraph of its own']);
+  });
+
+  it('carries both entries when the grace round signed both', () => {
+    // The cap is one signature per entry, not one entry per task: an author
+    // that answered everything the round put to it is not sent back for it.
+    // This one does not separate this commit from its parent — it fails
+    // against a mis-fix that caps the carry at a single entry, which is the
+    // cheapest way to close the finding above and would strand an author who
+    // signed everything asked of it (CONV-6 declared).
+    const shown = new Set([
+      'a trailer must sit in a paragraph of its own',
+      'Verifies names the case, not the requirement',
+    ]);
+    const reported = [
+      'a trailer must sit in a paragraph of its own',
+      'Verifies names the case, not the requirement',
+    ];
+    expect(
+      carriedDeclarations(shown, reported, [
+        'the trailer paragraph rule',
+        'what Verifies means',
+      ]),
+    ).toEqual(reported);
+  });
+
   it('does not carry anything when the grace round only named registered conventions', () => {
     // Signing CONV-1 is not an attempt at the id-less wording the round was
     // granted for; it is a different, already-declarable, declaration.

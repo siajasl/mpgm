@@ -187,26 +187,35 @@ export function idlessUndeclared(entries: readonly string[]): string[] {
  *   granted round put in front of the author, not everything ever reported,
  *   so this cannot silently absolve a deviation that first appeared several
  *   rounds ago and was simply never picked up by a grant.
- * - **conditional on the author having tried.** `attempted` is what the grace
- *   round's own rework session put in its `deviations` field — the answer the
- *   round asked for. Rework attempt 1 found this reading only the reviewer's
+ * - **one signature per entry carried.** `attempted` is what the grace round's
+ *   own rework session put in its `deviations` field — the answer the round
+ *   asked for. Rework attempt 1 found this reading only the reviewer's
  *   wording: an author that let the grace round pass with `deviations: []`,
- *   never signing anything, merged exactly as if it had. That is the silent
- *   introduction IMP-4 forbids, not a fix for an undeclarable one — the round
- *   asked for a signature and none was given. So this only ever carries
- *   forward a wording the author *tried* to declare against: at least one
- *   id-less entry present in `attempted`, whether or not its text happens to
- *   match `shown` (a paraphrase is exactly T4.3.5's scenario). No id-less
- *   entry at all in `attempted` means no attempt was made, and nothing here
- *   substitutes for one.
+ *   never signing anything, merged exactly as if it had. Attempt 2 found the
+ *   half-fix that closed only the zero case: asking whether the round declared
+ *   *something* id-less and then carrying *every* id-less entry it showed, so
+ *   a round showing two rules and an author signing one merged both — the same
+ *   silent introduction, one entry further along. So the carry is paired to
+ *   the attempt and not to the round: at most as many entries as there are
+ *   id-less entries in `attempted`. Their text need not match `shown` (a
+ *   paraphrase is exactly T4.3.5's scenario), which is why they can only be
+ *   counted and not matched up one by one.
+ *
+ *   Counting means the entries that fit under that cap are chosen by report
+ *   order rather than by which signature was meant for which rule, and that
+ *   choice is immaterial: every entry over the cap is still undeclared, and
+ *   one undeclared entry refuses the merge exactly as several do. An author
+ *   that signs one of two therefore gets refused for the one it did not sign,
+ *   whichever of them the carry happened to absorb (CONV-4 — the ambiguity
+ *   resolves to the refusal).
  */
 export function carriedDeclarations(
   shown: ReadonlySet<string>,
   reported: readonly string[],
   attempted: readonly string[],
 ): string[] {
-  if (idlessUndeclared(attempted).length === 0) {
-    return [];
-  }
-  return idlessUndeclared(reported).filter((entry) => shown.has(entry.trim()));
+  const signatures = idlessUndeclared(attempted).length;
+  return idlessUndeclared(reported)
+    .filter((entry) => shown.has(entry.trim()))
+    .slice(0, signatures);
 }
