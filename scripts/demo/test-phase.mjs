@@ -552,10 +552,21 @@ try {
   );
 
   process.stdout.write('\n8. The gate, re-presented over what this run actually found\n');
-  const finalDefects = [
-    defectSchema.parse(store.read(`artifacts/defect/${adversarialId}.md`).data),
-    defectSchema.parse(store.read(`artifacts/defect/${nfrOneId}.md`).data),
-  ];
+  const filedAdversarial = readArtifact(
+    store,
+    `artifacts/defect/${adversarialId}.md`,
+    'the adversarial defect artifact is present for the final gate evaluation',
+    undefined,
+  );
+  const filedNfrOne = readArtifact(
+    store,
+    `artifacts/defect/${nfrOneId}.md`,
+    'the NFR-1 defect artifact is present for the final gate evaluation',
+    undefined,
+  );
+  const finalDefects = [filedAdversarial, filedNfrOne]
+    .filter((data) => data !== undefined)
+    .map((data) => defectSchema.parse(data));
   let packet2;
   {
     const db = openDatabase(dbPath);
@@ -588,10 +599,24 @@ try {
       packet2.criteria.find((entry) => entry.id === 'adversarial-verdict-present')
         ?.met === true,
   );
+  // `no-open-defects`' `detail` lists blocking defects by `title`, never by
+  // artifact id (`src/gate/manager.ts`) — an adversarial defect's title
+  // carries the suite's own `caseId` verbatim ("Adversarial case '<caseId>'
+  // failed: ..."), so `caseId`'s presence or absence in `detail` is what the
+  // gate actually reports about the round trip, and an NFR-1 defect's title
+  // carries the literal requirement id ("Quantified NFR 'NFR-1' is below its
+  // Scope threshold"). Requiring both — `caseId` absent, `NFR-1` present —
+  // is a check that fails if the round trip left the adversarial defect
+  // open (its title, and `caseId` with it, would still be in `detail`), and
+  // also fails if NFR-1 vanished from the blocking set (which would mean
+  // this run quietly weakened the gate rather than reporting it honestly).
   check(
-    'the round-tripped adversarial defect no longer blocks the gate on its own',
-    noOpenDefects?.detail.includes(adversarialId) !== true,
-    noOpenDefects?.detail,
+    "the round-tripped adversarial defect no longer blocks the gate — the gate's own " +
+      "detail now names only NFR-1's defect, not the case that was fixed",
+    noOpenDefects !== undefined &&
+      !noOpenDefects.detail.includes(caseId) &&
+      noOpenDefects.detail.includes('NFR-1'),
+    noOpenDefects?.detail ?? '(no-open-defects criterion not found)',
   );
   check(
     'the gate is honestly UNMET — NFR-1 is still below threshold and this run does not ' +
