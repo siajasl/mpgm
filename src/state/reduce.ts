@@ -29,6 +29,7 @@ import type {
   taskBlocked,
   taskCompleted,
   taskDispatched,
+  taskSuperseded,
   toolCallLogged,
   validationFailed,
   voteTallied,
@@ -59,7 +60,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 15;
+export const REDUCER_VERSION = 16;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -217,6 +218,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         checks: null,
         review: null,
         merged: null,
+        superseded: null,
         usage: zeroUsage,
       };
       return withRun(state, withTask(run, task), seq);
@@ -249,6 +251,7 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         checks: null,
         review: null,
         merged: null,
+        superseded: null,
         usage: zeroUsage,
       };
       return withRun(state, withTask(run, task), seq);
@@ -340,6 +343,33 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       const run = requireRun(state, event.runId, type);
       const task = requireTask(run, payload.taskId, type);
       return withRun(state, withTask(run, { ...task, status: 'blocked' }), seq);
+    }
+
+    case 'TaskSuperseded': {
+      const payload = event.payload as PayloadOf<typeof taskSuperseded>;
+      const run = requireRun(state, event.runId, type);
+      const task = requireTask(run, payload.taskId, type);
+      // Unlike `ChangeMergedByOperator` (T4.2.15), which leaves `status`
+      // alone because the harness's own outcome is a separate fact from
+      // where the change ended up, here `status` itself moves: the id this
+      // task was filed under is no longer part of the plan at all, so
+      // "blocked" or "dispatched" would keep asserting a task is stuck or
+      // running that neither is — there is nothing left to unstick or wait
+      // on. `mpgm supersede` (`cli/commands.ts`) is the only writer, and
+      // only after verifying against the gated Plan artifact (CONV-4).
+      return withRun(
+        state,
+        withTask(run, {
+          ...task,
+          status: 'superseded',
+          superseded: {
+            by: payload.by,
+            reason: payload.reason,
+            supersededBy: payload.supersededBy,
+          },
+        }),
+        seq,
+      );
     }
 
     case 'GatePresented': {

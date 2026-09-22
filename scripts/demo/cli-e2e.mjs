@@ -1078,6 +1078,102 @@ try {
     twice.output.split('\n')[0] ?? '',
   );
 
+  // supersede — a folded id the gated Plan no longer declares, retired
+  // rather than left blocked forever (T4.3.7). Reuses SAMPLE_PLAN's own
+  // T9.1.1 as the "successor": the point under test is that a real,
+  // currently-declared id is required, not that the id names new work.
+  {
+    const supersedeTaskId = 'T9.1.1-old';
+    const db = openDatabase(join(workspace, '.mpgm', 'state.db'));
+    const log = EventLog.attach(db, { registry: kernelRegistry() });
+    log.appendMany([
+      {
+        runId: 'r1',
+        type: 'TaskDispatched',
+        payload: {
+          taskId: supersedeTaskId,
+          role: 'implementer',
+          model: 'claude-sonnet-5',
+        },
+      },
+      {
+        runId: 'r1',
+        type: 'BudgetExceeded',
+        payload: { taskId: supersedeTaskId, kind: 'steps', limit: 50, observed: 51 },
+      },
+      {
+        runId: 'r1',
+        type: 'TaskBlocked',
+        payload: { taskId: supersedeTaskId, reason: 'max_turns' },
+      },
+    ]);
+    db.close();
+
+    const unknownSuccessor = await call([
+      'supersede',
+      supersedeTaskId,
+      '--by',
+      'macg',
+      '--reason',
+      'renamed as part of a PLN-4 split',
+      '--superseded-by',
+      'T9.1.1-invented',
+      '--run',
+      'r1',
+    ]);
+    check(
+      'supersede refuses a successor id the gated Plan does not declare',
+      !unknownSuccessor.result.ok && unknownSuccessor.output.includes('T9.1.1-invented'),
+      unknownSuccessor.output,
+    );
+
+    const superseded = await call([
+      'supersede',
+      supersedeTaskId,
+      '--by',
+      'macg',
+      '--reason',
+      'renamed as part of a PLN-4 split',
+      '--superseded-by',
+      'T9.1.1',
+      '--run',
+      'r1',
+    ]);
+    check('supersede records the retired id', superseded.result.ok, superseded.output);
+
+    // T9.1.1 is attested above, not blocked or dispatched — refused on
+    // status before the Plan is even consulted (`commands.test.ts`'s own
+    // 'still declared' case exercises the Plan-membership refusal directly,
+    // against a task left genuinely blocked or dispatched).
+    const notSupersedable = await call([
+      'supersede',
+      'T9.1.1',
+      '--by',
+      'macg',
+      '--reason',
+      'wrongly claimed superseded',
+      '--superseded-by',
+      supersedeTaskId,
+      '--run',
+      'r1',
+    ]);
+    check(
+      'supersede refuses a task with nothing to supersede',
+      !notSupersedable.result.ok &&
+        notSupersedable.output.includes('nothing to supersede'),
+      notSupersedable.output,
+    );
+
+    const withSuperseded = await call(['status', '--run', 'r1']);
+    check(
+      'status reads the retired id as superseded, not blocked forever',
+      withSuperseded.output
+        .split('\n')
+        .some((line) => line.includes(supersedeTaskId) && line.includes('superseded')),
+      withSuperseded.output,
+    );
+  }
+
   // record-merge — an operator's own hand-merge, verified against the
   // repository itself rather than taken on the operator's word (T4.2.15,
   // HIL-5, OBS-1): the M4.2 shape this verb exists for is a task the

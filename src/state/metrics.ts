@@ -38,6 +38,14 @@ export interface AggregateMetric {
   /** Dispatched, with no terminal event yet. */
   readonly dispatched: number;
   /**
+   * The gated Plan artifact no longer declares this id (T4.3.7, PLN-4) — the
+   * work is real and its cost (below) is still counted, but the id itself
+   * can never become `completed`, so it is excluded from `successRate`'s
+   * denominator the same way `attested` already is, rather than sitting
+   * there as a permanent failure `aggregate()` can never settle.
+   */
+  readonly superseded: number;
+  /**
    * `completed / (completed + blocked)`. Null when neither has happened yet,
    * so an empty bucket reads as "nothing to report" rather than as 0%.
    */
@@ -176,10 +184,24 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
   const facts: TaskFacts[] = [];
   for (const task of Object.values(run.tasks)) {
     const start = dispatchedAt.get(task.taskId);
+    // `superseded` reads `blockedAt`, never `TaskSuperseded`'s own `ts`
+    // (T4.3.7, §6): the log is append-only, so superseding a task weeks
+    // after it stopped cannot be backdated to sit beside whatever it last
+    // did, and reading that later `ts` as `end` would report the gap since
+    // real work stopped as how long the task took — replacing one wrong
+    // latency with another instead of fixing it. This is where the two
+    // shapes T4.3.7 names actually differ: a task that reached
+    // `TaskBlocked`/`BudgetExceeded` before being superseded (T4.1.4's own
+    // shape) has a `blockedAt` entry and keeps the latency that terminal
+    // event already measured, unchanged by what later retired its id; a
+    // task superseded straight out of `dispatched`, with no terminal event
+    // ever (T4.1.4-review-2's shape), has none, and reads null exactly as
+    // it did before — nothing here invents a duration `TaskBlocked` was
+    // never appended to measure.
     const end =
       task.status === 'completed'
         ? completedAt.get(task.taskId)
-        : task.status === 'blocked'
+        : task.status === 'blocked' || task.status === 'superseded'
           ? blockedAt.get(task.taskId)
           : undefined;
     const latencyMs =
@@ -232,6 +254,7 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
   let blocked = 0;
   let attested = 0;
   let dispatched = 0;
+  let superseded = 0;
   let latencySum = 0;
   let latencyCount = 0;
 
@@ -257,6 +280,9 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
       case 'dispatched':
         dispatched += 1;
         break;
+      case 'superseded':
+        superseded += 1;
+        break;
     }
   }
 
@@ -271,6 +297,7 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
     blocked,
     attested,
     dispatched,
+    superseded,
     successRate: settled === 0 ? null : completed / settled,
     avgLatencyMs: latencyCount === 0 ? null : latencySum / latencyCount,
   };

@@ -2067,6 +2067,108 @@ export async function recordMerge(
   }
 }
 
+/**
+ * `mpgm supersede <task> --by <who> --reason <s> --superseded-by <id,id,...>`
+ * — retire a folded task id the gated Plan artifact no longer declares
+ * (T4.3.7, PLN-4, HIL-5, OBS-1, OBS-4).
+ *
+ * mpgm's own T4.1.4 was split into T4.1.4a/b/c by a document revision, and
+ * nothing told the log: folded state held T4.1.4 at `blocked` and
+ * T4.1.4-review-2 at `dispatched`, both permanent entries `aggregate()`
+ * (`state/metrics.ts`) can never settle, since nothing an id absent from the
+ * plan does can ever make it `completed`.
+ *
+ * An operator verb, not the kernel watching the fold against the Plan on its
+ * own — the same choice `record-merge`'s own doc makes and for the same
+ * reason: an id the fold holds that the Plan no longer declares is equally
+ * the signature of a mistyped dispatch or a plan regression, and a
+ * background rule that retired anything it could not find in the Plan would
+ * hide those two behind the one this verb exists for. So an operator says
+ * so, and says why and to what — and the verb does not take their word for
+ * either end of that claim (CONV-4): it refuses a `taskId` the gated Plan
+ * still declares (an id still live is not superseded), and it refuses any
+ * `supersededBy` id the Plan does not itself declare (a successor that is
+ * not a real, currently-declared task is not evidence the work has a home).
+ * It also refuses a task this run never dispatched, or one already
+ * `completed`, `attested` or `superseded` — there is nothing here to retire.
+ */
+export function supersede(
+  context: CliContext,
+  runId: string,
+  taskId: string,
+  by: string,
+  reason: string,
+  supersededBy: readonly string[],
+): CommandResult {
+  const { db, log, projector } = open(context);
+  try {
+    const task = projector.project().runs[runId]?.tasks[taskId];
+    if (task === undefined) {
+      context.write(
+        `no task '${taskId}' has run in run '${runId}' — supersede is for a ` +
+          `task the harness dispatched, not one it never ran`,
+      );
+      return { ok: false, detail: 'unknown task' };
+    }
+    if (task.status !== 'blocked' && task.status !== 'dispatched') {
+      context.write(
+        `${taskId} is '${task.status}', not 'blocked' or 'dispatched' — ` +
+          `there is nothing to supersede`,
+      );
+      return { ok: false, detail: 'not supersedable' };
+    }
+
+    const artifacts = new ArtifactStore({
+      root: context.root,
+      schemas: context.artifactSchemas,
+    });
+    let graph;
+    try {
+      graph = ingestPlan(artifacts.read(PLAN_ARTIFACT).data as never);
+    } catch (error) {
+      context.write(
+        `could not read the gated Plan at ${PLAN_ARTIFACT}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return { ok: false, detail: 'no plan' };
+    }
+
+    // Fails closed on both ends of the claim: an id the Plan still declares
+    // is not superseded whatever an operator believes, and a successor the
+    // Plan does not declare is not evidence the work has a home.
+    if (graph.tasks.some((candidate) => candidate.id === taskId)) {
+      context.write(
+        `refusing to supersede ${taskId}: the gated Plan at ${PLAN_ARTIFACT} ` +
+          `still declares it`,
+      );
+      return { ok: false, detail: 'still declared' };
+    }
+    const unknownSuccessors = supersededBy.filter(
+      (id) => !graph.tasks.some((candidate) => candidate.id === id),
+    );
+    if (unknownSuccessors.length > 0) {
+      context.write(
+        `refusing to supersede ${taskId}: ${unknownSuccessors.join(', ')} ` +
+          `not declared in the gated Plan at ${PLAN_ARTIFACT}`,
+      );
+      return { ok: false, detail: 'unknown successor' };
+    }
+
+    log.append({
+      runId,
+      type: 'TaskSuperseded',
+      payload: { taskId, by, reason, supersededBy },
+    });
+
+    context.write(
+      `${taskId} superseded by ${supersededBy.join(', ')} (recorded by ${by})`,
+    );
+    return { ok: true, detail: 'superseded' };
+  } finally {
+    db.close();
+  }
+}
+
 /** `mpgm chat <phase>` — operator elicitation (DEF-1). */
 export async function chat(
   context: CliContext,

@@ -14,6 +14,7 @@ import {
   run,
   serve,
   status,
+  supersede,
   trace,
   type CliContext,
   type CommandResult,
@@ -42,6 +43,7 @@ export const VERBS = [
   'confirm',
   'implement',
   'record-merge',
+  'supersede',
   'reopen',
   'chat',
   'defect',
@@ -83,6 +85,10 @@ export const USAGE = `mpgm — agentic SDLC harness
     record a merge an operator performed by hand (e.g. a pull request merged on GitHub)
     after the implement loop abandoned the task on a budget; verified against the
     repository before anything is recorded (T4.2.15)
+  mpgm supersede <task> --by <who> --reason <s> --superseded-by <id,id,...> [--run <id>]
+    retire a folded task id the gated Plan artifact no longer declares (e.g. a PLN-4
+    split applied as a document revision); refuses an id the Plan still declares and
+    any successor id the Plan does not (T4.3.7)
   mpgm reopen <phase> --run <id> --reason <s> [--changed <id,id>] [--dry-run]
   mpgm chat <phase> [--run <id>] [--brief <s>]
   mpgm defect route <id> --to implement --task <t> --by <who> --reason <s>
@@ -251,6 +257,19 @@ export async function runCli(
         flags.into ?? 'main',
         optional('--branch', flags.branch),
         optional('--remote', flags.remote),
+      );
+
+    case 'supersede':
+      return supersede(
+        context,
+        runId,
+        require('a task id', positional[0]),
+        require('--by', flags.by),
+        require('--reason', flags.reason),
+        require('--superseded-by', flags['superseded-by'])
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== ''),
       );
 
     case 'reopen':

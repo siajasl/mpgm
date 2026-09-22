@@ -107,6 +107,25 @@ describe('reduce', () => {
         type: 'TaskBlocked',
         payload: { taskId: 'T1', reason: 'the change was not usable' },
       },
+      {
+        runId: RUN,
+        // A third, distinct task: `TaskSuperseded` needs one this run
+        // dispatched (`requireTask`), and must not land on `T1` (still
+        // exercised below as a plain `blocked` task) or `T0` (`TaskAttested`,
+        // above — a different case entirely).
+        type: 'TaskDispatched',
+        payload: { taskId: 'T3', role: 'implementer', model: 'claude-sonnet-5' },
+      },
+      {
+        runId: RUN,
+        type: 'TaskSuperseded',
+        payload: {
+          taskId: 'T3',
+          by: 'macg',
+          reason: 'PLN-4 split into T3a/T3b',
+          supersededBy: ['T3a', 'T3b'],
+        },
+      },
       { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
       {
         runId: RUN,
@@ -335,6 +354,71 @@ describe('reduce', () => {
     // claims no role, no model and no spend.
     expect(task?.role).toBe('');
     expect(task?.usage.costUsd).toBe(0);
+  });
+
+  // T4.3.7: the two shapes PLAN.md names for T4.1.4/T4.1.4-review-2 — a
+  // blocked task and a merely-dispatched one — both retired by the same
+  // event, folding to the same new status.
+  it('moves a blocked task, and a merely dispatched one, to superseded', () => {
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude-opus-5' },
+        },
+        {
+          runId: RUN,
+          type: 'BudgetExceeded',
+          payload: { taskId: 'T1', kind: 'steps', limit: 50, observed: 51 },
+        },
+        {
+          runId: RUN,
+          type: 'TaskBlocked',
+          payload: { taskId: 'T1', reason: 'max_turns' },
+        },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1-review-2', role: 'reviewer', model: 'claude-opus-5' },
+        },
+        {
+          runId: RUN,
+          type: 'TaskSuperseded',
+          payload: {
+            taskId: 'T1',
+            by: 'macg',
+            reason: 'PLN-4 split into T1a/T1b/T1c',
+            supersededBy: ['T1a', 'T1b', 'T1c'],
+          },
+        },
+        {
+          runId: RUN,
+          type: 'TaskSuperseded',
+          payload: {
+            taskId: 'T1-review-2',
+            by: 'macg',
+            reason: 'PLN-4 split into T1a/T1b/T1c',
+            supersededBy: ['T1a', 'T1b', 'T1c'],
+          },
+        },
+      ]),
+    );
+
+    const blockedThenSuperseded = state.runs[RUN]?.tasks.T1;
+    const dispatchedThenSuperseded = state.runs[RUN]?.tasks['T1-review-2'];
+
+    expect(blockedThenSuperseded?.status).toBe('superseded');
+    expect(dispatchedThenSuperseded?.status).toBe('superseded');
+    expect(blockedThenSuperseded?.superseded).toEqual({
+      by: 'macg',
+      reason: 'PLN-4 split into T1a/T1b/T1c',
+      supersededBy: ['T1a', 'T1b', 'T1c'],
+    });
+    // The harness's own outcome is otherwise unchanged: a superseded task
+    // that reached `BudgetExceeded` still shows the breach that stopped it.
+    expect(blockedThenSuperseded?.budgetBreaches).toBe(1);
   });
 
   it('refuses to attest a task the run already ran', () => {

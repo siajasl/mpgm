@@ -46,6 +46,7 @@ export type {
   RunState,
   TaskState,
   PlanRevisionState,
+  SupersededState,
   TaskStatus,
   Usage,
   VoteState,
@@ -330,6 +331,7 @@ export {
   run,
   serve,
   status,
+  supersede,
   trace,
 } from './cli/commands.js';
 export type { Verb } from './cli/main.js';
