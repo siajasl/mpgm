@@ -920,7 +920,11 @@ describe('a review that never approves (NFR-1)', () => {
       expect(result.status).toBe('blocked');
       // Two rounds: the original and the one grace. Not three.
       expect(result.rounds).toHaveLength(2);
-      expect(result.reason).toMatch(/after 2 attempt\(s\)/);
+      // Blocked for want of a declaration, and said so (T4.3.10). The
+      // reviewer approved both rounds; reporting this as a refusal would be
+      // putting a sentence in its mouth.
+      expect(result.reason).toMatch(/held for want of a declaration/);
+      expect(result.reason).not.toMatch(/still refuses the change/);
     } finally {
       log.close();
     }
@@ -2854,5 +2858,153 @@ describe('a review that never approves (NFR-1)', () => {
     } finally {
       log.close();
     }
+  });
+
+  /**
+   * What the log says about a change nobody refused (T4.3.10).
+   *
+   * T4.3.3 ended on `TaskBlocked` reading "the review still refuses the change
+   * after 4 attempt(s): the change departs from CONV-5", while both of the
+   * `ChangeReviewed` events it ended on carried `approved: true`. Eight
+   * sessions and $16.84 closed on a sentence no reviewer had said.
+   *
+   * The bound is not in question and is not reopened here: the grace is once
+   * per task, for the reason `loop.ts` already gives. What was wrong is that
+   * the out-of-declaration-rounds exit and the genuine-refusal exit left
+   * through the same sentence — and that sentence is what the CLI prints, what
+   * `TaskBlocked` stores and what an operator reads first.
+   *
+   * Asserted off the log rather than off the returned result, because the log
+   * is what the dashboard and `mpgm status` read back: a result that said the
+   * right thing while the log said the old one would be the same defect
+   * wearing a better coat.
+   */
+  describe('a change two reviews approved is not recorded as refused (T4.3.10)', () => {
+    it('says it is held for a declaration, and names no refusal', async () => {
+      const repo = newRepo();
+      const head = git(repo, ['rev-parse', 'HEAD']);
+      const change = {
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      };
+      const approvingWith = (convention: string) =>
+        scriptedSuccess({
+          ref: head,
+          verdict: 'approve',
+          summary: 'good',
+          findings: [],
+          deviations: [{ convention, where: 'the branch' }],
+        });
+
+      // T4.3.3's shape exactly: approve naming one convention, spend the
+      // grace declaring it, approve again naming a different one.
+      const provider = new ScriptedProvider([
+        scriptedSuccess(change),
+        approvingWith('CONV-1'),
+        scriptedSuccess({
+          ...change,
+          deviations: [{ convention: 'CONV-1', why: 'stated' }],
+        }),
+        approvingWith('CONV-5'),
+      ]);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+
+      try {
+        const result = await implementTask({
+          ...baseOptions(repo, provider, log),
+          maxReviewAttempts: 1,
+        });
+        expect(result.status).toBe('blocked');
+
+        const events = log.read();
+        const reviews = events.filter((event) => event.type === 'ChangeReviewed');
+        // The premise: nobody refused this change.
+        expect(reviews).toHaveLength(2);
+        for (const review of reviews) {
+          expect((review.payload as { approved: boolean }).approved).toBe(true);
+        }
+
+        const blocked = events.filter((event) => event.type === 'TaskBlocked');
+        expect(blocked).toHaveLength(1);
+        const reason = (blocked[0]?.payload as { reason: string }).reason;
+        expect(reason).not.toMatch(/refuses the change/);
+        expect(reason).toMatch(/held for want of a declaration/);
+        // Names the departure it is waiting on, and what answers it.
+        expect(reason).toContain('CONV-5');
+        expect(reason).toMatch(/mpgm redirect/);
+      } finally {
+        log.close();
+      }
+    });
+
+    it('still says a refusal is a refusal when the reviewer asked for changes', async () => {
+      const repo = newRepo();
+      const head = git(repo, ['rev-parse', 'HEAD']);
+      const change = {
+        ref: head,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      };
+      const refusing = scriptedSuccess({
+        ref: head,
+        verdict: 'request-changes',
+        summary: 'not yet',
+        findings: [
+          {
+            file: 'README.md',
+            line: 1,
+            concern: 'the ledger is wrong',
+            remedy: 'correct it',
+            severity: 'blocker' as const,
+          },
+        ],
+        deviations: [],
+      });
+      const provider = new ScriptedProvider([
+        scriptedSuccess(change),
+        refusing,
+        scriptedSuccess(change),
+        refusing,
+      ]);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+
+      try {
+        const result = await implementTask({
+          ...baseOptions(repo, provider, log),
+          maxReviewAttempts: 1,
+        });
+
+        expect(result.status).toBe('blocked');
+        // The other half of the split, and deliberately a test that passes
+        // against the old code as well: its job is to show the refusal path
+        // was not disturbed while the approval path was corrected. The test
+        // that carries the change is the one above.
+        expect(result.reason).toMatch(/still refuses the change/);
+        expect(result.reason).not.toMatch(/held for want of a declaration/);
+      } finally {
+        log.close();
+      }
+    });
   });
 });
