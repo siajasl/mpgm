@@ -978,7 +978,21 @@ if (failures.length === 0) {
       "  cannot report TST-2's requirement coverage at all. REQUIREMENTS' Test gate\n" +
       '  asks for all Must-have requirements verified; this playbook measures the\n' +
       '  quantified subset and says so (phases/test.yaml, DESIGN §9 decision 15).\n' +
-      '  The gate was not weakened to close the milestone: the clause is open.\n\n',
+      '  The gate was not weakened to close the milestone: the clause is open.\n' +
+      '\n' +
+      "  And a second finding about this branch's own record, printed here because\n" +
+      '  this is where the figure it corrupts is read. Commit 627e6cd, one of the\n' +
+      '  commits delivering this demo, carries the trailer `Verifies: TST-1, TST-2,\n' +
+      "  TST-5`. TST-1 and TST-2 are untrue by this run's own account above, and\n" +
+      '  6b80e01 retracted them in the log — but only in the log. `Verifies:` is the\n' +
+      '  one trailer `TraceIndexStore.coverage()` counts, links are keyed by the\n' +
+      '  source commit that wrote them, and nothing reads a later commit as\n' +
+      '  withdrawing an earlier claim: `verified` is `verifiedBy.length > 0`. So\n' +
+      "  once this branch merges, mpgm's own coverage report reads TST-1 and TST-2\n" +
+      '  as verified on the strength of a commit whose change says they are not,\n' +
+      '  and will keep doing so until a retraction mechanism exists. There is none\n' +
+      '  today; T4.3.12 is filed for it (PLAN.md, M4.3). Read those two rows as\n' +
+      '  spurious until it lands.\n\n',
   );
 } else {
   process.stdout.write(

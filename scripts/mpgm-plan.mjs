@@ -1844,6 +1844,59 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['TST-2', 'ADR-4', 'IMP-4', 'OBS-1'],
             },
+            {
+              id: 'T4.3.12',
+              title: 'A verification claim cannot be withdrawn once written',
+              completionCriteria: [
+                'A Verifies: claim its own author has retracted stops ' +
+                  'counting as coverage, or the coverage report names the ' +
+                  'claim source so a reader can judge it. Measured rather ' +
+                  'than asserted: commit 627e6cd (T4.3.5) carries ' +
+                  'Verifies: TST-1, TST-2, TST-5 while that same change ' +
+                  "reports, in its demo's section 2 finding and in " +
+                  'CLAUDE.md, that the Test phase cannot report TST-2 ' +
+                  'requirement coverage at all. 6b80e01 retracted the two ' +
+                  'wrong ids in the log, which is all the log can do; ' +
+                  'extractCommitLinks still reads 627e6cd as verifying ' +
+                  'them, links are keyed by the source commit that wrote ' +
+                  'them, and TraceIndexStore.coverage marks a requirement ' +
+                  'verified on verifiedBy.length > 0 ' +
+                  '(src/trace/index-store.ts). So the index reads TST-1 and ' +
+                  'TST-2 verified off a commit whose change says they are ' +
+                  'not, and no later commit can say otherwise.',
+                'This is not T4.3.11 restated and the change says why. ' +
+                  'T4.3.11 is that too few commits claim to verify ' +
+                  'anything, so the figure reads 2 of 84 and understates ' +
+                  'what is checked; this is the opposite error, a claim ' +
+                  'that is wrong and cannot be withdrawn, so the figure ' +
+                  'overstates it. A change that only raises coverage makes ' +
+                  'this worse, because every claim it adds is equally ' +
+                  'final.',
+                'Nothing is deleted from history and the change does not ' +
+                  'pretend otherwise. The index is derived from commit ' +
+                  'trailers and artifact frontmatter and is rebuildable ' +
+                  '(CLAUDE.md, Architecture invariants), so a retraction is ' +
+                  'a row read out of a later commit or artifact, never an ' +
+                  'edit to an earlier one, and it must survive a full ' +
+                  'rebuild identically to an incremental update.',
+                'The change picks between a trailer the indexer reads as ' +
+                  'withdrawing a named claim by its source commit and a ' +
+                  'coverage report that names each verifying source so a ' +
+                  'reader judges it, says which and why, and prices the one ' +
+                  'it refused. A retraction that anyone can write is also a ' +
+                  'way to launder a figure downward, so what is recorded ' +
+                  'says who withdrew the claim and why (HIL-5), the same ' +
+                  'standard an operator override already meets.',
+                'The test indexes a history where one commit claims ' +
+                  'Verifies: X and a later one withdraws it, and asserts ' +
+                  'coverage reports X unverified with the withdrawal named ' +
+                  'in the report. A test over a fixture where the claim was ' +
+                  'never written passes against today and is the test this ' +
+                  'defect survived.',
+              ],
+              dependsOn: [],
+              tracesTo: ['TST-2', 'ADR-4', 'OBS-1', 'HIL-5'],
+            },
           ],
         },
       ],
