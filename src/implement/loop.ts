@@ -772,7 +772,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         entry.convention,
       );
     }
-    const reportedDeviations = parsed.data.deviations.map((entry) => entry.convention);
     const declared = [...declaredSoFar.values()];
     review = {
       reviewTaskId,
@@ -784,7 +783,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       ref: reconcileRef(parsed.data.ref, tip),
       approved: parsed.data.verdict === 'approve',
       summary: parsed.data.summary,
-      deviations: reportedDeviations,
+      deviations: parsed.data.deviations.map((entry) => entry.convention),
     };
     options.log.append(
       changeReviewed(runId, task.id, review, parsed.data.findings, declared),
