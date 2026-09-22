@@ -21,12 +21,7 @@ import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
 import { reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview } from './prior-review.js';
-import {
-  carriedDeclarations,
-  earnsDeclarationRound,
-  idlessUndeclared,
-  renderDeclarationRound,
-} from './late-deviation.js';
+import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
 import type { ProgressReporter, SessionKind } from './progress.js';
 import type { WorktreeManager } from './worktree.js';
 
@@ -629,20 +624,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const declaredSoFar = new Map<string, string>();
   let extensionSpent = false;
   let attempts = maxReviewAttempts;
-  // The id-less deviations the *immediately preceding* declaration round
-  // showed the author (T4.3.13). A rule stated only in CLAUDE.md and not yet
-  // given a `CONV-N` id in the knowledge base has no id `declaredSoFar` can
-  // key on, so a declaration for one can only ever match by exact text — and
-  // the author writes that text before the very review that first reports it
-  // exists, so the first round it is found is never declarable by
-  // construction. `earnsDeclarationRound` buys one round to close that gap by
-  // showing the author the reviewer's own wording. This carries that shown
-  // wording one round further: if the *next* review reports the identical
-  // text again — fixed or not, the reviewer is deliberately not told what was
-  // declared — the loop already gave the author its one chance to sign it and
-  // does not ask a second time for a signature the round meant to collect it
-  // already tried for.
-  let shownIdless = new Set<string>();
 
   for (let round = 1; round <= attempts; round += 1) {
     // CI before review, and repair before review: an agent asked to read a
@@ -792,33 +773,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       );
     }
     const reportedDeviations = parsed.data.deviations.map((entry) => entry.convention);
-    // An id-less finding that survives from the round the declaration grace
-    // showed it in, reported again with the identical wording, counts as
-    // declared without the author retyping it (T4.3.13). See `shownIdless`
-    // above and `carriedDeclarations` (`late-deviation.ts`) for why this is
-    // narrower than it looks: id-less only, exact text only, and only the
-    // round immediately after the one that showed it — `shownIdless` is
-    // cleared below whether or not anything in it matched, so it never
-    // reaches a third round.
-    //
-    // `latest.deviations` (the grace round's own rework result, already
-    // folded into `declaredSoFar` above) is passed as the third argument so
-    // the carry is bounded by what that round's author actually signed: at
-    // most one entry per id-less declaration it made. Rework attempt 1 on
-    // this task found the carry firing with the grace round returning
-    // `deviations: []`, and attempt 2 found it carrying every entry the
-    // round showed on the strength of a single signature — both are one
-    // finding merging with no declaration ever made by anyone, which is the
-    // silent introduction IMP-4 forbids rather than a fix for an
-    // undeclarable one.
-    for (const entry of carriedDeclarations(
-      shownIdless,
-      reportedDeviations,
-      latest.deviations.map((entry) => entry.convention),
-    )) {
-      declaredSoFar.set(entry.trim(), entry);
-    }
-    shownIdless = new Set();
     const declared = [...declaredSoFar.values()];
     review = {
       reviewTaskId,
@@ -890,12 +844,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         extensionSpent = true;
         attempts += 1;
       }
-      // What this round is showing the author, so the *next* round can carry
-      // an id-less entry forward if it comes back with identical wording
-      // (T4.3.13, `shownIdless` above). A numbered convention is left out: it
-      // is exactly as typeable next round as this one, so it keeps needing an
-      // explicit declaration every time it is the sole refusal.
-      shownIdless = new Set(idlessUndeclared(undeclared).map((entry) => entry.trim()));
     } else if (round === attempts) {
       options.log.append({
         runId,
