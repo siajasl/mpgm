@@ -1897,6 +1897,77 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['TST-2', 'ADR-4', 'OBS-1', 'HIL-5'],
             },
+            {
+              id: 'T4.3.13',
+              title: 'A convention only CLAUDE.md states cannot be declared',
+              completionCriteria: [
+                'A deviation the reviewer reports can be declared by the ' +
+                  'author whatever document states the rule, or the ' +
+                  'reviewer cannot report a rule the author had no way to ' +
+                  'name. Today neither holds. undeclaredDeviations ' +
+                  '(src/context/conventions.ts) keys a declaration against ' +
+                  'a finding by conventionIdOf(entry) ?? entry.trim(), and ' +
+                  'conventionIdOf reads a leading id of the shape ' +
+                  'CONV-1. kb/conventions.md registers CONV-1 to CONV-7 and ' +
+                  'nothing else, so a rule stated only in CLAUDE.md has no ' +
+                  'id, the key falls back to the reviewer prose, and the ' +
+                  'author writes its declaration before the review exists ' +
+                  'and so cannot reproduce that prose. The declaration is ' +
+                  'unwritable, not merely unwritten.',
+                'Measured, not asserted: T4.3.5 was blocked twice on this, ' +
+                  'across 16 sessions and $37.12. Both TaskBlocked reasons ' +
+                  'quote CLAUDE.md, Documents rules -- the trace-trailer ' +
+                  'paragraph rule and the Verifies: semantics -- and four ' +
+                  'of the eight ChangeReviewed events carry approved: ' +
+                  'true. The CONV-N findings in those same review lists ' +
+                  'were declarable and were closed; only the id-less ones ' +
+                  'survived every round to exhaust the budget.',
+                'The declaration round makes it terminal rather than ' +
+                  'merely awkward. earnsDeclarationRound grants one extra ' +
+                  'round per task and implement/loop.ts spends it once ' +
+                  '(extensionSpent), so a finding that cannot be matched ' +
+                  'returns unchanged in the next round with no round left ' +
+                  'to answer it in: BudgetExceeded{kind: reviews, limit: ' +
+                  '4} fired on both runs with the change approved. The ' +
+                  'grace is deliberately not elastic and must not become ' +
+                  'so; the fix belongs where the key is computed or where ' +
+                  'the rule is defined, not in the budget.',
+                'IMP-4 says conventions are defined in the knowledge base ' +
+                  'and that deviations MUST be flagged rather than ' +
+                  'silently introduced. A rule the reviewer enforces from ' +
+                  'CLAUDE.md is enforced from outside the place IMP-4 ' +
+                  'names, against a flagging mechanism keyed to that ' +
+                  "place's ids. So the change decides where the binding " +
+                  'conventions live and makes one answer true, rather than ' +
+                  'leaving two documents both binding and only one ' +
+                  'nameable.',
+                'This is not T4.3.10 restated. T4.3.10 is that ' +
+                  'computeGateRates counts an approving review carrying an ' +
+                  'undeclared deviation as a refusal, which that module ' +
+                  'does deliberately and says why; it is a figure being ' +
+                  'read correctly. This is a task nobody can unblock: the ' +
+                  'change is approved, the remedy the loop asks for cannot ' +
+                  'be written, and the work stops. A change that only ' +
+                  'corrected the rate would leave T4.3.5 exactly as stuck.',
+                'The change picks between giving the CLAUDE.md rules ids ' +
+                  'in the knowledge base so they are declarable, ' +
+                  'constraining the reviewer to cite only registered ' +
+                  'conventions, and having the loop treat a finding ' +
+                  'repeated unchanged after a declaration round as ' +
+                  'declared. It says which and why, and prices the ones it ' +
+                  'refused. The third alone would let any undeclared ' +
+                  'deviation through on repetition, which is the ' +
+                  'elasticity the grace is deliberately not, so a change ' +
+                  'that takes it says what stops that.',
+                'The test drives a review that reports an id-less rule ' +
+                  'with the author declaring it, and asserts decideMerge ' +
+                  'does not refuse for undeclared-deviation. A test where ' +
+                  'the reviewer cites CONV-N passes against today and is ' +
+                  'the test this defect survived.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-4', 'IMP-3'],
+            },
           ],
         },
       ],
