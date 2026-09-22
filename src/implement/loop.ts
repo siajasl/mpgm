@@ -1045,19 +1045,43 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       // run still has to look at it; what this closes is the gap where
       // nothing *could*, because only `git log` against a path nobody but
       // this worktree had would show it.
+      // Compared against `tip` — read from git above, at the top of this
+      // round — rather than `repair.ref`. `repair.ref` traces back to the
+      // implementing session's own `change.data.ref`/`fixed.data.ref`, which
+      // is never run through `reconcileRef` (only the reviewer's ref is, a
+      // few hundred lines below, for the same reason: "a seven-character ref
+      // matches nothing"). An implementer that reported an abbreviated SHA
+      // for the very commit git is already on would make this comparison
+      // true with zero new commits, manufacturing stranded work that was
+      // never written.
       const strandedTip = await options.worktrees.head(task.id);
-      const strandedNewWork = strandedTip !== undefined && strandedTip !== repair.ref;
+      const strandedNewWork = strandedTip !== undefined && strandedTip !== tip;
       const strandedControl = runControl(fold(options.log.read()), runId);
-      if (strandedNewWork && strandedControl === 'running') {
-        await options.publish?.(worktree.branch, strandedTip);
+      // Whether the push actually ran, not merely whether it was attempted:
+      // `options.publish` is optional (a project whose CI runs locally has
+      // nothing to publish), and `strandedControl` can have moved off
+      // 'running' while the killed session was in flight — the same race the
+      // three earlier publish guards in this function exist for. Either one
+      // means the commit below stayed in the worktree, and the message has
+      // to say that rather than claim a push that did not happen.
+      const strandedPushed =
+        strandedNewWork && strandedControl === 'running' && options.publish !== undefined;
+      if (strandedPushed) {
+        await options.publish(worktree.branch, strandedTip);
       }
       return stop(
         `the rework session blocked: ${reworked.reason}` +
           (strandedNewWork
-            ? ` — it had already committed up to ${strandedTip}, pushed for review rather than left only in the worktree`
+            ? strandedPushed
+              ? ` — it had already committed up to ${strandedTip}, pushed for review rather than left only in the worktree`
+              : ` — it had already committed up to ${strandedTip}, left in the worktree at ` +
+                `${worktree.path} rather than pushed, because ` +
+                (strandedControl !== 'running'
+                  ? `the run was ${strandedControl} before it could be published`
+                  : 'no publish was configured for this run')
             : ''),
         {
-          ref: strandedTip ?? repair.ref,
+          ref: strandedTip ?? tip,
           review,
           repair,
         },

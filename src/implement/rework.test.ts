@@ -1785,6 +1785,220 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('reports stranded work as left in the worktree rather than pushed, when nothing publishes it (T4.3.8)', async () => {
+    // The other race the block message has to get right: the killed session
+    // above still committed real work, but this run has no `publish` at all
+    // (a project whose CI runs locally has nothing to publish — the same
+    // reason `publish` is optional in the first place) or was killed/paused
+    // itself before the push could run. Either way the commit sits in the
+    // worktree, unpushed, and the message the operator reads has to say that
+    // rather than claim a push that never happened — the exact failure this
+    // half of the task exists to end.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const head = git(repo, ['rev-parse', 'HEAD']);
+
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const reject = {
+      ref: head,
+      verdict: 'request-changes' as const,
+      summary: 'no',
+      findings: [
+        { file: 'README.md', concern: 'no', remedy: 'yes', severity: 'blocker' as const },
+      ],
+      deviations: [],
+    };
+    const killedAtCap: SessionResult = {
+      termination: 'budget_exceeded',
+      structuredOutput: undefined,
+      usage: { inputTokens: 4000, outputTokens: 2000, costUsd: 8.0142675 },
+      turns: 40,
+      denials: [],
+      errorMessage: 'session exceeded its cost budget',
+      durationMs: 120000,
+      apiDurationMs: 95000,
+    };
+
+    let stranded: string | undefined;
+    let calls = 0;
+    const provider: AgentSessionProvider = {
+      run(): Promise<SessionResult> {
+        const index = calls;
+        calls += 1;
+        if (index === 0) {
+          return Promise.resolve(
+            scriptedSuccess(change, {
+              usage: { inputTokens: 500, outputTokens: 250, costUsd: 0.5 },
+            }),
+          );
+        }
+        if (index === 1) {
+          return Promise.resolve(scriptedSuccess(reject));
+        }
+        if (index === 2) {
+          writeFileSync(join(worktrees.pathFor('T1'), 'escalated.txt'), 'fixed\n');
+          git(worktrees.pathFor('T1'), ['add', '--all']);
+          git(worktrees.pathFor('T1'), ['commit', '-m', 'answers the review']);
+          stranded = git(worktrees.pathFor('T1'), ['rev-parse', 'HEAD']);
+          return Promise.resolve(killedAtCap);
+        }
+        throw new Error('ran out of scripted results');
+      },
+    };
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      // No `publish` override: `baseOptions` carries none, so
+      // `options.publish` is `undefined` for this run, the same as a project
+      // whose CI runs locally.
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 2,
+      });
+
+      expect(stranded).toBeDefined();
+      expect(stranded).not.toBe(head);
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toMatch(/session terminated: budget_exceeded/);
+      // The work is real and the message says so, but it does not claim a
+      // push nothing here performed.
+      expect(result.reason).toContain(`already committed up to ${String(stranded)}`);
+      expect(result.reason).not.toMatch(/pushed for review/);
+      // Names where the operator can still find it, and why it is not on
+      // the branch, rather than leaving the gap silent.
+      expect(result.reason).toContain(
+        `left in the worktree at ${worktrees.pathFor('T1')}`,
+      );
+      expect(result.reason).toMatch(/no publish was configured for this run/);
+      expect(result.ref).toBe(stranded);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('does not report a killed session as having committed, when the mismatch is only an abbreviated ref (T4.3.8)', async () => {
+    // `repair.ref` traces back to the implementing session's own reported
+    // ref, which is never run through `reconcileRef` the way a reviewer's is
+    // — "a seven-character ref matches nothing" is why that reconciliation
+    // exists at all. An implementer that reports an abbreviated SHA for the
+    // very commit git is already on must not make a rework session that
+    // commits nothing look like it stranded work: the comparison has to be
+    // against git's own read of the branch tip, not against what a session
+    // typed.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const head = git(repo, ['rev-parse', 'HEAD']);
+
+    const change = {
+      // Abbreviated, as a session can and does write one — matching `head`
+      // exactly, so there is nothing here for a rework round to add to.
+      ref: head.slice(0, 7),
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const reject = {
+      ref: head,
+      verdict: 'request-changes' as const,
+      summary: 'no',
+      findings: [
+        { file: 'README.md', concern: 'no', remedy: 'yes', severity: 'blocker' as const },
+      ],
+      deviations: [],
+    };
+    // Killed, and this time genuinely nothing new: the worktree is left
+    // exactly where the first round's commit left it.
+    const killedNoCommits: SessionResult = {
+      termination: 'budget_exceeded',
+      structuredOutput: undefined,
+      usage: { inputTokens: 4000, outputTokens: 2000, costUsd: 8.0142675 },
+      turns: 40,
+      denials: [],
+      errorMessage: 'session exceeded its cost budget',
+      durationMs: 120000,
+      apiDurationMs: 95000,
+    };
+
+    let calls = 0;
+    const provider: AgentSessionProvider = {
+      run(): Promise<SessionResult> {
+        const index = calls;
+        calls += 1;
+        if (index === 0) {
+          return Promise.resolve(
+            scriptedSuccess(change, {
+              usage: { inputTokens: 500, outputTokens: 250, costUsd: 0.5 },
+            }),
+          );
+        }
+        if (index === 1) {
+          return Promise.resolve(scriptedSuccess(reject));
+        }
+        if (index === 2) {
+          return Promise.resolve(killedNoCommits);
+        }
+        throw new Error('ran out of scripted results');
+      },
+    };
+
+    const published: { branch: string; ref: string }[] = [];
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 2,
+        publish: (branch, ref) => {
+          published.push({ branch, ref });
+          return Promise.resolve();
+        },
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toMatch(/session terminated: budget_exceeded/);
+      // No stranded-work clause at all: the killed round added nothing, so
+      // there is nothing to say it committed or pushed.
+      expect(result.reason).not.toMatch(/already committed up to/);
+      expect(result.reason).not.toMatch(/pushed for review/);
+      expect(result.reason).not.toMatch(/left in the worktree/);
+      expect(result.ref).toBe(head);
+
+      // The only push in this run is the very first one, at the top of the
+      // loop, of the abbreviated ref the implementer itself reported — not a
+      // second one manufactured by comparing the killed round's tip against
+      // that abbreviation.
+      expect(published).toHaveLength(1);
+      expect(published[0]?.ref).toBe(change.ref);
+    } finally {
+      log.close();
+    }
+  });
+
   it('records the commit a reviewer named, not the abbreviation it wrote', async () => {
     // The log is what a later run reads to carry findings forward, and it held
     // whatever string the reviewer typed. T4.1.6's blocking review recorded
