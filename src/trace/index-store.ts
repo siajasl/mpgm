@@ -9,6 +9,7 @@ import {
   type CommitLinks,
   type CommitRecord,
   type ExtractedLinks,
+  type Retraction,
   type TraceLink,
   type TraceNode,
 } from './links.js';
@@ -34,6 +35,17 @@ export interface CoverageRow {
   readonly verifiedBy: readonly string[];
   /** Nodes that merely cite it. */
   readonly tracedBy: readonly string[];
+  /**
+   * Claims about this requirement withdrawn by a later commit (T4.3.12).
+   *
+   * Reported whether or not the withdrawal matched a claim: a
+   * `Retracts-Verifies:` naming a commit that never claimed this id has still
+   * been written by somebody, and dropping it from the report would be the
+   * silent-disappearance this field exists to prevent. Each row says who
+   * withdrew the claim and why, so a figure that moved downward can be
+   * judged rather than merely trusted (HIL-5).
+   */
+  readonly retractions: readonly Retraction[];
   readonly verified: boolean;
 }
 
@@ -128,6 +140,7 @@ export class TraceIndex {
   forget(source: string): void {
     this.#db.prepare('DELETE FROM trace_nodes WHERE source = ?').run(source);
     this.#db.prepare('DELETE FROM trace_links WHERE source = ?').run(source);
+    this.#db.prepare('DELETE FROM trace_retractions WHERE source = ?').run(source);
   }
 
   indexArtifact(artifact: Artifact): void {
@@ -153,7 +166,18 @@ export class TraceIndex {
    */
   indexCommit(commit: CommitRecord): CommitLinks['reports'] {
     const extracted = extractCommitLinks(commit);
+    // `#replace` forgets this source first, so the retractions this commit
+    // wrote are re-read here rather than accumulated — the same rule the
+    // links follow, and what makes re-reading one commit produce the table a
+    // full rebuild would.
     this.#replace(commit.sha, extracted);
+    const retraction = this.#db.prepare(
+      `INSERT OR REPLACE INTO trace_retractions
+         (claim_source, id, author, why, source) VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const entry of extracted.retractions) {
+      retraction.run(entry.claimSource, entry.id, entry.author, entry.why, commit.sha);
+    }
     return extracted.reports;
   }
 
@@ -170,7 +194,8 @@ export class TraceIndex {
   /** Throw the index away. It is derived; nothing is lost. */
   clear(): void {
     this.#db.exec(
-      'DELETE FROM trace_nodes; DELETE FROM trace_links; DELETE FROM trace_meta;',
+      'DELETE FROM trace_nodes; DELETE FROM trace_links; ' +
+        'DELETE FROM trace_retractions; DELETE FROM trace_meta;',
     );
   }
 
@@ -302,7 +327,43 @@ export class TraceIndex {
           WHERE dst = ? AND relation = 'verifies' ORDER BY src`,
       )
       .all(id) as unknown as { src: string }[];
-    return rows.map((row) => row.src);
+    const withdrawn = this.retractionsOf(id);
+    // Matched by prefix because a retraction names the claim the way a person
+    // reads a commit — `627e6cd` — while the link carries the full sha. The
+    // pattern requires seven hex characters, git's own abbreviation floor, so
+    // this cannot collapse two commits an author meant to keep apart.
+    return rows
+      .map((row) => row.src)
+      .filter((src) => !withdrawn.some((entry) => src.startsWith(entry.claimSource)));
+  }
+
+  /**
+   * Withdrawals recorded against this requirement (T4.3.12).
+   *
+   * Every one, including a withdrawal naming a commit that never claimed the
+   * id — see {@link CoverageRow.retractions} for why an unmatched one is
+   * still reported rather than dropped.
+   */
+  retractionsOf(id: string): readonly Retraction[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT claim_source, id, author, why, source FROM trace_retractions
+          WHERE id = ? ORDER BY source, claim_source`,
+      )
+      .all(id) as unknown as {
+      claim_source: string;
+      id: string;
+      author: string;
+      why: string;
+      source: string;
+    }[];
+    return rows.map((row) => ({
+      claimSource: row.claim_source,
+      id: row.id,
+      by: row.source,
+      author: row.author,
+      why: row.why,
+    }));
   }
 
   /**
@@ -324,6 +385,7 @@ export class TraceIndex {
           .filter((link) => link.relation === 'traces-to')
           .map((link) => link.src)
           .filter((src, index, all) => all.indexOf(src) === index),
+        retractions: this.retractionsOf(id),
         verified: verifiedBy.length > 0,
       };
     });

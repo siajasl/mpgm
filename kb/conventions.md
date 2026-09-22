@@ -39,4 +39,7 @@ reviewer judges. If a convention is wrong, say so — do not work around it.
   all record what a change serves; `Verifies:` is the only one
   `TraceIndexStore.coverage()` counts toward a requirement's TST-2 test
   coverage, so a check recorded under the wrong trailer reports as unverified
-  however real the test was.
+  however real the test was. A claim later found untrue is withdrawn by a
+  later commit's `Retracts-Verifies: <sha>:<id>`, never edited out of the
+  commit that made it — the index is derived and history is not rewritten,
+  and the report names who withdrew the claim and why (T4.3.12).

@@ -237,7 +237,14 @@ describe('runNfrSuite', () => {
 });
 
 function graphRow(id: string, overrides: Partial<CoverageRow> = {}): CoverageRow {
-  return { id, verifiedBy: [], tracedBy: [], verified: false, ...overrides };
+  return {
+    id,
+    verifiedBy: [],
+    tracedBy: [],
+    retractions: [],
+    verified: false,
+    ...overrides,
+  };
 }
 
 describe('requirementCoverageReport (TST-2 + TST-3)', () => {

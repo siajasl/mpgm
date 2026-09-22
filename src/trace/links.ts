@@ -215,6 +215,16 @@ export interface CommitRecord {
   readonly sha: string;
   readonly subject: string;
   readonly body: string;
+  /**
+   * Who authored the commit, `Name <email>`.
+   *
+   * Read for retractions and nothing else (see {@link Retraction}): a claim
+   * withdrawn by somebody unnamed is a figure moving for no reason anybody
+   * can check. Optional so that a caller building a `CommitRecord` by hand —
+   * every test fixture in this repository, and `demo:trace` — is not forced
+   * to invent an author for a commit whose authorship it is not testing.
+   */
+  readonly author?: string;
 }
 
 /**
@@ -240,7 +250,42 @@ export interface UnrecognisedTrailer {
   readonly sha: string;
 }
 
+/**
+ * A `Verifies:` claim withdrawn by a later commit (TST-2, T4.3.12).
+ *
+ * The index is derived and rebuildable, so nothing here edits the commit that
+ * made the claim: history is not rewritten, and the claim stays exactly where
+ * its author wrote it. A retraction is a row read out of a *later* commit,
+ * which is why a full rebuild and an incremental update produce the same
+ * table — both re-read the same two commits and reach the same answer.
+ *
+ * Keyed by `claimSource` as well as `id` because that is how a `verifies`
+ * link is keyed. `Verifies: TST-1, TST-2, TST-5` on one commit is three
+ * claims, and `627e6cd` is a real case where two were false and the third was
+ * true; a retraction naming only the requirement would take the true one with
+ * it, and a retraction naming only the commit would take all three.
+ *
+ * `author` and `why` are what stop this being a way to launder a figure
+ * downward. A retraction anybody can write is only safe if the report says
+ * who wrote it and on what grounds — the standard an operator override
+ * already meets (HIL-5) — so both travel with the row and `coverage` shows
+ * them.
+ */
+export interface Retraction {
+  /** The commit whose `Verifies:` claim is withdrawn, as the trailer spelled it. */
+  readonly claimSource: string;
+  /** The requirement id withdrawn. */
+  readonly id: string;
+  /** The commit that withdrew it. */
+  readonly by: string;
+  /** Who authored that commit, or `''` when the caller supplied no author. */
+  readonly author: string;
+  /** Why, taken from the withdrawing commit's subject. */
+  readonly why: string;
+}
+
 export interface CommitLinks extends ExtractedLinks {
+  readonly retractions: readonly Retraction[];
   readonly reports: {
     readonly unindexed: readonly UnindexedTrailerValue[];
     readonly unrecognised: readonly UnrecognisedTrailer[];
@@ -265,6 +310,45 @@ const TRAILER_RELATIONS: Readonly<Record<string, TraceRelation>> = {
   // *implements* a requirement is not evidence that anything checks it.
   verifies: 'verifies',
 };
+
+/**
+ * The trailer that withdraws a `Verifies:` claim (T4.3.12).
+ *
+ * Not in {@link TRAILER_RELATIONS} because it is not a relation: it adds no
+ * edge to the graph, it annotates one somebody else already wrote. Kept as
+ * its own key so a commit can withdraw a claim without the withdrawal itself
+ * reading as a claim.
+ */
+const RETRACTS_VERIFIES_KEY = 'retracts-verifies';
+
+/**
+ * What a `Retracts-Verifies:` value looks like: `<sha>:<id>`.
+ *
+ * Seven hex characters at least, because that is git's own abbreviation
+ * floor and a shorter prefix would match commits its author never read. The
+ * prefix is matched against the claim's full sha where the retraction is
+ * applied, so `627e6cd:TST-1` withdraws the claim `627e6cd…` made about
+ * TST-1 and nothing else.
+ */
+const RETRACTION_VALUE_PATTERN = /^([0-9a-f]{7,40}):(.+)$/;
+
+/**
+ * Read a `Retracts-Verifies:` value, or null if it is not one.
+ *
+ * Null rather than a throw: a malformed value is reported as an unindexed
+ * trailer value the same way a malformed `Traces:` value is, which keeps a
+ * typo visible instead of failing the whole index over one commit.
+ */
+function parseRetractionValue(raw: string): { sha: string; id: string } | null {
+  const match = RETRACTION_VALUE_PATTERN.exec(raw.trim());
+  const sha = match?.[1];
+  const id = match?.[2];
+  if (sha === undefined || id === undefined) {
+    return null;
+  }
+  const stripped = stripTrailingPunctuation(id.trim());
+  return looksLikeId(stripped) ? { sha, id: stripped } : null;
+}
 
 /**
  * Trailing punctuation a sentence puts after a citation but that is never
@@ -361,6 +445,14 @@ function paragraphsOf(body: string): string[][] {
  * but only when it carries a value that looks like an id — `Co-Authored-By`
  * and `Signed-off-by` never do, so a commit carrying only those trailers
  * reports nothing.
+ *
+ * `Retracts-Verifies: <sha>:<id>` withdraws a `Verifies:` claim an earlier
+ * commit made (T4.3.12). It adds no edge — it names one — and comes back in
+ * `retractions` rather than `links`, because the graph gains nothing from a
+ * claim being taken back and the coverage figure gains everything. A value
+ * that is not `<sha>:<id>` shaped is reported as unindexed, the same as a
+ * malformed `Traces:` value: a typo stays visible rather than failing the
+ * index over one commit.
  */
 export function extractCommitLinks(commit: CommitRecord): CommitLinks {
   const node: TraceNode = {
@@ -369,6 +461,7 @@ export function extractCommitLinks(commit: CommitRecord): CommitLinks {
     label: commit.subject,
   };
   const links: TraceLink[] = [];
+  const retractions: Retraction[] = [];
   const unindexed: UnindexedTrailerValue[] = [];
   const unrecognised: UnrecognisedTrailer[] = [];
   const unrecognisedKeysSeen = new Set<string>();
@@ -395,6 +488,22 @@ export function extractCommitLinks(commit: CommitRecord): CommitLinks {
         if (raw === '') {
           continue;
         }
+        if (key === RETRACTS_VERIFIES_KEY) {
+          const parsed = parseRetractionValue(raw);
+          if (parsed === null) {
+            unindexed.push({ key: rawKey, value: raw, sha: commit.sha });
+          } else {
+            retractions.push({
+              claimSource: parsed.sha,
+              id: parsed.id,
+              by: commit.sha,
+              author: commit.author ?? '',
+              why: commit.subject,
+            });
+          }
+          continue;
+        }
+
         const stripped = stripTrailingPunctuation(raw);
         const idShaped = looksLikeId(stripped);
 
@@ -415,5 +524,10 @@ export function extractCommitLinks(commit: CommitRecord): CommitLinks {
     }
   }
 
-  return { nodes: [node], links, reports: { unindexed, unrecognised } };
+  return {
+    nodes: [node],
+    links,
+    retractions,
+    reports: { unindexed, unrecognised },
+  };
 }
