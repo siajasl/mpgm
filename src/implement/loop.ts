@@ -308,15 +308,33 @@ export function reviewPrompt(
 }
 
 /**
- * What the implementer role spent on this task's *last* round — the most
- * recent `TaskDispatched` for the task and every `SessionUsage` after it —
- * read off the event log rather than off a table of prices the kernel does
- * not have (`estimateEscalatedCostUsd`, `agent/models.ts`).
+ * What the implementer role spent on this task's *last round* — every
+ * `SessionUsage` for the task since the last `ChangeReviewed` that closed a
+ * round, or since the beginning of the task if none has closed yet — read
+ * off the event log rather than off a table of prices the kernel does not
+ * have (`estimateEscalatedCostUsd`, `agent/models.ts`).
+ *
+ * A round, not a dispatch. The two are not the same thing: `track('repair',
+ * ...)` (`repairUntilGreen`'s callback, above) dispatches a CI-repair session
+ * under this same `taskId`, writing its own `TaskDispatched`, and a round
+ * that went red on CI and was repaired is still one round — the repair is
+ * the round finishing, not a new one starting. An earlier revision of this
+ * function reset its accumulator on every `TaskDispatched` for the task,
+ * which measured the last *dispatch* rather than the last *round*: a $3.00
+ * rework round followed by a $0.05 repair reported an estimate of $0.40,
+ * the guard below passed, and the escalated round dispatched on the full
+ * allowance — the exact outcome this function exists to keep the guard
+ * from missing. `ChangeReviewed` is what the loop appends once per round,
+ * after CI is green and the reviewer has seen the result (`track('review',
+ * ...)`, above), so it is the boundary a repair dispatch never crosses and
+ * a fresh round always does.
  *
  * Every session this loop dispatches for the task carries `taskId: task.id`
  * except a review, which runs under `${task.id}-review[-n]` (see `track`
  * above) — so filtering on `task.id` alone already excludes the reviewer's
- * own spend, with no need to filter on role as well.
+ * own spend, and `ChangeReviewed` itself is recorded under `task.id`
+ * (`changeReviewed`, `implement/merge.ts`), not under the review's own id,
+ * so the same filter finds the round boundary too.
  *
  * The preceding round rather than an average over every round the task has
  * run, because `ESCALATION_COST_MULTIPLIER` is a ratio between two adjacent
@@ -332,20 +350,22 @@ export function reviewPrompt(
  * round; the firing rate that followed is the difference between guarding
  * the escalated round and retiring it.
  *
- * Retries inside a round count toward it: `SessionRunner.runTask` writes one
- * `TaskDispatched` and one `SessionUsage` per validation attempt, and those
- * attempts share one ledger, so what "the round cost" means at the cap is
- * the sum over them.
+ * Retries inside a dispatch count toward it too: `SessionRunner.runTask`
+ * writes one `TaskDispatched` and one `SessionUsage` per validation
+ * attempt, and those attempts share one ledger, so what "the round cost"
+ * means at the cap is the sum over every attempt of every dispatch the
+ * round made.
  */
 function implementerPrecedingRoundCostUsd(
   events: readonly StoredEvent[],
   runId: string,
   taskId: string,
 ): number {
-  // Reset rather than accumulated across dispatches: what survives the loop
-  // is the spend recorded after the last `TaskDispatched` seen.
   let costUsd = 0;
   let dispatched = false;
+  // Starts open: the task's first dispatch begins its first round rather
+  // than continuing one that was never seen.
+  let roundOpen = true;
   for (const event of events) {
     if (event.runId !== runId) {
       continue;
@@ -355,7 +375,19 @@ function implementerPrecedingRoundCostUsd(
       (event.payload as { taskId: string }).taskId === taskId
     ) {
       dispatched = true;
-      costUsd = 0;
+      // Reset only when this dispatch opens a fresh round — the one right
+      // after the last round's `ChangeReviewed` closed it. A dispatch that
+      // lands while the round is still open (a repair, mid-round) adds to
+      // what that round has already spent instead of starting a new count.
+      if (roundOpen) {
+        costUsd = 0;
+        roundOpen = false;
+      }
+    } else if (
+      event.type === 'ChangeReviewed' &&
+      (event.payload as { taskId: string }).taskId === taskId
+    ) {
+      roundOpen = true;
     } else if (
       dispatched &&
       event.type === 'SessionUsage' &&

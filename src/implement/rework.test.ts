@@ -37,6 +37,10 @@ const GREEN: CheckRun[] = [
   { name: 'scan', status: 'completed', conclusion: 'success', url: '' },
 ];
 
+const RED: CheckRun[] = GREEN.map((run) =>
+  run.name === 'scan' ? { ...run, conclusion: 'failure' as const } : run,
+);
+
 function request(overrides: Partial<MergeDecisionRequest> = {}): MergeDecisionRequest {
   return {
     taskId: 'T1',
@@ -1730,6 +1734,96 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('measures the whole round a CI repair finished, not the repair dispatch alone (T4.3.8)', async () => {
+    // `implementerPrecedingRoundCostUsd` used to reset its accumulator on
+    // every `TaskDispatched` for the task, and `repairUntilGreen`'s own
+    // repair session dispatches under that same task id (`track('repair',
+    // ...)`, `loop.ts`) — so a round that went red on CI and was repaired
+    // cheaply reported the repair's spend alone as "the preceding round".
+    // Here the round itself cost $3 and the repair that finished it $0.05:
+    // the repair-alone estimate is $0.40 (well under the implementer's $8,
+    // so the guard would let the escalated round through), and the
+    // round's real cost of $3.05 estimates $24.40 (comfortably over it, so
+    // the guard has to refuse). Only the second is right.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const implementerRole = RoleRegistry.fromDirectory(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+    ).get('implementer');
+    const escalated = escalateModel(implementerRole.model);
+    expect(escalated).not.toBe(implementerRole.model);
+
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const reject = scriptedSuccess({
+      ref: head,
+      verdict: 'request-changes',
+      summary: 'no',
+      findings: [
+        { file: 'README.md', concern: 'no', remedy: 'yes', severity: 'blocker' },
+      ],
+      deviations: [],
+    });
+
+    const provider = new ScriptedProvider([
+      // The round itself: an expensive implementing session...
+      scriptedSuccess(change, {
+        usage: { inputTokens: 3000, outputTokens: 1500, costUsd: 3 },
+      }),
+      // ...that goes red on CI and is repaired cheaply — the round
+      // finishing, not a new one starting.
+      scriptedSuccess(change, {
+        usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.05 },
+      }),
+      // The review that sends the now-green round back, at the cap — the
+      // guard runs before the next (escalated) round would dispatch.
+      reject,
+    ]);
+
+    let checksCalls = 0;
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 2,
+        checks: (ref) => {
+          checksCalls += 1;
+          return Promise.resolve(
+            mergeVerdict({ ref, runs: checksCalls === 1 ? RED : GREEN }),
+          );
+        },
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('refused before dispatch');
+      expect(result.reason).toContain(escalated);
+      // The round's real cost — implementing session plus repair — not the
+      // repair's alone.
+      expect(result.reason).toContain('$3.0500');
+
+      const budgetEvents = log
+        .read()
+        .filter((event) => event.type === 'BudgetExceeded')
+        .map((event) => (event.payload as { kind: string }).kind);
+      expect(budgetEvents).toContain('escalation');
+    } finally {
+      log.close();
+    }
+  });
+
   it('neither escalates nor refuses the declaration round the cap buys (T4.2.4, T4.3.8)', async () => {
     // The declaration round is granted by adding one to `attempts`, which
     // makes `round === attempts - 1` true of the round it just bought — so
@@ -1814,6 +1908,115 @@ describe('a review that never approves (NFR-1)', () => {
         )
         .map((event) => (event.payload as { model: string }).model);
       expect(models).toEqual([implementerRole.model, implementerRole.model]);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('does not escalate a declaration round earned below the cap, even though its round number coincides with the final one (T4.2.13, T4.3.8)', async () => {
+    // A second, unrelated way for `round === attempts - 1` to be true of a
+    // declaration round: not because the cap bought it an extra round (the
+    // test above), but because it happened to land, on its own arithmetic,
+    // at the round right before the cap — `maxReviewAttempts: 3`, granted at
+    // round 2, with `attempts` never incremented. T4.2.13 escalated on that
+    // arithmetic alone, so a declaration round in this position escalated
+    // before this task and the guard below could then refuse to fund a
+    // change the reviewer had already approved, over a signature. The
+    // round that precedes it is made expensive enough ($2, so 8x is $16
+    // against the implementer's $8) that an escalation attempt here would
+    // certainly be refused — so this either merges clean or blocks on
+    // `BudgetExceeded{kind: 'escalation'}`, and only the first is right.
+    const repo = newRepo();
+    const head = git(repo, ['rev-parse', 'HEAD']);
+    const implementerRole = RoleRegistry.fromDirectory(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'roles'),
+    ).get('implementer');
+    expect(escalateModel(implementerRole.model)).not.toBe(implementerRole.model);
+
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const reject = {
+      ref: head,
+      verdict: 'request-changes' as const,
+      summary: 'no',
+      findings: [
+        { file: 'README.md', concern: 'no', remedy: 'yes', severity: 'blocker' as const },
+      ],
+      deviations: [],
+    };
+    const approvingWithCONV6 = () =>
+      scriptedSuccess({
+        ref: head,
+        verdict: 'approve',
+        summary: 'good',
+        findings: [],
+        deviations: [{ convention: 'CONV-6', where: 'the branch' }],
+      });
+    const provider = new ScriptedProvider([
+      // Round 1: a genuine rejection, not a declaration round.
+      scriptedSuccess(change),
+      scriptedSuccess(reject),
+      // Round 1's fix — the round the guard would measure against, priced
+      // high enough that an escalation attempt on the next round would be
+      // refused.
+      scriptedSuccess(change, {
+        usage: { inputTokens: 1000, outputTokens: 500, costUsd: 2 },
+      }),
+      // Round 2: approved, but reporting a convention nothing declared —
+      // granted below the cap (round 2 of 3), so no extension is spent.
+      approvingWithCONV6(),
+      // The declaration round itself: the sentence, and nothing else.
+      scriptedSuccess({
+        ...change,
+        deviations: [{ convention: 'CONV-6', why: 'declared' }],
+      }),
+      approvingWithCONV6(),
+    ]);
+
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        maxReviewAttempts: 3,
+      });
+
+      expect(result.status).toBe('merged');
+      expect(
+        log
+          .read()
+          .filter((event) => event.type === 'BudgetExceeded')
+          .map((event) => (event.payload as { kind: string }).kind),
+      ).toEqual([]);
+
+      const models = log
+        .read()
+        .filter(
+          (event) =>
+            event.type === 'TaskDispatched' &&
+            (event.payload as { taskId: string; role: string }).taskId === 'T1' &&
+            (event.payload as { taskId: string; role: string }).role === 'implementer',
+        )
+        .map((event) => (event.payload as { model: string }).model);
+      // Three implementer dispatches — the opening session, round 1's fix,
+      // and the declaration round — none escalated.
+      expect(models).toEqual([
+        implementerRole.model,
+        implementerRole.model,
+        implementerRole.model,
+      ]);
     } finally {
       log.close();
     }
@@ -1976,6 +2179,134 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it('names a pause as why stranded work was not pushed, rather than claiming no publish was configured (T4.3.8)', async () => {
+    // The third way the block message can end, and the one still untested:
+    // `publish` *is* configured for this run — unlike the test below — but
+    // an operator's pause landed on the killed session while it was still
+    // in flight, after `track` last checked and before the loop could push
+    // what it committed. That race needs its own words: a paused run is
+    // resumed, an unconfigured publish is pushed by hand, and telling an
+    // operator the wrong one sends them to fix something that was never
+    // broken.
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const head = git(repo, ['rev-parse', 'HEAD']);
+
+    const change = {
+      ref: head,
+      summary: 'done',
+      files: ['README.md'],
+      tests: [],
+      complete: true,
+      remaining: '',
+      deviations: [],
+    };
+    const reject = {
+      ref: head,
+      verdict: 'request-changes' as const,
+      summary: 'no',
+      findings: [
+        { file: 'README.md', concern: 'no', remedy: 'yes', severity: 'blocker' as const },
+      ],
+      deviations: [],
+    };
+    const killedAtCap: SessionResult = {
+      termination: 'budget_exceeded',
+      structuredOutput: undefined,
+      usage: { inputTokens: 4000, outputTokens: 2000, costUsd: 1 },
+      turns: 40,
+      denials: [],
+      errorMessage: 'session exceeded its cost budget',
+      durationMs: 120000,
+      apiDurationMs: 95000,
+    };
+
+    let stranded: string | undefined;
+    let calls = 0;
+    const provider: AgentSessionProvider = {
+      run(): Promise<SessionResult> {
+        const index = calls;
+        calls += 1;
+        if (index === 0) {
+          return Promise.resolve(
+            scriptedSuccess(change, {
+              usage: { inputTokens: 500, outputTokens: 250, costUsd: 0.5 },
+            }),
+          );
+        }
+        if (index === 1) {
+          return Promise.resolve(scriptedSuccess(reject));
+        }
+        if (index === 2) {
+          // Real work, committed before the session was killed — same as
+          // the first test above.
+          writeFileSync(join(worktrees.pathFor('T1'), 'paused.txt'), 'in flight\n');
+          git(worktrees.pathFor('T1'), ['add', '--all']);
+          git(worktrees.pathFor('T1'), [
+            'commit',
+            '-m',
+            'work in flight when the pause landed',
+          ]);
+          stranded = git(worktrees.pathFor('T1'), ['rev-parse', 'HEAD']);
+          // The pause lands while this session is still running — after
+          // `track`'s own pre-dispatch check last read the run's control,
+          // before its result comes back to the loop.
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: { action: 'pause', detail: '' },
+          });
+          return Promise.resolve(killedAtCap);
+        }
+        throw new Error('ran out of scripted results');
+      },
+    };
+
+    const published: { branch: string; ref: string }[] = [];
+    const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+    log.append({
+      runId: 'r',
+      type: 'RunStarted',
+      payload: { project: 'mpgm', operator: 'op' },
+    });
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 2,
+        publish: (branch, ref) => {
+          published.push({ branch, ref });
+          return Promise.resolve();
+        },
+      });
+
+      expect(stranded).toBeDefined();
+      expect(stranded).not.toBe(head);
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toMatch(/session terminated: budget_exceeded/);
+      expect(result.reason).toContain(
+        `already committed up to ${String(stranded)} on ${worktrees.branchFor('T1')}`,
+      );
+      expect(result.reason).toContain(
+        `left in the worktree at ${worktrees.pathFor('T1')}`,
+      );
+      // Named as a pause — publish was configured for this run, so telling
+      // the operator none was would be wrong.
+      expect(result.reason).toContain('the run was paused before it could be published');
+      expect(result.reason).toContain('resume the run, or push that branch by hand');
+      expect(result.reason).not.toMatch(/no publish was configured/);
+      expect(result.ref).toBe(stranded);
+
+      // Not pushed: the pause landed before the loop's own publish call for
+      // this round could run.
+      expect(published.some((entry) => entry.ref === stranded)).toBe(false);
+    } finally {
+      log.close();
+    }
+  });
+
   it('reports stranded work as left in the worktree rather than pushed, when nothing publishes it (T4.3.8)', async () => {
     // The other race the block message has to get right: the killed session
     // above still committed real work, but this run has no `publish` at all
@@ -2070,7 +2401,13 @@ describe('a review that never approves (NFR-1)', () => {
       // The work is real and the message says so, but it does not claim a
       // push nothing here performed.
       expect(result.reason).toContain(`already committed up to ${String(stranded)}`);
-      expect(result.reason).not.toMatch(/pushed for review/);
+      // Never claims the push this run never made. The literal adjacency
+      // "pushed for review" matches neither this message nor the pushed
+      // one above — it is the actual substring the code emits, `pushed to
+      // <branch> for review`, that the two have to differ on.
+      expect(result.reason).not.toContain(
+        `pushed to ${worktrees.branchFor('T1')} for review`,
+      );
       // Names where the operator can still find it, and why it is not on
       // the branch, rather than leaving the gap silent.
       expect(result.reason).toContain(
@@ -2175,7 +2512,9 @@ describe('a review that never approves (NFR-1)', () => {
       // No stranded-work clause at all: the killed round added nothing, so
       // there is nothing to say it committed or pushed.
       expect(result.reason).not.toMatch(/already committed up to/);
-      expect(result.reason).not.toMatch(/pushed for review/);
+      expect(result.reason).not.toContain(
+        `pushed to ${worktrees.branchFor('T1')} for review`,
+      );
       expect(result.reason).not.toMatch(/left in the worktree/);
       expect(result.ref).toBe(head);
 

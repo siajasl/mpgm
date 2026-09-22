@@ -72,7 +72,7 @@ function checksReported(runId: string, taskId: string, mergeable: boolean): Even
 function budgetExceeded(
   runId: string,
   taskId: string,
-  kind: 'tokens' | 'cost' | 'steps' | 'wallClock' | 'repairs' | 'reviews',
+  kind: 'tokens' | 'cost' | 'steps' | 'wallClock' | 'repairs' | 'reviews' | 'escalation',
 ): EventInput {
   return {
     runId,
@@ -182,6 +182,25 @@ describe('computeGateRates — merge gate', () => {
     expect(rates.mergeGate.attempts).toBe(2);
     expect(rates.mergeGate.refusals).toBe(2);
     expect(rates.mergeGate.budgetExhausted).toBe(2);
+  });
+
+  it('counts BudgetExceeded{escalation} as budgetExhausted, without doubling the refusal it followed (T4.3.8)', () => {
+    // `escalation` is `loop.ts`'s own refusal of a rework round it cannot
+    // fund (T4.3.8): the reviewer's `ChangeReviewed` that sent the round
+    // back is the merge-gate refusal, and the `BudgetExceeded` that follows
+    // it — the guard declining to dispatch — is a second event about the
+    // same refusal, not a second one.
+    const events = logWith([
+      runStarted('r1'),
+      changeReviewed('r1', 'T1', false), // changes-requested — the refusal
+      budgetExceeded('r1', 'T1', 'escalation'), // the guard refused to fund it
+    ]);
+
+    const rates = computeGateRates('r1', events);
+
+    expect(rates.mergeGate.attempts).toBe(1);
+    expect(rates.mergeGate.refusals).toBe(1);
+    expect(rates.mergeGate.budgetExhausted).toBe(1);
   });
 });
 
