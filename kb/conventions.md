@@ -28,3 +28,14 @@ reviewer judges. If a convention is wrong, say so — do not work around it.
   ADR-2). Narrowing, renaming or removing one in place makes every log already
   written unreadable, and an unreadable log is state that cannot be folded —
   which is every command the kernel has.
+- **CONV-8** A commit trailer only counts if it sits in a paragraph of its
+  own, where every line is `Key: value` shaped, set apart from prose by a
+  blank line above (T4.2.11, ADR-4). A `Key: value` line that opens a wrapped
+  sentence inside a prose paragraph is not read as a claim, however true the
+  sentence is.
+- **CONV-9** Write `Verifies:` on the commit that checks a requirement, not
+  merely serves it. `Traces:` / `Traces-To:` / `Implements:` / `Closes-Task:`
+  all record what a change serves; `Verifies:` is the only one
+  `TraceIndexStore.coverage()` counts toward a requirement's TST-2 test
+  coverage, so a check recorded under the wrong trailer reports as unverified
+  however real the test was.
