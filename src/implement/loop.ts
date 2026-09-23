@@ -957,9 +957,46 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
           observed: round,
         },
       });
+      // Two different facts leave through here, and until T4.3.10 they left
+      // saying the same thing. A reviewer that asked for changes refused the
+      // change. A reviewer that approved it and named a convention the
+      // author had not declared did not: T4.3.3 ended on "the review still
+      // refuses the change after 4 attempt(s)" with both of the
+      // `ChangeReviewed` events it ended on carrying `approved: true` —
+      // eight sessions and $16.84 closing on a sentence no reviewer said.
+      //
+      // This sentence is what the CLI prints, what `TaskBlocked` stores and
+      // what the dashboard shows, and it is read first by an operator
+      // deciding what to do next. A change held for want of a signature and
+      // a change the gate turned down want different next moves, the same
+      // distinction T4.2.15 drew for an operator override (HIL-5).
+      //
+      // It still blocks, and that is a choice rather than an oversight.
+      // Merging with the deviation recorded against the change is the
+      // silent introduction IMP-4 refuses — nothing downstream reads that
+      // record as a flag, so recording it would be the flag going
+      // unraised. "Go to the operator" is what blocking already is here: a
+      // blocked task is the thing an operator looks at, and `redirect` is
+      // the verb that answers it. What was wrong was never the outcome, it
+      // was the account of it.
+      //
+      // The merge-gate refusal rate is deliberately untouched.
+      // `computeGateRates` counts an approving review carrying an
+      // undeclared deviation as a refusal because the loop dispatches a
+      // fresh session on it, which is a decision T4.2.2a made with its
+      // reason stated; `BudgetExceeded` adds no count of its own there, so
+      // nothing below changes a figure.
       return stop(
-        `the review still refuses the change after ${String(attempts)} attempt(s): ` +
-          decision.reasons.join('; '),
+        wantsDeclaration
+          ? `the review approved this change and it is held for want of a ` +
+              `declaration: it reports the change departing from ` +
+              `${undeclared.join('; ')}, which the author's result does not ` +
+              `declare, and the one declaration round this task is granted was ` +
+              `already spent. No reviewer refused it. Declaring means the ` +
+              `\`deviations\` field of the result; an operator who judges the ` +
+              `departure acceptable can say so with \`mpgm redirect\` and re-run.`
+          : `the review still refuses the change after ${String(attempts)} attempt(s): ` +
+              decision.reasons.join('; '),
         { ref: repair.ref, review, repair },
       );
     }
