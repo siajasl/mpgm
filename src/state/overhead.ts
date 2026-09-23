@@ -261,7 +261,7 @@ import type { RunState } from './kernel-state.js';
  * the long-running process behind that log predates it, so nothing yet
  * brackets context assembly for it. `coverage` reads `0/25`, not `0/90`: 65
  * of the 90 otherwise-settled task ids in this log are review-session ids
- * (`isReviewSessionTaskId`), excluded from the population `ratio` could ever
+ * (`isSessionOnlyTaskId`), excluded from the population `ratio` could ever
  * rest on (see that function's own doc). `observedMs` alone is already
  * informative: merging that run's settled tasks' own *round* intervals
  * (idle rule at its default, mid-round abandonment splits applied, every
@@ -328,12 +328,13 @@ export interface HarnessOverheadComponents {
   /** Settled tasks with at least one round that carries a `ContextAssembled` event. */
   readonly instrumentedTaskCount: number;
   /**
-   * Every settled task this run, instrumented or not, excluding review-
-   * session task ids (`isReviewSessionTaskId`) — coverage's denominator. A
-   * review session can never carry a `ContextAssembled` of its own, so
-   * counting one here would understate `coverage` by a fraction `ratio`
-   * could never have measured regardless (this run's own log: 65 such ids
-   * among 90 otherwise-settled ones).
+   * Every settled task this run, instrumented or not, excluding session-
+   * only task ids (`isSessionOnlyTaskId`) — a review round's own id or a
+   * conflict-resolution catchup's own — from coverage's denominator. Neither
+   * can ever carry a `ContextAssembled` of its own, so counting one here
+   * would understate `coverage` by a fraction `ratio` could never have
+   * measured regardless (this run's own log: 65 review-session ids among 90
+   * otherwise-settled ones).
    */
   readonly settledTaskCount: number;
   /**
@@ -463,40 +464,46 @@ interface TaskIdPayload {
 }
 
 /**
- * A review session's own `taskId` — `${task.id}-review` for the first round,
- * `${task.id}-review-${round}` for every rework round after it
- * (`implement/loop.ts`'s own `reviewTaskId`). Each is dispatched directly
- * through `track`, never through the `assembleContext` call that precedes
- * the *implementing* session, so a review-session id can never carry a
- * `ContextAssembled` of its own — not today, and not by any narrower fix,
- * only by `implement/loop.ts` growing a second call site. Settled review-
- * session ids are excluded from `settledTaskCount`/`instrumentedTaskCount`
- * (coverage's population) for exactly that reason: counting them dilutes
- * `coverage` by a fraction that says nothing about what `ratio` could ever
- * measure. This run's own log has 65 such ids among 90 otherwise-settled
- * ones — coverage of 0/25, not 0/90. They still contribute their own real
+ * A session-only `taskId` — one `implement/loop.ts` mints for a dispatch
+ * that is never itself a plan task: a review session's own
+ * `${task.id}-review` for the first round, `${task.id}-review-${round}` for
+ * every rework round after it (`reviewTaskId`), or a conflict-resolution
+ * session's own `${task.id}-catchup` (`resolveTaskId`, T4.3.9). Each is
+ * dispatched directly through `track`, never through the `assembleContext`
+ * call that precedes the *implementing* session, so an id of this shape can
+ * never carry a `ContextAssembled` of its own — not today, and not by any
+ * narrower fix, only by `implement/loop.ts` growing a second call site that
+ * assembles context for one. Settled ids of this shape are excluded from
+ * `settledTaskCount`/`instrumentedTaskCount` (coverage's population) for
+ * exactly that reason: counting them dilutes `coverage` by a fraction that
+ * says nothing about what `ratio` could ever measure. This run's own log has
+ * 65 review-session ids among 90 otherwise-settled ones — coverage of 0/25,
+ * not 0/90 — measured before the catchup shape existed, so that count is of
+ * `-review` ids alone; the predicate below now also excludes `-catchup`
+ * ones, on the same reasoning. Excluded ids still contribute their own real
  * busy time to `observedMs` below, which is not population-matched and is
  * not limited to what `ratio` measures.
  *
- * Exported for `cli/commands.ts`'s `supersede` (T4.3.7): a review-session id
+ * Exported for `cli/commands.ts`'s `supersede` (T4.3.7): a session-only id
  * is never itself declared in the gated Plan artifact — `implement/loop.ts`
- * mints it, the Plan never does — so the same predicate that keeps a review
- * session out of overhead's settled population also tells `supersede` when a
- * `taskId` it was asked to retire names a review round rather than a plan
- * task, so it can check the *parent* task's own membership instead.
+ * mints it, the Plan never does — so the same predicate that keeps one out
+ * of overhead's settled population also tells `supersede` when a `taskId`
+ * it was asked to retire names a review round or a conflict resolution
+ * rather than a plan task, so it can check the *parent* task's own
+ * membership instead.
  */
-export function isReviewSessionTaskId(taskId: string): boolean {
-  return /-review(-\d+)?$/.test(taskId);
+export function isSessionOnlyTaskId(taskId: string): boolean {
+  return /-review(-\d+)?$|-catchup$/.test(taskId);
 }
 
 /**
- * The plan task a review-session id belongs to: strips the same
- * `-review(-\d+)?` suffix `isReviewSessionTaskId` matches. Callers must
- * check `isReviewSessionTaskId(taskId)` first — this does not validate its
- * input and returns `taskId` unchanged when it does not match.
+ * The plan task a session-only id belongs to: strips the same
+ * `-review(-\d+)?|-catchup` suffix `isSessionOnlyTaskId` matches. Callers
+ * must check `isSessionOnlyTaskId(taskId)` first — this does not validate
+ * its input and returns `taskId` unchanged when it does not match.
  */
-export function reviewSessionParentTaskId(taskId: string): string {
-  return taskId.replace(/-review(-\d+)?$/, '');
+export function sessionParentTaskId(taskId: string): string {
+  return taskId.replace(/-review(-\d+)?$|-catchup$/, '');
 }
 
 /**
@@ -842,18 +849,19 @@ export function computeHarnessOverhead(
       continue;
     }
 
-    // Real busy time either way — a review session is the harness doing
-    // real work, and `observedMs` is not population-matched to `ratio` — so
-    // its intervals go into the run's own busy span regardless of what
-    // follows.
+    // Real busy time either way — a review or catchup session is the
+    // harness doing real work, and `observedMs` is not population-matched
+    // to `ratio` — so its intervals go into the run's own busy span
+    // regardless of what follows.
     settledIntervals.push(...rounds.map((round) => round.interval));
 
-    if (isReviewSessionTaskId(task.taskId)) {
+    if (isSessionOnlyTaskId(task.taskId)) {
       // Excluded from `settledTaskCount`/`instrumentedTaskCount` — and so
-      // from `coverage` — because a review session can never carry a
-      // `ContextAssembled` of its own (see `isReviewSessionTaskId`'s own
-      // doc). Counting it would understate coverage by a fraction that has
-      // nothing to do with what `ratio` measures.
+      // from `coverage` — because neither a review round nor a catchup
+      // session can ever carry a `ContextAssembled` of its own (see
+      // `isSessionOnlyTaskId`'s own doc). Counting one would understate
+      // coverage by a fraction that has nothing to do with what `ratio`
+      // measures.
       continue;
     }
 

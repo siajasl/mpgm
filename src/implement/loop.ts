@@ -609,6 +609,46 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   }
 
   if (caughtUp.status === 'conflicted') {
+    // Not `stop`, for the same reason as the `refused` branch above: any
+    // session dispatched from here runs under `resolveTaskId`, not
+    // `task.id` itself, so the fold still has no `TaskDispatched` for
+    // `task.id` for `TaskBlocked` to be about.
+    const blocked = async (reason: string): Promise<ImplementResult> => {
+      // Left as the resolver left it unless a merge is genuinely still open
+      // — a resolver that finished the merge but was refused for some other
+      // reason (an unparseable result, say) has nothing here to undo, and
+      // aborting it would throw its commit away for no reason connected to
+      // the merge itself.
+      if (await options.worktrees.mergeInProgress(task.id)) {
+        await options.worktrees.abortMerge(task.id);
+      }
+      return {
+        status: 'blocked',
+        taskId: task.id,
+        branch: worktree.branch,
+        worktree: worktree.path,
+        reason,
+      };
+    };
+
+    const conflictSummary =
+      `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
+      `${caughtUp.files.join(', ')}.`;
+
+    // Checked here, not left to `track`'s own guard, because that guard
+    // returns a `blocked`-shaped outcome without dispatching anything and
+    // this branch's messages below say "an agent was asked" — true only if
+    // one actually was. An operator who paused or killed the run between
+    // `catchUp` leaving the conflict in place and here gets told that,
+    // rather than a resolver's own reason for one it was never given.
+    const conflictControl = runControl(fold(options.log.read()), runId);
+    if (conflictControl !== 'running') {
+      return blocked(
+        `${conflictSummary} The run was ${conflictControl} by an operator ` +
+          `before an agent could be dispatched to resolve it.`,
+      );
+    }
+
     // The dispatch the comments in `worktree.ts` and `merge.ts` have long
     // claimed happens: hand the conflict to the same role that authored the
     // change, with the common ancestor visible, and ask it to reconcile the
@@ -636,32 +676,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       policyRoot: worktree.path,
     });
 
-    // Not `stop` here either, for the same reason as the `refused` branch
-    // above: the session just dispatched was under `resolveTaskId`, not
-    // `task.id` itself, so the fold still has no `TaskDispatched` for
-    // `task.id` for `TaskBlocked` to be about.
-    const blocked = async (reason: string): Promise<ImplementResult> => {
-      // Left as the resolver left it unless a merge is genuinely still open
-      // — a resolver that finished the merge but was refused for some other
-      // reason (an unparseable result, say) has nothing here to undo, and
-      // aborting it would throw its commit away for no reason connected to
-      // the merge itself.
-      if (await options.worktrees.mergeInProgress(task.id)) {
-        await options.worktrees.abortMerge(task.id);
-      }
-      return {
-        status: 'blocked',
-        taskId: task.id,
-        branch: worktree.branch,
-        worktree: worktree.path,
-        reason,
-      };
-    };
-
-    const conflictSummary =
-      `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
-      `${caughtUp.files.join(', ')}.`;
-
     if (resolution.status !== 'completed') {
       return blocked(
         `${conflictSummary} An agent was asked to resolve it and did not ` +
@@ -688,6 +702,28 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         `${conflictSummary} The resolving agent reported success but left ` +
           `the merge unfinished — 'MERGE_HEAD' is still set, so nothing here ` +
           `treats it as resolved.`,
+      );
+    }
+    // `MERGE_HEAD` being clear is not proof the merge landed: `git merge
+    // --abort` clears it exactly as `git commit` does, so a resolver that
+    // walked away from the conflict looks the same as one that committed
+    // the resolution to the check above alone. Rerun the same count
+    // `catchUp` computed before attempting the merge — zero means the
+    // branch now actually contains `into`, whatever `MERGE_HEAD` said
+    // (T4.3.9, `WorktreeManager.behind`'s own doc).
+    const stillBehind = await options.worktrees.behind(task.id, into);
+    if (stillBehind === undefined || stillBehind > 0) {
+      return blocked(
+        `${conflictSummary} The resolving agent reported success and no ` +
+          `merge is left in progress, but '${worktree.branch}' still does ` +
+          `not carry '${into}'` +
+          (stillBehind === undefined
+            ? ''
+            : ` (${String(stillBehind)} commit(s) still missing)`) +
+          ` — a merge that was aborted rather than finished looks the same ` +
+          `as one that committed, to 'MERGE_HEAD' alone. Resolving it is a ` +
+          `change somebody has to make; until it is made, a pull request ` +
+          `for this branch cannot report checks at all.`,
       );
     }
     // The checkout now carries the trunk merge, the same as

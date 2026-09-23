@@ -162,6 +162,12 @@ class ResolvesHeaderConflict implements AgentSessionProvider {
     if (this.#calls === 1) {
       expect(request.prompt).toContain('merging it conflicts');
       expect(request.prompt).toContain('DESIGN v0.35');
+      // Pins `catchUp`'s `-c merge.conflictStyle=diff3`: without it the
+      // conflict markers carry only the two sides, not the common ancestor
+      // between the `<<<<<<<` and `=======` markers, and this assertion
+      // fails (CONV-6 — verified by removing that option and re-running,
+      // which this test alone caught).
+      expect(request.prompt).toContain('|||||||');
       writeFileSync(
         join(this.worktreePath, 'PLAN.md'),
         ['# PLAN', '', '**Status:** v0.22', '**Upstream:** DESIGN v0.36', ''].join('\n'),
@@ -198,6 +204,65 @@ class ResolvesHeaderConflict implements AgentSessionProvider {
             ref,
             verdict: 'approve',
             summary: 'the merge kept both edits',
+            findings: [],
+            deviations: [],
+          }),
+    );
+  }
+}
+
+/**
+ * Walks away from the conflict with `git merge --abort` rather than
+ * finishing it, and claims success anyway — the shape the reviewer of this
+ * task's first attempt measured: `MERGE_HEAD` clears exactly the same way a
+ * real `git commit` clears it, so a caller trusting that alone cannot tell
+ * this from `ResolvesHeaderConflict` above.
+ */
+class AbortsAndClaimsSuccess implements AgentSessionProvider {
+  readonly requests: SessionRequest[] = [];
+  #calls = 0;
+
+  constructor(private readonly worktreePath: string) {}
+
+  run(request: SessionRequest): Promise<SessionResult> {
+    this.requests.push(request);
+    this.#calls += 1;
+
+    if (this.#calls === 1) {
+      git(this.worktreePath, ['merge', '--abort']);
+      const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+      return Promise.resolve(
+        scriptedSuccess({
+          ref,
+          summary: 'resolved it',
+          files: ['PLAN.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+      );
+    }
+
+    // Reached only if the loop wrongly treats the abort above as a finished
+    // resolution and carries on to an implementing or review session — the
+    // shape this test's assertions refuse before any of this can run.
+    const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+    return Promise.resolve(
+      this.#calls === 2
+        ? scriptedSuccess({
+            ref,
+            summary: 'nothing further to do',
+            files: [],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          })
+        : scriptedSuccess({
+            ref,
+            verdict: 'approve',
+            summary: 'looked fine',
             findings: [],
             deviations: [],
           }),
@@ -332,5 +397,76 @@ describe('a conflict between a task branch and the trunk (T4.3.9, IMP-1, IMP-4, 
 
     // Nothing landed on the trunk.
     expect(readFileSync(join(repo, 'code.js'), 'utf8')).toContain("return 'hey'");
+  });
+
+  // The reviewer of this task's first attempt: a scripted resolver that runs
+  // `git merge --abort` and reports `complete: true` anyway made
+  // `implementTask` accept the resolution, spend the implementing and review
+  // sessions and the CI wait, and only then fail deep inside `mergeChange`
+  // with a raw "Command failed: git merge --no-ff" — worse than the refusal
+  // this task exists to replace, on exactly the failure mode (a resolver
+  // that does not resolve) this check is here to catch. `MERGE_HEAD` clears
+  // on `git merge --abort` exactly as it does on `git commit`
+  // (`mergeInProgress`'s own doc), so this pins the check that looks past
+  // it: the branch has to actually carry `into` afterwards, not merely have
+  // no merge left open.
+  it('refuses a resolver that reports success but aborted the merge instead of finishing it', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+    const planPath = join(worktree.path, 'PLAN.md');
+    writeFileSync(
+      planPath,
+      readFileSync(planPath, 'utf8').replace(
+        '**Upstream:** DESIGN v0.35',
+        '**Upstream:** DESIGN v0.36',
+      ),
+    );
+    git(worktree.path, ['add', 'PLAN.md']);
+    git(worktree.path, ['commit', '-m', "the branch's own rework bumps DESIGN to v0.36"]);
+
+    const trunkPlanPath = join(repo, 'PLAN.md');
+    writeFileSync(
+      trunkPlanPath,
+      readFileSync(trunkPlanPath, 'utf8').replace(
+        '**Status:** v0.21',
+        '**Status:** v0.22',
+      ),
+    );
+    git(repo, ['add', 'PLAN.md']);
+    git(repo, ['commit', '-m', 'a filing bumps PLAN.md to v0.22']);
+
+    const branchTipBefore = git(worktree.path, ['rev-parse', 'HEAD']);
+    const provider = new AbortsAndClaimsSuccess(worktree.path);
+    const log = openLog();
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('blocked');
+      // Only the conflict-resolution session ran — never the implementing
+      // session, the review, or CI. A resolver that walked away from the
+      // conflict is caught before any of the wasted spend this task exists
+      // to close, not after it.
+      expect(provider.requests).toHaveLength(1);
+      expect(result.reason).toContain('does not carry');
+      expect(result.reason).toContain("'main'");
+
+      // Left clean: the abort already ran inside the resolver, and nothing
+      // here tries to finish or redo the merge.
+      expect(git(worktree.path, ['status', '--porcelain'])).toBe('');
+      expect(mergeInProgress(worktree.path)).toBe(false);
+      // The branch is exactly where it was before the resolver ran — no
+      // silent partial merge, no lost commit.
+      expect(git(worktree.path, ['rev-parse', 'HEAD'])).toBe(branchTipBefore);
+    } finally {
+      log.close();
+    }
+
+    // Nothing landed on the trunk: the trunk's own filing commit is still
+    // its tip, and the branch's DESIGN bump never reached it.
+    const trunkPlan = readFileSync(join(repo, 'PLAN.md'), 'utf8');
+    expect(trunkPlan).toContain('**Status:** v0.22');
+    expect(trunkPlan).not.toContain('**Upstream:** DESIGN v0.36');
   });
 });

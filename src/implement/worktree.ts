@@ -559,10 +559,15 @@ export class WorktreeManager {
   /**
    * Whether a task's checkout is mid-merge — `MERGE_HEAD` still set.
    *
-   * What tells a caller whether a resolver actually finished the merge
-   * (`git commit`) rather than only editing the conflicted files and
-   * claiming success: editing without committing leaves this `true`, and a
-   * resolution that leaves it `true` is not one (T4.3.9).
+   * Detects an *open* merge, not a finished one — a resolver that only
+   * edited the conflicted files without running `git commit` leaves this
+   * `true`, which is the case this exists to catch. It is not, on its own,
+   * proof the opposite case is a real resolution: `git merge --abort`
+   * clears `MERGE_HEAD` exactly as `git commit` does, so a resolver that
+   * walked away from the conflict rather than finishing it reads `false`
+   * here too. A caller that treats `false` alone as "resolved" is trusting
+   * an absence for a presence it never checked (T4.3.9) — pair this with
+   * `behind` below, which checks what actually landed.
    */
   async mergeInProgress(taskId: string): Promise<boolean> {
     const found = await this.find(taskId);
@@ -574,6 +579,39 @@ export class WorktreeManager {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * How many commits `into` carries that a task's checkout does not yet
+   * have — the same count `catchUp` computes before attempting the trunk
+   * merge, rerun afterwards to check whether it actually landed.
+   *
+   * What decides whether a resolved conflict really brought the branch
+   * up to `into`, rather than `mergeInProgress` alone: `git merge --abort`
+   * clears `MERGE_HEAD` exactly as `git commit` does, so a resolver that
+   * walked away from a conflict without finishing it and a resolver that
+   * committed the resolution look identical to a caller checking
+   * `MERGE_HEAD` alone (T4.3.9). Zero here means the branch now contains
+   * every commit `into` had, whatever `MERGE_HEAD` says; anything else
+   * means it does not, whether a merge is still open or was abandoned.
+   *
+   * `undefined` when the question cannot be answered — no checkout, or an
+   * `into` git does not know — the same "cannot tell" shape `commitsAhead`
+   * answers, for the same reason: a caller deciding a merge is not the
+   * place to carry on with a number that was never really measured.
+   */
+  async behind(taskId: string, into: string): Promise<number | undefined> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return undefined;
+    }
+    try {
+      const count = await this.#git(['rev-list', '--count', `HEAD..${into}`], found.path);
+      const parsed = Number(count);
+      return Number.isInteger(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
     }
   }
 
