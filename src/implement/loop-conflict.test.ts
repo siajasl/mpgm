@@ -929,4 +929,55 @@ describe('a conflict between a task branch and the trunk (T4.3.9, IMP-1, IMP-4, 
       log.close();
     }
   });
+
+  // The reviewer of this task's second attempt: the trunk-side retry's only
+  // control read (`controlBeforeReconciledPublish`) sits before
+  // `options.checks(reconciledRef)`, which in the CLI polls CI through its
+  // grace period — minutes an operator can pause or kill the run in — and
+  // nothing re-read control between that wait finishing and the retry's own
+  // `attemptMerge`. This pins that the retry now reads control again,
+  // immediately before merging, mirroring `controlBeforeMerge` above it.
+  it('refuses a trunk-side reconciliation merge rather than merging on stale control state, when an operator pauses while its checks are awaited', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+
+    const provider = new ResolvesTrunkSideConflict(worktree.path, repo);
+    const log = openLog();
+    // Unmodified code never calls `options.checks` more than once per commit
+    // it is asked about; the second call here is specifically the retry's own
+    // re-check of the reconciled ref, which is where the pause is recorded —
+    // after `controlBeforeReconciledPublish` already read 'running', before
+    // the retry's own merge.
+    let checksCalls = 0;
+    const options = {
+      ...baseOptions(repo, provider, log),
+      checks: (ref: string) => {
+        checksCalls += 1;
+        if (checksCalls === 2) {
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: { action: 'pause', detail: '' },
+          });
+        }
+        return Promise.resolve(mergeVerdict({ ref, runs: GREEN }));
+      },
+    };
+
+    try {
+      const result = await implementTask(options);
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('paused');
+      expect(checksCalls).toBe(2);
+    } finally {
+      log.close();
+    }
+
+    // Nothing landed on the trunk: the pause was seen before the retry's own
+    // merge, not after.
+    const trunkPlan = readFileSync(join(repo, 'PLAN.md'), 'utf8');
+    expect(trunkPlan).not.toContain('**Upstream:** DESIGN v0.36');
+  });
 });

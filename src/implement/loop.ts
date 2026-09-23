@@ -1552,6 +1552,24 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     review = { ...review, ref: reconciledRef };
     request = { ...request, ref: reconciledRef, verdict: reconciledVerdict, review };
 
+    // Read once more, immediately before this retry's own merge — the loop's
+    // only irreversible act happens here a second time, and `options.checks`
+    // just awaited a real CI run (the CLI's `awaitChecks` polls through its
+    // grace period, minutes) with nothing since `controlBeforeReconciledPublish`
+    // above checking whether an operator paused or killed the run while that
+    // wait was in flight. The same gap `controlBeforeMerge` exists to close for
+    // the ordinary merge above (T4.2.4, HIL-3): without this, an operator who
+    // intervenes while the reconciled commit's checks are being awaited still
+    // gets the merge.
+    const controlBeforeReconciledMerge = runControl(fold(options.log.read()), runId);
+    if (controlBeforeReconciledMerge !== 'running') {
+      return stop(`the run was ${controlBeforeReconciledMerge} by an operator`, {
+        ref: reconciledRef,
+        review,
+        repair,
+      });
+    }
+
     merged = await attemptMerge(request);
     if (!merged.merged && merged.conflict !== undefined) {
       return stop(
