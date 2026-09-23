@@ -2275,6 +2275,14 @@ describe('trace --coverage over mpgm’s own Scope artifact (T4.3.1, SCP-1, TST-
     // Plan artifact elsewhere in this repository) still resolve.
     expect(output).toContain('UNVERIFIED SCP-1');
     expect(output).toContain('UNVERIFIED IMP-3');
+    // The figure says what it rests on (T4.3.11). A bare `1/84` invites the
+    // reading that eighty-three requirements go unchecked, which is not what
+    // it measured: one commit here claims to verify, and the rest of this
+    // repository's checking is done by tests no commit names. The real-
+    // history assertion is in `src/trace/index.test.ts` — over a fixture
+    // this only pins the wording.
+    expect(output).toMatch(/Basis: 1 of 2 commits carry `Verifies:`/);
+    expect(output).toContain('this counts claims, not checks');
   });
 });
 
