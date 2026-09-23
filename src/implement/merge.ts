@@ -312,15 +312,19 @@ export function mergeMessage(request: MergeDecisionRequest, branch: string): str
  * Refuses without merging if {@link decideMerge} says no, and refuses if the
  * trunk is not where it expects — a merge run from the wrong branch or over a
  * dirty tree would produce a commit nobody asked for. Never throws for a
- * refusal of its own making: every one, including a real content conflict in
- * the trunk-side merge itself, comes back as `{ merged: false, reason }`.
- * When that conflict is the reason, `MergeResult.conflict` also carries the
- * files git could not merge, so a caller with a session runner in hand —
- * `implement/loop.ts` — can tell "dispatch a resolver" apart from every other
- * refusal (a dirty tree, a diverged local trunk, a failed push) without
- * parsing `reason`, and dispatch one the way `catchUp`'s own conflict already
- * does, rather than this function trying to hold a resolver of its own
- * (T4.3.9, `conflict.ts`).
+ * refusal of its own making: every one, including the wrong-branch and
+ * dirty-tree checks right below and a real content conflict in the
+ * trunk-side merge itself, comes back as `{ merged: false, reason }` rather
+ * than an exception — a caller (`implement/loop.ts`, and the CLI beyond it,
+ * which wraps no `catch` around either) can print "did not merge: `<reason>`"
+ * for every one of them the same way, without a stack trace crashing the run
+ * over a dirty tree the caller had no chance to prevent. When the reason is a
+ * real content conflict, `MergeResult.conflict` also carries the files git
+ * could not merge, so a caller with a session runner in hand can tell
+ * "dispatch a resolver" apart from every other refusal (a dirty tree, a
+ * diverged local trunk, a failed push) without parsing `reason`, and dispatch
+ * one the way `catchUp`'s own conflict already does, rather than this
+ * function trying to hold a resolver of its own (T4.3.9, `conflict.ts`).
  */
 export async function mergeChange(options: MergeChangeOptions): Promise<MergeResult> {
   const into = options.into ?? 'main';
@@ -333,12 +337,18 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
 
   const head = await git(options.repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (head !== into) {
-    throw new MergeError(
-      `expected '${options.repo}' to be on '${into}', found '${head}'`,
-    );
+    return {
+      merged: false,
+      decision,
+      reason: `expected '${options.repo}' to be on '${into}', found '${head}'`,
+    };
   }
   if ((await git(options.repo, ['status', '--porcelain'])) !== '') {
-    throw new MergeError(`refusing to merge into a dirty '${into}'`);
+    return {
+      merged: false,
+      decision,
+      reason: `refusing to merge into a dirty '${into}'`,
+    };
   }
 
   const tip = await git(options.repo, ['rev-parse', options.branch]);

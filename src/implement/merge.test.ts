@@ -306,13 +306,41 @@ describe('mergeChange', () => {
     expect(git(repo, ['rev-parse', 'HEAD'])).toBe(before);
   });
 
-  it('refuses to merge into a dirty trunk', async () => {
+  it('refuses to merge into a dirty trunk without throwing', async () => {
+    // A refusal of mergeChange's own making — same as every other one it
+    // makes (T4.3.9): a caller with no try/catch around this call, like
+    // `implement/loop.ts`'s, gets a result it can print rather than a crash.
     const { repo, branch, ref } = await repoWithBranch();
+    const before = git(repo, ['rev-parse', 'HEAD']);
     writeFileSync(join(repo, 'stray.txt'), 'uncommitted\n');
 
-    await expect(
-      mergeChange({ runId: 'run-1', repo, branch, request: request({ ref }) }),
-    ).rejects.toThrow(/dirty/);
+    const result = await mergeChange({
+      runId: 'run-1',
+      repo,
+      branch,
+      request: request({ ref }),
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('dirty');
+    expect(git(repo, ['rev-parse', 'HEAD'])).toBe(before);
+  });
+
+  it('refuses to merge from the wrong branch without throwing', async () => {
+    const { repo, branch, ref } = await repoWithBranch();
+    const before = git(repo, ['rev-parse', 'HEAD']);
+    git(repo, ['checkout', '-b', 'not-main']);
+
+    const result = await mergeChange({
+      runId: 'run-1',
+      repo,
+      branch,
+      request: request({ ref }),
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain("expected '" + repo + "' to be on 'main'");
+    expect(git(repo, ['rev-parse', 'HEAD'])).toBe(before);
   });
 
   it('leaves the trunk untouched when the merge conflicts', async () => {
