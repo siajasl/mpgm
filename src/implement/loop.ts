@@ -14,7 +14,7 @@ import type { EventLog } from '../event/store.js';
 import type { RoleRegistry } from '../role/loader.js';
 import { fold, redirectNoteFor, runControl } from '../state/reduce.js';
 import { changeSchema, codeReviewSchema } from '../schemas.js';
-import type { MergeVerdict } from './checks.js';
+import { blockingReasons, type MergeVerdict } from './checks.js';
 import { conventionIdOf, undeclaredDeviations } from '../context/conventions.js';
 import { renderConflict } from './conflict.js';
 import {
@@ -1458,19 +1458,19 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     });
   }
 
-  const attemptMerge = (): Promise<MergeResult> =>
+  const attemptMerge = (req: MergeDecisionRequest): Promise<MergeResult> =>
     mergeChange({
       runId,
       repo: options.repo,
       branch: worktree.branch,
       into,
-      request,
+      request: req,
       emit: (event) => {
         options.log.append(event);
       },
     });
 
-  let merged = await attemptMerge();
+  let merged = await attemptMerge(request);
 
   if (!merged.merged && merged.conflict !== undefined) {
     // `mergeChange` already fetched and fast-forwarded the local `into`
@@ -1496,7 +1496,63 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // own `stillBehind` check) — retried once, not looped: a second conflict
     // here would mean that check was wrong, not that trying a third time
     // would fare any better.
-    merged = await attemptMerge();
+    //
+    // The resolver's commit is new: nothing has run CI against it and the
+    // review on record is for the tip it replaced. Merging on the strength of
+    // a verdict and a review that were both for the *previous* commit would
+    // land content on `into` that neither ever actually saw — precisely what
+    // this project treats CI as an oracle to prevent (IMP-2), absence and all.
+    // `conflict.ts` already argues why the reconciliation itself needs no
+    // *fresh review*: it is bounded to what each already-reviewed side
+    // changed, the same reconciliation an ordinary `--no-ff` merge performs
+    // unreviewed every time this loop merges at all — so the review is
+    // carried forward onto the new ref rather than re-dispatched, but CI is
+    // asked again for real, exactly as every other new commit in this loop
+    // is (T4.3.9).
+    const reconciledRef = await options.worktrees.head(task.id);
+    if (reconciledRef === undefined) {
+      return stop(
+        `could not read the commit '${worktree.branch}' is on after reconciling ` +
+          `the conflict with '${into}', so nothing can be checked or merged against it`,
+        { ref: repair.ref, review, repair },
+      );
+    }
+
+    // Same guard as every other publish in this loop (T4.2.4, HIL-3): the
+    // resolver session just ran, and a kill or pause recorded while it was in
+    // flight lands strictly after `track`'s own read, before this push runs.
+    const controlBeforeReconciledPublish = runControl(fold(options.log.read()), runId);
+    if (controlBeforeReconciledPublish !== 'running') {
+      return stop(`the run was ${controlBeforeReconciledPublish} by an operator`, {
+        ref: reconciledRef,
+        review,
+        repair,
+      });
+    }
+    await options.publish?.(worktree.branch, reconciledRef);
+
+    const reconciledVerdict = await options.checks(reconciledRef);
+    options.log.append({
+      runId,
+      type: 'ChecksReported',
+      payload: {
+        taskId: task.id,
+        ref: reconciledVerdict.ref,
+        mergeable: reconciledVerdict.mergeable,
+        summary: reconciledVerdict.summary,
+        blocking: blockingReasons(reconciledVerdict),
+      },
+    });
+
+    // `review` carried forward onto the reconciled ref (see above), so
+    // `decideMerge` inside `attemptMerge` below judges the commit that is
+    // actually about to merge rather than the one review and CI last saw —
+    // and refuses on `checks-not-green` exactly like any other red verdict if
+    // the reconciliation itself does not build.
+    review = { ...review, ref: reconciledRef };
+    request = { ...request, ref: reconciledRef, verdict: reconciledVerdict, review };
+
+    merged = await attemptMerge(request);
     if (!merged.merged && merged.conflict !== undefined) {
       return stop(
         `'${worktree.branch}' still conflicts merging into '${into}' in ` +

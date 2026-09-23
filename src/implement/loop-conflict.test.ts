@@ -751,6 +751,65 @@ describe('a conflict between a task branch and the trunk (T4.3.9, IMP-1, IMP-4, 
     }
   });
 
+  // The review found the trunk-side retry landing the resolver's commit on
+  // `checks-not-green`-equivalent verdicts a fresh `verdict.ref`/`request.ref`
+  // agreement can no longer catch: with the request left stale, CI was never
+  // asked about the reconciliation at all, only about the tip it replaced.
+  // This pins that `options.checks` is asked again about the reconciled
+  // commit specifically, and a red answer refuses the merge rather than
+  // riding in on the review's now-stale green.
+  it('refuses to merge a trunk-side reconciliation that CI does not clear, and leaves the trunk untouched', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+
+    const provider = new ResolvesTrunkSideConflict(worktree.path, repo);
+    const log = openLog();
+    // Green for the first ask (the implementer's own commit, checked before
+    // review), red for every ask after — which is exactly one more: the
+    // reconciled commit the trunk-side resolver produces. Unmodified code
+    // never asks `checks` a second time at all, so this call count is itself
+    // part of what the test pins.
+    let checksCalls = 0;
+    const options = {
+      ...baseOptions(repo, provider, log),
+      checks: (ref: string) => {
+        checksCalls += 1;
+        return Promise.resolve(
+          mergeVerdict({
+            ref,
+            runs:
+              checksCalls === 1
+                ? GREEN
+                : [
+                    {
+                      name: 'build',
+                      status: 'completed',
+                      conclusion: 'failure',
+                      url: '',
+                    },
+                    ...GREEN.slice(1),
+                  ],
+          }),
+        );
+      },
+    };
+
+    try {
+      const result = await implementTask(options);
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason ?? '').toContain('CI');
+      expect(checksCalls).toBe(2);
+    } finally {
+      log.close();
+    }
+
+    // Nothing landed on the trunk: the reconciliation was never merged.
+    const trunkPlan = readFileSync(join(repo, 'PLAN.md'), 'utf8');
+    expect(trunkPlan).not.toContain('**Upstream:** DESIGN v0.36');
+  });
+
   it('still refuses a trunk-side collision no rule can resolve, after review has already approved', async () => {
     const repo = newRepo();
     const manager = new WorktreeManager({ repo });

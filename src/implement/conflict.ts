@@ -68,6 +68,18 @@
  * mean a second review round for every task a filing happens to race, for a
  * commit that (per the prompt above) is not permitted to introduce anything
  * beyond what each side already changed.
+ *
+ * That argument is about review, not about CI, and does not stand in for it:
+ * the resolver's commit is new, so nothing has run the merge checks against
+ * it yet, and this project treats CI as an oracle whose absence is not
+ * success (IMP-2) — a reconciliation that happens to break the build is
+ * exactly the kind of thing a diff bounded to "what each side already
+ * changed" can still do, two independently-fine changes combining badly
+ * being the ordinary way a merge conflict turns into a broken build. So
+ * `implement/loop.ts` publishes the resolved commit and asks CI about it for
+ * real before merging on its strength, the same as it would for any other
+ * new commit in this loop; only the review is carried forward rather than
+ * re-run.
  */
 
 /** What the resolving agent is shown for one conflict. */
