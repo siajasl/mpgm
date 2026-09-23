@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { SessionRunner, TaskOutcome } from '../agent/runner.js';
 import {
   ESCALATION_COST_MULTIPLIER,
@@ -12,14 +14,16 @@ import type { EventLog } from '../event/store.js';
 import type { RoleRegistry } from '../role/loader.js';
 import { fold, redirectNoteFor, runControl } from '../state/reduce.js';
 import { changeSchema, codeReviewSchema } from '../schemas.js';
-import type { MergeVerdict } from './checks.js';
+import { blockingReasons, type MergeVerdict } from './checks.js';
 import { conventionIdOf, undeclaredDeviations } from '../context/conventions.js';
+import { renderConflict } from './conflict.js';
 import {
   changeReviewed,
   decideMerge,
   mergeChange,
   type MergeDecision,
   type MergeDecisionRequest,
+  type MergeResult,
   type ReviewRecord,
 } from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
@@ -43,6 +47,17 @@ import type { WorktreeManager } from './worktree.js';
  * commit. Forcing it into the playbook shape would mean parameterising ids and
  * paths that everything downstream currently relies on being literal.
  */
+
+/**
+ * How much of one conflicted file's content is inlined into a
+ * conflict-resolution prompt before it is named as conflicted-but-not-shown
+ * instead (T4.3.9). `git diff --diff-filter=U` reports a conflicted
+ * `package-lock.json` the same as any other conflicted file, and inlining a
+ * megabyte of it would spend the role's token budget on content no
+ * resolution needs, turning a cheap refusal into an expensive failed
+ * session.
+ */
+const CONFLICT_FILE_CHAR_LIMIT = 20_000;
 
 export interface ImplementTask {
   readonly id: string;
@@ -562,16 +577,218 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     };
   };
 
-  // Read here, immediately before `catchUp` below — the first thing this
-  // loop does *to* the repository rather than merely off it (a real merge of
-  // the trunk into the task's branch). `track`'s own read guards every
-  // session dispatch, but nothing stood between acquiring the checkout above
-  // and this merge: a kill or pause already on record before this task's
-  // very first session still let it happen, unlike every other action a
-  // stopped run refuses to take (review, T4.2.4). `stop` already handles "no
-  // session dispatched yet" correctly — it only appends `TaskBlocked` once
-  // this task has a `TaskDispatched` for the fold to attach it to — so it is
-  // safe to call here too, before any session has run.
+  // Shared by both places a conflict between this task's branch and `into`
+  // can turn up: here, before the first session ever runs, and again right
+  // before the trunk-side merge at the end of this function, where a filing
+  // that landed on `into` during this task's own 20-40 minute life can make
+  // `mergeChange`'s own merge conflict the same way (`merge.ts`, T4.3.9).
+  // Both sites hand the conflict to the same role that authored the change,
+  // with the common ancestor visible, and ask it to reconcile the two sides
+  // honestly rather than have an operator do it by hand (T4.3.2, T4.3.9,
+  // `conflict.ts`) — the dispatch both `worktree.ts` and `merge.ts` have long
+  // claimed happens.
+  //
+  // `resolveTaskId` is suffixed by the caller so the two sites do not share
+  // one id: `${task.id}-catchup` here, `${task.id}-catchup-2` at the
+  // trunk-side site, numbered the way a rework round's `-review-${n}` already
+  // is — each a session-only id `overhead.ts` and `supersede` already know
+  // how to treat as not itself a plan task.
+  const catchUpAndResolve = async (
+    resolveSuffix: string,
+  ): Promise<
+    | { readonly status: 'clean' }
+    | { readonly status: 'refused'; readonly detail: string }
+    | { readonly status: 'blocked'; readonly reason: string }
+  > => {
+    // Read before `catchUp` touches anything, so the bound checked near the
+    // bottom of this function has something to diff a resolved commit
+    // against: the branch tip as it stood before this merge attempt, not
+    // after.
+    const preConflictTip = await options.worktrees.head(task.id);
+
+    // `leaveConflicted` so that a conflict is handed to `track('resolve-
+    // conflict', ...)` below with its markers still in place, rather than
+    // aborted before anything could see them (T4.3.9, `conflict.ts`).
+    const caughtUp = await options.worktrees.catchUp(task.id, into, {
+      leaveConflicted: true,
+    });
+    if (caughtUp.status === 'refused') {
+      return { status: 'refused', detail: caughtUp.detail };
+    }
+    if (caughtUp.status !== 'conflicted') {
+      return { status: 'clean' };
+    }
+
+    const blocked = async (
+      reason: string,
+    ): Promise<{ status: 'blocked'; reason: string }> => {
+      // Left as the resolver left it unless a merge is genuinely still open
+      // — a resolver that finished the merge but was refused for some other
+      // reason (an unparseable result, say) has nothing here to undo, and
+      // aborting it would throw its commit away for no reason connected to
+      // the merge itself.
+      if (await options.worktrees.mergeInProgress(task.id)) {
+        await options.worktrees.abortMerge(task.id);
+      }
+      return { status: 'blocked', reason };
+    };
+
+    const conflictSummary =
+      `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
+      `${caughtUp.files.join(', ')}.`;
+
+    // Checked here, not left to `track`'s own guard, because that guard
+    // returns a `blocked`-shaped outcome without dispatching anything and
+    // this branch's messages below say "an agent was asked" — true only if
+    // one actually was. An operator who paused or killed the run between
+    // `catchUp` leaving the conflict in place and here gets told that,
+    // rather than a resolver's own reason for one it was never given.
+    const conflictControl = runControl(fold(options.log.read()), runId);
+    if (conflictControl !== 'running') {
+      return blocked(
+        `${conflictSummary} The run was ${conflictControl} by an operator ` +
+          `before an agent could be dispatched to resolve it.`,
+      );
+    }
+
+    // Every conflicted file's content goes in the prompt, but bounded: an
+    // unbounded inline (a conflicted `package-lock.json`, say — `git
+    // diff --diff-filter=U` reports one exactly like any other file) would
+    // spend the role's token budget on content no resolution needs, turning
+    // a cheap refusal into an expensive failed session.
+    const fileContents = new Map<string, string>();
+    for (const file of caughtUp.files) {
+      const content = await readFile(join(worktree.path, file), 'utf8').catch(
+        () => '(could not be read — a binary file, most likely)',
+      );
+      fileContents.set(
+        file,
+        content.length > CONFLICT_FILE_CHAR_LIMIT
+          ? `(${String(content.length)} characters, over the ${String(
+              CONFLICT_FILE_CHAR_LIMIT,
+            )}-character limit shown here — conflicted but not shown; use ` +
+              `your own tools to read '${file}' if you need it)`
+          : content,
+      );
+    }
+    const resolveTaskId = `${task.id}-${resolveSuffix}`;
+    const resolution = await track('resolve-conflict', 1, {
+      taskId: resolveTaskId,
+      role: implementerRole,
+      prompt: renderConflict({
+        taskId: task.id,
+        branch: worktree.branch,
+        into,
+        files: fileContents,
+      }),
+      policyRoot: worktree.path,
+    });
+
+    if (resolution.status !== 'completed') {
+      return blocked(
+        `${conflictSummary} An agent was asked to resolve it and did not ` +
+          `finish: ${resolution.reason}`,
+      );
+    }
+    const resolved = changeSchema.safeParse(resolution.output);
+    if (!resolved.success) {
+      return blocked(
+        `${conflictSummary} The agent asked to resolve it did not report a ` +
+          `usable result: ${resolved.error.message}`,
+      );
+    }
+    if (!resolved.data.complete) {
+      return blocked(
+        `${conflictSummary} It could not be honestly resolved: ` +
+          `${resolved.data.remaining} Resolving it is a change somebody has ` +
+          `to make; until it is made, a pull request for this branch cannot ` +
+          `report checks at all.`,
+      );
+    }
+    if (await options.worktrees.mergeInProgress(task.id)) {
+      return blocked(
+        `${conflictSummary} The resolving agent reported success but left ` +
+          `the merge unfinished — 'MERGE_HEAD' is still set, so nothing here ` +
+          `treats it as resolved.`,
+      );
+    }
+    // `MERGE_HEAD` being clear is not proof the merge landed: `git merge
+    // --abort` clears it exactly as `git commit` does, so a resolver that
+    // walked away from the conflict looks the same as one that committed
+    // the resolution to the check above alone. Rerun the same count
+    // `catchUp` computed before attempting the merge — zero means the
+    // branch now actually contains `into`, whatever `MERGE_HEAD` said
+    // (T4.3.9, `WorktreeManager.behind`'s own doc).
+    const stillBehind = await options.worktrees.behind(task.id, into);
+    if (stillBehind === undefined || stillBehind > 0) {
+      return blocked(
+        `${conflictSummary} The resolving agent reported success and no ` +
+          `merge is left in progress, but '${worktree.branch}' still does ` +
+          `not carry '${into}'` +
+          (stillBehind === undefined
+            ? ''
+            : ` (${String(stillBehind)} commit(s) still missing)`) +
+          ` — a merge that was aborted rather than finished looks the same ` +
+          `as one that committed, to 'MERGE_HEAD' alone. Resolving it is a ` +
+          `change somebody has to make; until it is made, a pull request ` +
+          `for this branch cannot report checks at all.`,
+      );
+    }
+
+    // `MERGE_HEAD` clear and `into` fully contained proves the merge
+    // finished, not that it finished honestly. `renderConflict` tells the
+    // resolver to keep only what each side actually changed, but that is
+    // prose in a prompt, and nothing before this checked it was followed —
+    // a resolver's commit could touch a file neither side had ever changed
+    // and nothing here would notice. Bound it mechanically instead: whatever
+    // the reconciled commit changes beyond the conflicted files themselves
+    // has to be exactly what `into` already carried in from its own
+    // commits — the part of any ordinary merge that pulls the trunk's
+    // changes forward — or it is content nothing reviewed, introduced
+    // through the one path IMP-4 exists to close (T4.3.9, `conflict.ts`).
+    const trunkBase =
+      preConflictTip === undefined
+        ? undefined
+        : await options.worktrees.mergeBase(task.id, preConflictTip, into);
+    const touched =
+      preConflictTip === undefined
+        ? undefined
+        : await options.worktrees.diffPaths(task.id, preConflictTip, 'HEAD');
+    const trunkChanged =
+      trunkBase === undefined
+        ? undefined
+        : await options.worktrees.diffPaths(task.id, trunkBase, into);
+    if (touched === undefined || trunkChanged === undefined) {
+      return blocked(
+        `${conflictSummary} It was reported resolved, but what the resolution ` +
+          `actually touched could not be checked against '${into}', so it cannot ` +
+          `be trusted without a person reading it by hand.`,
+      );
+    }
+    const allowed = new Set([...caughtUp.files, ...trunkChanged]);
+    const unexpected = touched.filter((file) => !allowed.has(file));
+    if (unexpected.length > 0) {
+      return blocked(
+        `${conflictSummary} The resolving agent's commit also changed ` +
+          `${unexpected.join(', ')}, which neither '${into}' nor the conflict ` +
+          `itself touched; a reconciliation is only trusted to carry forward what ` +
+          `each side already changed (IMP-4), so this is refused rather than merged.`,
+      );
+    }
+    return { status: 'clean' };
+  };
+
+  // Read here, immediately before `catchUpAndResolve` below — the first
+  // thing this loop does *to* the repository rather than merely off it (a
+  // real merge of the trunk into the task's branch). `track`'s own read
+  // guards every session dispatch, but nothing stood between acquiring the
+  // checkout above and this merge: a kill or pause already on record before
+  // this task's very first session still let it happen, unlike every other
+  // action a stopped run refuses to take (review, T4.2.4). `stop` already
+  // handles "no session dispatched yet" correctly — it only appends
+  // `TaskBlocked` once this task has a `TaskDispatched` for the fold to
+  // attach it to — so it is safe to call here too, before any session has
+  // run.
   const controlBeforeCatchUp = runControl(fold(options.log.read()), runId);
   if (controlBeforeCatchUp !== 'running') {
     return stop(`the run was ${controlBeforeCatchUp} by an operator`);
@@ -584,8 +801,8 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // that conflicts. `priorReview` is read first for the same reason in
   // reverse — a mechanical trunk merge moves the tip without answering
   // anything a reviewer said about the author's own work.
-  const caughtUp = await options.worktrees.catchUp(task.id, into);
-  if (caughtUp.status === 'conflicted' || caughtUp.status === 'refused') {
+  const caughtUp = await catchUpAndResolve('catchup');
+  if (caughtUp.status === 'refused') {
     // Not `stop`, which appends `TaskBlocked`: no session has been dispatched
     // yet, so the fold has no task for that event to be about and `requireTask`
     // refuses it — the same shape as the refusals in `cli/commands.ts` that
@@ -596,13 +813,20 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       taskId: task.id,
       branch: worktree.branch,
       worktree: worktree.path,
-      reason:
-        caughtUp.status === 'conflicted'
-          ? `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
-            `${caughtUp.files.join(', ')}. Resolving it is a change somebody has ` +
-            `to make; until it is made, a pull request for this branch cannot ` +
-            `report checks at all.`
-          : `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
+      reason: `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
+    };
+  }
+  if (caughtUp.status === 'blocked') {
+    // Not `stop`, for the same reason as the `refused` branch above: any
+    // session dispatched from `catchUpAndResolve` runs under a session-only
+    // id, not `task.id` itself, so the fold still has no `TaskDispatched` for
+    // `task.id` for `TaskBlocked` to be about.
+    return {
+      status: 'blocked',
+      taskId: task.id,
+      branch: worktree.branch,
+      worktree: worktree.path,
+      reason: caughtUp.reason,
     };
   }
 
@@ -1281,16 +1505,128 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     });
   }
 
-  const merged = await mergeChange({
-    runId,
-    repo: options.repo,
-    branch: worktree.branch,
-    into,
-    request,
-    emit: (event) => {
-      options.log.append(event);
-    },
-  });
+  const attemptMerge = (req: MergeDecisionRequest): Promise<MergeResult> =>
+    mergeChange({
+      runId,
+      repo: options.repo,
+      branch: worktree.branch,
+      into,
+      request: req,
+      emit: (event) => {
+        options.log.append(event);
+      },
+    });
+
+  let merged = await attemptMerge(request);
+
+  if (!merged.merged && merged.conflict !== undefined) {
+    // `mergeChange` already fetched and fast-forwarded the local `into`
+    // before finding this, so the branch's own worktree can see exactly the
+    // trunk state that just failed to merge — a filing landed on `into`
+    // after this branch was last caught up and reviewed, reproducing
+    // `catchUp`'s own conflict at the far end of the loop instead of the
+    // near one (T4.3.9, `merge.ts`, `conflict.ts`).
+    const conflictedFiles = merged.conflict.files;
+    const resolved = await catchUpAndResolve('catchup-2');
+    if (resolved.status === 'refused') {
+      return stop(
+        `'${worktree.branch}' passed review, but merging it into '${into}' now ` +
+          `conflicts in ${conflictedFiles.join(', ')}, and it could not be brought ` +
+          `up to '${into}' to retry: ${resolved.detail}`,
+        { ref: repair.ref, review, repair },
+      );
+    }
+    if (resolved.status === 'blocked') {
+      return stop(resolved.reason, { ref: repair.ref, review, repair });
+    }
+    // Resolved and confirmed to actually carry `into` now (`catchUpAndResolve`'s
+    // own `stillBehind` check) — retried once, not looped: a second conflict
+    // here would mean that check was wrong, not that trying a third time
+    // would fare any better.
+    //
+    // The resolver's commit is new: nothing has run CI against it and the
+    // review on record is for the tip it replaced. Merging on the strength of
+    // a verdict and a review that were both for the *previous* commit would
+    // land content on `into` that neither ever actually saw — precisely what
+    // this project treats CI as an oracle to prevent (IMP-2), absence and all.
+    // `conflict.ts` already argues why the reconciliation itself needs no
+    // *fresh review*: it is bounded to what each already-reviewed side
+    // changed, the same reconciliation an ordinary `--no-ff` merge performs
+    // unreviewed every time this loop merges at all — so the review is
+    // carried forward onto the new ref rather than re-dispatched, but CI is
+    // asked again for real, exactly as every other new commit in this loop
+    // is (T4.3.9).
+    const reconciledRef = await options.worktrees.head(task.id);
+    if (reconciledRef === undefined) {
+      return stop(
+        `could not read the commit '${worktree.branch}' is on after reconciling ` +
+          `the conflict with '${into}', so nothing can be checked or merged against it`,
+        { ref: repair.ref, review, repair },
+      );
+    }
+
+    // Same guard as every other publish in this loop (T4.2.4, HIL-3): the
+    // resolver session just ran, and a kill or pause recorded while it was in
+    // flight lands strictly after `track`'s own read, before this push runs.
+    const controlBeforeReconciledPublish = runControl(fold(options.log.read()), runId);
+    if (controlBeforeReconciledPublish !== 'running') {
+      return stop(`the run was ${controlBeforeReconciledPublish} by an operator`, {
+        ref: reconciledRef,
+        review,
+        repair,
+      });
+    }
+    await options.publish?.(worktree.branch, reconciledRef);
+
+    const reconciledVerdict = await options.checks(reconciledRef);
+    options.log.append({
+      runId,
+      type: 'ChecksReported',
+      payload: {
+        taskId: task.id,
+        ref: reconciledVerdict.ref,
+        mergeable: reconciledVerdict.mergeable,
+        summary: reconciledVerdict.summary,
+        blocking: blockingReasons(reconciledVerdict),
+      },
+    });
+
+    // `review` carried forward onto the reconciled ref (see above), so
+    // `decideMerge` inside `attemptMerge` below judges the commit that is
+    // actually about to merge rather than the one review and CI last saw —
+    // and refuses on `checks-not-green` exactly like any other red verdict if
+    // the reconciliation itself does not build.
+    review = { ...review, ref: reconciledRef };
+    request = { ...request, ref: reconciledRef, verdict: reconciledVerdict, review };
+
+    // Read once more, immediately before this retry's own merge — the loop's
+    // only irreversible act happens here a second time, and `options.checks`
+    // just awaited a real CI run (the CLI's `awaitChecks` polls through its
+    // grace period, minutes) with nothing since `controlBeforeReconciledPublish`
+    // above checking whether an operator paused or killed the run while that
+    // wait was in flight. The same gap `controlBeforeMerge` exists to close for
+    // the ordinary merge above (T4.2.4, HIL-3): without this, an operator who
+    // intervenes while the reconciled commit's checks are being awaited still
+    // gets the merge.
+    const controlBeforeReconciledMerge = runControl(fold(options.log.read()), runId);
+    if (controlBeforeReconciledMerge !== 'running') {
+      return stop(`the run was ${controlBeforeReconciledMerge} by an operator`, {
+        ref: reconciledRef,
+        review,
+        repair,
+      });
+    }
+
+    merged = await attemptMerge(request);
+    if (!merged.merged && merged.conflict !== undefined) {
+      return stop(
+        `'${worktree.branch}' still conflicts merging into '${into}' in ` +
+          `${merged.conflict.files.join(', ')} even after being brought up to date ` +
+          `and reconciled — the reconciliation did not resolve what the retry needed.`,
+        { ref: repair.ref, review, repair },
+      );
+    }
+  }
 
   if (!merged.merged) {
     return stop(merged.reason ?? 'the merge did not happen', {

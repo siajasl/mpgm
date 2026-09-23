@@ -74,9 +74,9 @@ import { computeGateRates, type RunGateRates } from '../state/gate-rates.js';
 import { computeRunMetrics, type AggregateMetric } from '../state/metrics.js';
 import {
   computeHarnessOverhead,
-  isReviewSessionTaskId,
+  isSessionOnlyTaskId,
   NFR3_OVERHEAD_THRESHOLD,
-  reviewSessionParentTaskId,
+  sessionParentTaskId,
   type HarnessOverhead,
 } from '../state/overhead.js';
 import { Projector } from '../state/projector.js';
@@ -2120,20 +2120,22 @@ export async function recordMerge(
  * It also refuses a task this run never dispatched, or one already
  * `completed`, `attested` or `superseded` — there is nothing here to retire.
  *
- * A review-session id (`${task}-review` or `${task}-review-<n>`,
- * `implement/loop.ts`'s own `reviewTaskId`) is never itself declared in the
- * Plan — the Plan declares tasks, not review rounds of them — so the
+ * A session-only id — a review session's `${task}-review` or
+ * `${task}-review-<n>` (`implement/loop.ts`'s own `reviewTaskId`), or a
+ * conflict-resolution catchup's `${task}-catchup` (`resolveTaskId`, T4.3.9)
+ * — is never itself declared in the Plan — the Plan declares tasks, not the
+ * sessions `implement/loop.ts` dispatches on their behalf — so the
  * membership check above cannot be run against `taskId` directly: it would
- * pass unconditionally for every review session, live or not, which is
+ * pass unconditionally for every such session, live or not, which is
  * exactly the silent permit-on-ambiguity CONV-4 forbids and the fail-closed
  * claim this doc makes for every other shape. For that shape the check
  * instead resolves the *parent* task id (`state/overhead.ts`'s
- * `isReviewSessionTaskId`/`reviewSessionParentTaskId`, the same predicate
- * that already tells `computeHarnessOverhead` a review session from a plan
+ * `isSessionOnlyTaskId`/`sessionParentTaskId`, the same predicate that
+ * already tells `computeHarnessOverhead` one of these sessions from a plan
  * task) and refuses when the gated Plan still declares the parent: a review
- * session of a task the Plan still declares is a live review in flight, not
- * a folded id the Plan has dropped, however the review session's own id
- * — never declared anywhere — reads against the Plan on its own.
+ * or catchup session of a task the Plan still declares is live work in
+ * flight, not a folded id the Plan has dropped, however the session's own
+ * id — never declared anywhere — reads against the Plan on its own.
  *
  * Both of those checks can only refuse an id the Plan *declares*, which
  * leaves them vacuous for every id it never had: a phase-step id ('draft',
@@ -2144,9 +2146,9 @@ export async function recordMerge(
  * this verb exists to correct, reintroduced through the verb. So the claim
  * is also checked from the positive side (`planEverDeclared`,
  * `plan/declared-history.ts`): some stored version or committed revision of
- * the Plan artifact must have declared the id — its *parent* id for a review
- * session — as a task. That is what tells "an id the Plan dropped" from "an
- * id the Plan never had", and mpgm's own split, applied in place to
+ * the Plan artifact must have declared the id — its *parent* id for a
+ * session-only one — as a task. That is what tells "an id the Plan dropped"
+ * from "an id the Plan never had", and mpgm's own split, applied in place to
  * `plan.v1.md`, is found in the second place rather than the first.
  */
 export function supersede(
@@ -2200,18 +2202,19 @@ export function supersede(
       );
       return { ok: false, detail: 'still declared' };
     }
-    // A review-session id (`${task}-review[-n]`) is never itself declared in
-    // the Plan, so the check above always passes for one — checked here
-    // against its *parent* task id instead, or a live review of a task the
-    // Plan still declares would be superseded on the operator's word alone
-    // (see this function's own doc).
-    if (isReviewSessionTaskId(taskId)) {
-      const parentTaskId = reviewSessionParentTaskId(taskId);
+    // A session-only id (`${task}-review[-n]` or `${task}-catchup`) is
+    // never itself declared in the Plan, so the check above always passes
+    // for one — checked here against its *parent* task id instead, or a
+    // live review or catchup session of a task the Plan still declares
+    // would be superseded on the operator's word alone (see this function's
+    // own doc).
+    if (isSessionOnlyTaskId(taskId)) {
+      const parentTaskId = sessionParentTaskId(taskId);
       if (graph.tasks.some((candidate) => candidate.id === parentTaskId)) {
         context.write(
-          `refusing to supersede ${taskId}: it is a review session of ` +
+          `refusing to supersede ${taskId}: it is a session of ` +
             `${parentTaskId}, and the gated Plan at ${PLAN_ARTIFACT} still ` +
-            `declares ${parentTaskId} — a live review of a live task is not ` +
+            `declares ${parentTaskId} — a live session of a live task is not ` +
             `superseded`,
         );
         return { ok: false, detail: 'still declared' };
@@ -2228,9 +2231,7 @@ export function supersede(
     // checked from the positive side — some version or committed revision of
     // the gated Plan declared this id as a task (`plan/declared-history.ts`,
     // which is also where mpgm's own in-place T4.1.4 split is found).
-    const evidenceId = isReviewSessionTaskId(taskId)
-      ? reviewSessionParentTaskId(taskId)
-      : taskId;
+    const evidenceId = isSessionOnlyTaskId(taskId) ? sessionParentTaskId(taskId) : taskId;
     const evidence = planEverDeclared({
       root: context.root,
       artifacts,

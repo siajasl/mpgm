@@ -19,7 +19,16 @@
  */
 
 /** Which stage of the loop a session belongs to. */
-export type SessionKind = 'implement' | 'repair' | 'review' | 'rework';
+export type SessionKind =
+  | 'implement'
+  | 'repair'
+  | 'review'
+  | 'rework'
+  // Dispatched, at most once, when `catchUp` finds the branch conflicts with
+  // the trunk (T4.3.9) — the "task for an agent, not a state for the kernel
+  // to sit in" `catchUp` and `mergeChange` both name but neither, until this,
+  // dispatched.
+  | 'resolve-conflict';
 
 interface SessionIdentity {
   /** The event-log task id this session was dispatched under. */
@@ -27,8 +36,9 @@ interface SessionIdentity {
   readonly kind: SessionKind;
   readonly role: string;
   /**
-   * 1-based. `implement` is always round 1; `repair`, `review` and `rework`
-   * count the attempt or review round the session belongs to.
+   * 1-based. `implement` and `resolve-conflict` are always round 1; `repair`,
+   * `review` and `rework` count the attempt or review round the session
+   * belongs to.
    */
   readonly round: number;
 }

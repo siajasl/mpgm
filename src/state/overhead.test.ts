@@ -397,6 +397,89 @@ describe('computeHarnessOverhead — a review session’s own taskId does not di
   });
 });
 
+describe('computeHarnessOverhead — a conflict-resolution catchup session’s own taskId does not dilute coverage (T4.3.9)', () => {
+  it('excludes a settled `-catchup` task id from settledTaskCount and instrumentedTaskCount, but still counts its busy time in observedMs', () => {
+    // `implement/loop.ts` dispatches a conflict-resolution session under
+    // `${task.id}-catchup` (`resolveTaskId`) — its own settled `taskId`,
+    // minted the same way a review session's is and for the same reason:
+    // `assembleContext` never runs for it, so it can never carry a
+    // `ContextAssembled` of its own. Without excluding it, a settled catchup
+    // session reads as a settled, uninstrumented task — diluting `coverage`
+    // by a fraction `ratio` could never have measured regardless, exactly
+    // the shape `isSessionOnlyTaskId`'s own doc already states for `-review`.
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        contextAssembled('T1', 100), // 100 — the implementing task, instrumented
+        dispatched('T1'), // 150
+        toolCallLogged('T1'), // 1000
+        completed('T1'), // 1000 -> T1 span [0, 1000) = 1000ms
+        dispatched('T1-catchup'), // 2000 — the conflict-resolution session's own taskId
+        toolCallLogged('T1-catchup'), // 2400
+        completed('T1-catchup'), // 2400 -> T1-catchup span [2000, 2400) = 400ms
+      ],
+      [0, 100, 150, 1000, 1000, 2000, 2400, 2400],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Only T1 counts toward the coverage population — the catchup session's
+    // id is excluded even though it settled cleanly. Without the fix this
+    // reads settledTaskCount: 2, instrumentedTaskCount: 1, coverage: 0.5.
+    expect(overhead.components.settledTaskCount).toBe(1);
+    expect(overhead.components.instrumentedTaskCount).toBe(1);
+    expect(overhead.coverage).toBe(1);
+    // Population unaffected by the exclusion: T1's own 10% ratio, exactly as
+    // if the catchup id were never in the log.
+    expect(overhead.ratio).toBeCloseTo(0.1);
+    // The catchup session is still real harness busy time, and observedMs is
+    // not population-matched — so its span is still counted:
+    // 1000 (T1) + 400 (T1-catchup) = 1400ms, disjoint.
+    expect(overhead.observedMs).toBe(1400);
+  });
+
+  it('excludes a settled `-catchup-2` task id the same way — the trunk-side conflict a task can still hit after review (T4.3.9)', () => {
+    // `implement/loop.ts` dispatches the trunk-side conflict-resolution
+    // session — hit only when `mergeChange` itself conflicts, after review —
+    // under `${task.id}-catchup-2`, numbered the way a rework round's
+    // `-review-${n}` already is so it does not collide with the branch-side
+    // `${task.id}-catchup` a task may also have dispatched earlier in the
+    // same run. `isSessionOnlyTaskId`'s regex widened to `-catchup(-\d+)?$`
+    // to cover it; this pins that the widening actually excludes it from the
+    // coverage population, not merely that it compiles.
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        contextAssembled('T1', 100), // 100 — the implementing task, instrumented
+        dispatched('T1'), // 150
+        toolCallLogged('T1'), // 1000
+        completed('T1'), // 1000 -> T1 span [0, 1000) = 1000ms
+        dispatched('T1-catchup-2'), // 2000 — the trunk-side resolver's own taskId
+        toolCallLogged('T1-catchup-2'), // 2400
+        completed('T1-catchup-2'), // 2400 -> T1-catchup-2 span [2000, 2400) = 400ms
+      ],
+      [0, 100, 150, 1000, 1000, 2000, 2400, 2400],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Only T1 counts toward the coverage population. Without the widened
+    // regex this reads settledTaskCount: 2, instrumentedTaskCount: 1,
+    // coverage: 0.5, exactly the bug the `-catchup` case above already fixed
+    // for the branch-side id.
+    expect(overhead.components.settledTaskCount).toBe(1);
+    expect(overhead.components.instrumentedTaskCount).toBe(1);
+    expect(overhead.coverage).toBe(1);
+    expect(overhead.ratio).toBeCloseTo(0.1);
+    // Still real harness busy time: 1000 (T1) + 400 (T1-catchup-2) = 1400ms.
+    expect(overhead.observedMs).toBe(1400);
+  });
+});
+
 describe('computeHarnessOverhead — a superseded task (T4.3.7) keeps the busy time it already earned', () => {
   it('counts a task superseded out of blocked in observedMs, settledTaskCount and ratio — the same as if it had stayed blocked', () => {
     // T4.1.4's own shape: dispatched, instrumented, reaches BudgetExceeded

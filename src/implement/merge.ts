@@ -30,6 +30,26 @@ const run = promisify(execFile);
 
 export class MergeError extends Error {}
 
+/**
+ * `mergeChange`'s trunk-side merge conflicted on real content, not merely
+ * failed for some other reason. Thrown only inside `perform` (below), and
+ * caught there before it ever leaves `mergeChange` — the same catch that
+ * turns every other failure into `{ merged: false, reason }` reads this one
+ * apart from those and copies its `files` onto `MergeResult.conflict`, so a
+ * caller can tell "dispatch a resolver" apart from every other refusal
+ * without this class or a thrown exception ever crossing the module
+ * boundary (T4.3.9, `conflict.ts`).
+ */
+class MergeConflictError extends MergeError {
+  constructor(
+    message: string,
+    readonly files: readonly string[],
+    options?: { readonly cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
+
 export type MergeRefusal =
   /** CI did not clear the change. */
   | 'checks-not-green'
@@ -241,6 +261,16 @@ export interface MergeResult {
   /** The merge commit, when one was made. */
   readonly commit?: string;
   readonly reason?: string;
+  /**
+   * Present exactly when `reason` is due to the trunk-side merge itself
+   * conflicting on real content, rather than any other way this function can
+   * fail (a dirty tree, a diverged local trunk, a failed push). A caller with
+   * a session runner in hand — `implement/loop.ts` — reads this to tell
+   * "dispatch a resolver" apart from every other refusal without parsing
+   * `reason`, the same distinction `WorktreeManager.catchUp`'s `'conflicted'`
+   * status draws for the branch-side merge (T4.3.9, `conflict.ts`).
+   */
+  readonly conflict?: { readonly files: readonly string[] };
 }
 
 async function git(repo: string, args: readonly string[]): Promise<string> {
@@ -281,7 +311,20 @@ export function mergeMessage(request: MergeDecisionRequest, branch: string): str
  *
  * Refuses without merging if {@link decideMerge} says no, and refuses if the
  * trunk is not where it expects — a merge run from the wrong branch or over a
- * dirty tree would produce a commit nobody asked for.
+ * dirty tree would produce a commit nobody asked for. Never throws for a
+ * refusal of its own making: every one, including the wrong-branch and
+ * dirty-tree checks right below and a real content conflict in the
+ * trunk-side merge itself, comes back as `{ merged: false, reason }` rather
+ * than an exception — a caller (`implement/loop.ts`, and the CLI beyond it,
+ * which wraps no `catch` around either) can print "did not merge: `<reason>`"
+ * for every one of them the same way, without a stack trace crashing the run
+ * over a dirty tree the caller had no chance to prevent. When the reason is a
+ * real content conflict, `MergeResult.conflict` also carries the files git
+ * could not merge, so a caller with a session runner in hand can tell
+ * "dispatch a resolver" apart from every other refusal (a dirty tree, a
+ * diverged local trunk, a failed push) without parsing `reason`, and dispatch
+ * one the way `catchUp`'s own conflict already does, rather than this
+ * function trying to hold a resolver of its own (T4.3.9, `conflict.ts`).
  */
 export async function mergeChange(options: MergeChangeOptions): Promise<MergeResult> {
   const into = options.into ?? 'main';
@@ -294,12 +337,18 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
 
   const head = await git(options.repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (head !== into) {
-    throw new MergeError(
-      `expected '${options.repo}' to be on '${into}', found '${head}'`,
-    );
+    return {
+      merged: false,
+      decision,
+      reason: `expected '${options.repo}' to be on '${into}', found '${head}'`,
+    };
   }
   if ((await git(options.repo, ['status', '--porcelain'])) !== '') {
-    throw new MergeError(`refusing to merge into a dirty '${into}'`);
+    return {
+      merged: false,
+      decision,
+      reason: `refusing to merge into a dirty '${into}'`,
+    };
   }
 
   const tip = await git(options.repo, ['rev-parse', options.branch]);
@@ -366,13 +415,27 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
       ]);
     } catch (cause) {
       // Leave the trunk as it was. A half-merged working tree is worse than a
-      // refused merge, and the conflict is a task for an agent, not a state
-      // for the kernel to sit in.
+      // refused merge either way, but *which* error this throws matters: a
+      // real content conflict is a task for an agent, not a state for the
+      // kernel to sit in, and `mergeChange`'s own caller — `implement/loop.ts`
+      // — is the one that can dispatch that agent; this function has no
+      // session runner to hand it to. `MergeConflictError` carries the
+      // conflicted paths so the outer catch below can tell that case apart
+      // from every other reason this merge could fail (a hook, a lock, a
+      // corrupt object) and copy them onto `MergeResult.conflict`, without
+      // this class itself ever crossing the module boundary (T4.3.9,
+      // `conflict.ts`).
+      const files = await git(options.repo, [
+        'diff',
+        '--name-only',
+        '--diff-filter=U',
+      ]).catch(() => '');
       await git(options.repo, ['merge', '--abort']).catch(() => '');
-      throw new MergeError(
-        `merging ${options.branch} into ${into} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-        { cause },
-      );
+      const detail = `merging ${options.branch} into ${into} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      if (files !== '') {
+        throw new MergeConflictError(detail, files.split('\n'), { cause });
+      }
+      throw new MergeError(detail, { cause });
     }
     const commit = await git(options.repo, ['rev-parse', 'HEAD']);
 
@@ -419,6 +482,15 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
       merged: false,
       decision,
       reason: cause instanceof Error ? cause.message : String(cause),
+      // `MergeConflictError` is thrown *inside* `perform` above and would
+      // otherwise be indistinguishable here from a dirty tree, a diverged
+      // local trunk or a failed push — every one of which also lands in this
+      // same catch, all as a plain `Error`. Read off the conflicted files it
+      // carries so a caller can dispatch a resolver rather than merely
+      // refuse (T4.3.9, `conflict.ts`).
+      ...(cause instanceof MergeConflictError
+        ? { conflict: { files: cause.files } }
+        : {}),
     };
   }
 

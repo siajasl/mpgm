@@ -1389,6 +1389,117 @@ describe('supersede', () => {
     );
   });
 
+  // A conflict-resolution catchup session's own id (`${task}-catchup`,
+  // `implement/loop.ts`'s own `resolveTaskId`, T4.3.9) is a second
+  // session-only shape alongside a review round's, minted the same way and
+  // never itself declared in the Plan either — this pins the same
+  // parent-resolution `isSessionOnlyTaskId` now has to cover both shapes
+  // for, mirroring T4.1.4-review-2's own case just above.
+  it('resolves a catchup session id to its parent task, and refuses it while the Plan still declares the parent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-supersede-'));
+    writeGatedPlan(root);
+    twoOrphanedShapes(root);
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T4.1.4a', role: 'implementer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: {
+            taskId: 'T4.1.4a-catchup',
+            role: 'implementer',
+            model: 'claude-sonnet-5',
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const writes: string[] = [];
+    const result = supersede(
+      newContext(root, writes),
+      'r1',
+      'T4.1.4a-catchup', // genuinely dispatched, and its own id is undeclared
+      'macg',
+      'wrongly claimed superseded',
+      ['T4.1.4b'],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('still declared');
+    expect(writes.join('\n')).toContain('still declares T4.1.4a');
+
+    const events = eventsOf(root) as { type: string }[];
+    expect(events.some((event) => event.type === 'TaskSuperseded')).toBe(false);
+    expect(fold(events as never).runs.r1?.tasks['T4.1.4a-catchup']?.status).toBe(
+      'dispatched',
+    );
+  });
+
+  it('supersedes a catchup session id whose parent the split left behind, resolving it via its parent (T4.3.9)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-supersede-'));
+    writeGatedPlan(root);
+    twoOrphanedShapes(root);
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, { registry: kernelRegistry() });
+      log.appendMany([
+        // T4.1.4 itself, undeclared since the split (`twoOrphanedShapes`
+        // already dispatched it, see above), catches up against the trunk
+        // mid-task and the catchup session is what is left dispatched.
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: {
+            taskId: 'T4.1.4-catchup',
+            role: 'implementer',
+            model: 'claude-sonnet-5',
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const writes: string[] = [];
+    const result = supersede(
+      newContext(root, writes),
+      'r1',
+      'T4.1.4-catchup',
+      'macg',
+      'PLN-4 split into T4.1.4a/T4.1.4b/T4.1.4c',
+      ['T4.1.4a', 'T4.1.4b', 'T4.1.4c'],
+    );
+
+    expect(result.ok).toBe(true);
+
+    const events = eventsOf(root);
+    const run = fold(events as never).runs.r1;
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+    expect(run.tasks['T4.1.4-catchup']?.status).toBe('superseded');
+    expect(
+      (events as { type: string; payload: unknown }[])
+        .filter((event) => event.type === 'TaskSuperseded')
+        .map((event) => event.payload),
+    ).toEqual([
+      {
+        taskId: 'T4.1.4-catchup',
+        by: 'macg',
+        reason: 'PLN-4 split into T4.1.4a/T4.1.4b/T4.1.4c',
+        supersededBy: ['T4.1.4a', 'T4.1.4b', 'T4.1.4c'],
+      },
+    ]);
+  });
+
   it('refuses a successor id the gated Plan does not declare, and appends nothing', () => {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-supersede-'));
     writeGatedPlan(root);
