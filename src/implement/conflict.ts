@@ -6,7 +6,14 @@
  * half-merged checkout is worse than a refused merge (`worktree.ts`,
  * `merge.ts`). Both say, in their own words, that the conflict "is a task for
  * an agent, not a state for the kernel to sit in" — but until this, nothing
- * dispatched one. T4.3.2's run hit exactly this and stopped:
+ * dispatched one, at either site. `implement/loop.ts` now does, for both:
+ * `catchUp`'s conflict, hit before the first session of a task ever runs,
+ * and `mergeChange`'s, hit at the very end, when a filing has landed on the
+ * trunk during the task's own 20-40 minute life and the branch — already
+ * caught up once — has fallen behind again while it was being reviewed.
+ * Both route through the same `renderConflict` prompt and the same checks
+ * below, because both are the same problem at a different point in the
+ * loop. T4.3.2's run hit the first of the two and stopped:
  *
  *   'mpgm/T4.3.2' is behind 'main' and merging it conflicts in PLAN.md.
  *   Resolving it is a change somebody has to make; until it is made, a pull
@@ -49,6 +56,18 @@
  * that picks between them — a conflict outside a document header, two tasks
  * editing one function, has no textual answer, and the agent is told to
  * leave it conflicted rather than guess.
+ *
+ * The trunk-side resolution lands on the branch after its own review already
+ * ran, unlike the branch-side one, which lands before either the implementing
+ * or the review session sees the branch at all. That is deliberate rather
+ * than overlooked: the resolution reconciles two changes each already
+ * reviewed and gated on their own way in — the task's own diff, and whatever
+ * landed on `into` in the meantime — the same reconciliation a `--no-ff`
+ * merge commit itself performs mechanically and unreviewed every time this
+ * loop merges at all. Requiring a fresh review of the reconciliation would
+ * mean a second review round for every task a filing happens to race, for a
+ * commit that (per the prompt above) is not permitted to introduce anything
+ * beyond what each side already changed.
  */
 
 /** What the resolving agent is shown for one conflict. */
@@ -81,10 +100,11 @@ export function renderConflict(request: {
     'a file while leaving the ancestor version in for the rest.',
     '',
     'When every conflict is genuinely resolved, stage and commit the merge —',
-    '`git add` the files, then `git commit` (the prepared merge message needs',
-    'no changes) — so that `MERGE_HEAD` clears. A resolution that edits the',
-    'files but never finishes the merge commit is not recorded as one; report',
-    'the resulting commit in `ref`.',
+    '`git add` the files, then `git commit --no-edit` (there is no editor in',
+    'this session, and the prepared merge message needs no changes) — so',
+    'that `MERGE_HEAD` clears. A resolution that edits the files but never',
+    'finishes the merge commit is not recorded as one; report the resulting',
+    'commit in `ref`.',
   ];
   for (const [file, content] of request.files) {
     lines.push('', `--- ${file} ---`, content);

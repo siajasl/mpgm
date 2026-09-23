@@ -300,6 +300,254 @@ class RefusesCodeConflict implements AgentSessionProvider {
   }
 }
 
+/**
+ * Resolves a header conflict at the *trunk* side rather than the branch
+ * side: the implementing session makes the branch's own genuine change, the
+ * review session then simulates a filing landing on the trunk while review
+ * was "in flight" (the window `merge.ts`'s own doc names, T4.3.9), and the
+ * conflict-resolution session — dispatched under `${task.id}-catchup-2`,
+ * not `-catchup` — reconciles it after review has already approved, the
+ * same way `ResolvesHeaderConflict` reconciles one before review ever runs.
+ */
+class ResolvesTrunkSideConflict implements AgentSessionProvider {
+  readonly requests: SessionRequest[] = [];
+  #calls = 0;
+
+  constructor(
+    private readonly worktreePath: string,
+    private readonly repo: string,
+  ) {}
+
+  run(request: SessionRequest): Promise<SessionResult> {
+    this.requests.push(request);
+    this.#calls += 1;
+
+    if (this.#calls === 1) {
+      // The implementing session: the branch's own genuine change.
+      const path = join(this.worktreePath, 'PLAN.md');
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace(
+          '**Upstream:** DESIGN v0.35',
+          '**Upstream:** DESIGN v0.36',
+        ),
+      );
+      git(this.worktreePath, ['add', 'PLAN.md']);
+      git(this.worktreePath, [
+        'commit',
+        '-m',
+        "the branch's own rework bumps DESIGN to v0.36",
+      ]);
+      const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+      return Promise.resolve(
+        scriptedSuccess({
+          ref,
+          summary: 'bumped DESIGN to v0.36',
+          files: ['PLAN.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+      );
+    }
+
+    if (this.#calls === 2) {
+      // The review session — while it runs, a filing lands directly on the
+      // trunk. Two filings landed on `main` during T4.3.2's own life, so the
+      // window is not narrow (`conflict.ts`).
+      const trunkPlanPath = join(this.repo, 'PLAN.md');
+      writeFileSync(
+        trunkPlanPath,
+        readFileSync(trunkPlanPath, 'utf8').replace(
+          '**Status:** v0.21',
+          '**Status:** v0.22',
+        ),
+      );
+      git(this.repo, ['add', 'PLAN.md']);
+      git(this.repo, ['commit', '-m', 'a filing bumps PLAN.md to v0.22']);
+
+      const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+      return Promise.resolve(
+        scriptedSuccess({
+          ref,
+          verdict: 'approve',
+          summary: 'the DESIGN bump looks right',
+          findings: [],
+          deviations: [],
+        }),
+      );
+    }
+
+    // The trunk-side conflict-resolution session, dispatched under
+    // `${task.id}-catchup-2` only after `mergeChange` itself conflicted.
+    expect(request.prompt).toContain('merging it conflicts');
+    writeFileSync(
+      join(this.worktreePath, 'PLAN.md'),
+      ['# PLAN', '', '**Status:** v0.22', '**Upstream:** DESIGN v0.36', ''].join('\n'),
+    );
+    git(this.worktreePath, ['add', 'PLAN.md']);
+    git(this.worktreePath, ['commit', '--no-edit']);
+    const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+    return Promise.resolve(
+      scriptedSuccess({
+        ref,
+        summary: 'kept both edits at the trunk side, after review',
+        files: ['PLAN.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+    );
+  }
+}
+
+/**
+ * The trunk-side counterpart of `RefusesCodeConflict`: the filing that lands
+ * while review is in flight collides with the branch on actual code, not a
+ * document header, and the resolver refuses honestly rather than guess.
+ */
+class RefusesTrunkSideCodeConflict implements AgentSessionProvider {
+  readonly requests: SessionRequest[] = [];
+  #calls = 0;
+
+  constructor(
+    private readonly worktreePath: string,
+    private readonly repo: string,
+  ) {}
+
+  run(request: SessionRequest): Promise<SessionResult> {
+    this.requests.push(request);
+    this.#calls += 1;
+
+    if (this.#calls === 1) {
+      const path = join(this.worktreePath, 'code.js');
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace("return 'hello';", "return 'hi';"),
+      );
+      git(this.worktreePath, ['add', 'code.js']);
+      git(this.worktreePath, ['commit', '-m', "the branch's own change"]);
+      const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+      return Promise.resolve(
+        scriptedSuccess({
+          ref,
+          summary: "changed greet()'s return value",
+          files: ['code.js'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+      );
+    }
+
+    if (this.#calls === 2) {
+      const path = join(this.repo, 'code.js');
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace("return 'hello';", "return 'hey';"),
+      );
+      git(this.repo, ['add', 'code.js']);
+      git(this.repo, ['commit', '-m', 'a filing that also changes greet()']);
+
+      const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+      return Promise.resolve(
+        scriptedSuccess({
+          ref,
+          verdict: 'approve',
+          summary: 'looks right',
+          findings: [],
+          deviations: [],
+        }),
+      );
+    }
+
+    const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+    return Promise.resolve(
+      scriptedSuccess({
+        ref,
+        summary: 'left the conflict for a person to decide',
+        files: [],
+        tests: [],
+        complete: false,
+        remaining:
+          "code.js: both sides changed greet()'s return value to something " +
+          'different; there is no rule that says which one wins',
+        deviations: [],
+      }),
+    );
+  }
+}
+
+/**
+ * Stages a conflict's resolution but never runs `git commit` — the most
+ * likely real resolver mistake, and the one the reviewer of this task's
+ * first attempt asked to be pinned: `MERGE_HEAD` stays set, and nothing here
+ * treats a resolver's claimed success as one while a merge is still open.
+ */
+class StagesButDoesNotCommit implements AgentSessionProvider {
+  readonly requests: SessionRequest[] = [];
+
+  constructor(private readonly worktreePath: string) {}
+
+  run(request: SessionRequest): Promise<SessionResult> {
+    this.requests.push(request);
+    writeFileSync(
+      join(this.worktreePath, 'PLAN.md'),
+      ['# PLAN', '', '**Status:** v0.22', '**Upstream:** DESIGN v0.36', ''].join('\n'),
+    );
+    git(this.worktreePath, ['add', 'PLAN.md']);
+    // Deliberately no `git commit` — `MERGE_HEAD` is left set.
+    const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+    return Promise.resolve(
+      scriptedSuccess({
+        ref,
+        summary: 'resolved it',
+        files: ['PLAN.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+    );
+  }
+}
+
+/**
+ * Simulates an operator pausing a run in the exact window `catchUpAndResolve`
+ * (`implement/loop.ts`) cannot observe through `track`'s own guard: after
+ * `catchUp` has found a conflict and left it in place, before any resolver
+ * has been dispatched for it. Appends `OperatorIntervened` the instant the
+ * real `catchUp` reports `'conflicted'`, rather than needing a session to
+ * return first — nothing has been dispatched yet for this to hook on.
+ */
+class PausesOnceConflicted extends WorktreeManager {
+  constructor(
+    repo: string,
+    private readonly log: EventLog,
+  ) {
+    super({ repo });
+  }
+
+  override async catchUp(
+    taskId: string,
+    into: string,
+    options?: { readonly leaveConflicted?: boolean },
+  ): ReturnType<WorktreeManager['catchUp']> {
+    const result = await super.catchUp(taskId, into, options);
+    if (result.status === 'conflicted') {
+      this.log.append({
+        runId: 'r',
+        type: 'OperatorIntervened',
+        payload: { action: 'pause', detail: '' },
+      });
+    }
+    return result;
+  }
+}
+
 /** Whether `worktreePath` is mid-merge — `MERGE_HEAD` set. */
 function mergeInProgress(worktreePath: string): boolean {
   try {
@@ -468,5 +716,158 @@ describe('a conflict between a task branch and the trunk (T4.3.9, IMP-1, IMP-4, 
     const trunkPlan = readFileSync(join(repo, 'PLAN.md'), 'utf8');
     expect(trunkPlan).toContain('**Status:** v0.22');
     expect(trunkPlan).not.toContain('**Upstream:** DESIGN v0.36');
+  });
+
+  // The review that found this task's second attempt incomplete: `merge.ts`'s
+  // own conflict, hit at the very end of the loop after a filing lands on the
+  // trunk while review is in flight, is the second site the task names and
+  // was left throwing a raw `MergeError` out of `implementTask` uncaught.
+  it('is dispatched to an agent when the trunk-side merge conflicts after review, and both edits survive', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+
+    const provider = new ResolvesTrunkSideConflict(worktree.path, repo);
+    const log = openLog();
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('merged');
+      // implement, review, and the trunk-side resolver — never a second
+      // implementing or review round.
+      expect(provider.requests).toHaveLength(3);
+      const dispatchedTaskIds = log
+        .read()
+        .filter((event) => event.type === 'TaskDispatched')
+        .map((event) => (event.payload as { taskId: string }).taskId);
+      expect(dispatchedTaskIds).toEqual(['T1', 'T1-review', 'T1-catchup-2']);
+
+      const merged = readFileSync(join(repo, 'PLAN.md'), 'utf8');
+      expect(merged).toContain('**Status:** v0.22');
+      expect(merged).toContain('**Upstream:** DESIGN v0.36');
+    } finally {
+      log.close();
+    }
+  });
+
+  it('still refuses a trunk-side collision no rule can resolve, after review has already approved', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+
+    const provider = new RefusesTrunkSideCodeConflict(worktree.path, repo);
+    const log = openLog();
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('code.js');
+      expect(result.reason).toContain('conflict');
+      expect(provider.requests).toHaveLength(3);
+
+      // Left clean: nothing here tries to finish or redo the merge.
+      expect(git(worktree.path, ['status', '--porcelain'])).toBe('');
+      expect(mergeInProgress(worktree.path)).toBe(false);
+    } finally {
+      log.close();
+    }
+
+    // Nothing landed on the trunk beyond the filing's own commit.
+    expect(readFileSync(join(repo, 'code.js'), 'utf8')).toContain("return 'hey'");
+  });
+
+  // The reviewer of this task's second attempt: neither of these two
+  // refusals had a test, and both are plausible in a real run — a resolver
+  // that edits and stages the conflicted files but never commits is the most
+  // likely mistake of all, and an operator can pause or kill a run in the
+  // instant between `catchUp` leaving a conflict in place and a resolver
+  // being dispatched for it.
+  it("a resolver that stages but never commits leaves 'MERGE_HEAD' set, and is refused rather than trusted", async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+    const planPath = join(worktree.path, 'PLAN.md');
+    writeFileSync(
+      planPath,
+      readFileSync(planPath, 'utf8').replace(
+        '**Upstream:** DESIGN v0.35',
+        '**Upstream:** DESIGN v0.36',
+      ),
+    );
+    git(worktree.path, ['add', 'PLAN.md']);
+    git(worktree.path, ['commit', '-m', "the branch's own rework bumps DESIGN to v0.36"]);
+
+    const trunkPlanPath = join(repo, 'PLAN.md');
+    writeFileSync(
+      trunkPlanPath,
+      readFileSync(trunkPlanPath, 'utf8').replace(
+        '**Status:** v0.21',
+        '**Status:** v0.22',
+      ),
+    );
+    git(repo, ['add', 'PLAN.md']);
+    git(repo, ['commit', '-m', 'a filing bumps PLAN.md to v0.22']);
+
+    const branchTipBefore = git(worktree.path, ['rev-parse', 'HEAD']);
+    const provider = new StagesButDoesNotCommit(worktree.path);
+    const log = openLog();
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('blocked');
+      expect(provider.requests).toHaveLength(1);
+      expect(result.reason).toContain('MERGE_HEAD');
+      expect(result.reason).toContain('still set');
+
+      // The resolver's own `git add` is undone along with the abandoned
+      // merge — left clean, not half-staged.
+      expect(git(worktree.path, ['status', '--porcelain'])).toBe('');
+      expect(mergeInProgress(worktree.path)).toBe(false);
+      expect(git(worktree.path, ['rev-parse', 'HEAD'])).toBe(branchTipBefore);
+    } finally {
+      log.close();
+    }
+  });
+
+  it('refuses a conflict rather than dispatching one, once an operator pauses the run before an agent can be asked', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+    conflictOn(
+      repo,
+      worktree.path,
+      'code.js',
+      "  return 'hello';",
+      "  return 'hi';",
+      "  return 'hey';",
+    );
+
+    // Never actually called: the pause is recorded before any resolver could
+    // be dispatched, so this provider must not be reached.
+    const provider = new RefusesCodeConflict(worktree.path);
+    const log = openLog();
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees: new PausesOnceConflicted(repo, log),
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toContain('conflicts');
+      expect(result.reason).toContain('paused');
+      expect(result.reason).toContain('before an agent could be dispatched');
+      expect(provider.requests).toHaveLength(0);
+
+      // Left clean: the conflict `catchUp` found was aborted, not handed to
+      // anything, once the pause was seen.
+      expect(git(worktree.path, ['status', '--porcelain'])).toBe('');
+      expect(mergeInProgress(worktree.path)).toBe(false);
+    } finally {
+      log.close();
+    }
   });
 });

@@ -439,6 +439,45 @@ describe('computeHarnessOverhead — a conflict-resolution catchup session’s o
     // 1000 (T1) + 400 (T1-catchup) = 1400ms, disjoint.
     expect(overhead.observedMs).toBe(1400);
   });
+
+  it('excludes a settled `-catchup-2` task id the same way — the trunk-side conflict a task can still hit after review (T4.3.9)', () => {
+    // `implement/loop.ts` dispatches the trunk-side conflict-resolution
+    // session — hit only when `mergeChange` itself conflicts, after review —
+    // under `${task.id}-catchup-2`, numbered the way a rework round's
+    // `-review-${n}` already is so it does not collide with the branch-side
+    // `${task.id}-catchup` a task may also have dispatched earlier in the
+    // same run. `isSessionOnlyTaskId`'s regex widened to `-catchup(-\d+)?$`
+    // to cover it; this pins that the widening actually excludes it from the
+    // coverage population, not merely that it compiles.
+    const events = logWithTimestamps(
+      [
+        runStarted(), // 0
+        contextAssembled('T1', 100), // 100 — the implementing task, instrumented
+        dispatched('T1'), // 150
+        toolCallLogged('T1'), // 1000
+        completed('T1'), // 1000 -> T1 span [0, 1000) = 1000ms
+        dispatched('T1-catchup-2'), // 2000 — the trunk-side resolver's own taskId
+        toolCallLogged('T1-catchup-2'), // 2400
+        completed('T1-catchup-2'), // 2400 -> T1-catchup-2 span [2000, 2400) = 400ms
+      ],
+      [0, 100, 150, 1000, 1000, 2000, 2400, 2400],
+    );
+    const run = fold(events).runs[RUN];
+    if (run === undefined) throw new Error('run not folded');
+
+    const overhead = computeHarnessOverhead(run, events);
+
+    // Only T1 counts toward the coverage population. Without the widened
+    // regex this reads settledTaskCount: 2, instrumentedTaskCount: 1,
+    // coverage: 0.5, exactly the bug the `-catchup` case above already fixed
+    // for the branch-side id.
+    expect(overhead.components.settledTaskCount).toBe(1);
+    expect(overhead.components.instrumentedTaskCount).toBe(1);
+    expect(overhead.coverage).toBe(1);
+    expect(overhead.ratio).toBeCloseTo(0.1);
+    // Still real harness busy time: 1000 (T1) + 400 (T1-catchup-2) = 1400ms.
+    expect(overhead.observedMs).toBe(1400);
+  });
 });
 
 describe('computeHarnessOverhead — a superseded task (T4.3.7) keeps the busy time it already earned', () => {

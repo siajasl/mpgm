@@ -468,21 +468,25 @@ interface TaskIdPayload {
  * that is never itself a plan task: a review session's own
  * `${task.id}-review` for the first round, `${task.id}-review-${round}` for
  * every rework round after it (`reviewTaskId`), or a conflict-resolution
- * session's own `${task.id}-catchup` (`resolveTaskId`, T4.3.9). Each is
- * dispatched directly through `track`, never through the `assembleContext`
- * call that precedes the *implementing* session, so an id of this shape can
- * never carry a `ContextAssembled` of its own — not today, and not by any
- * narrower fix, only by `implement/loop.ts` growing a second call site that
- * assembles context for one. Settled ids of this shape are excluded from
+ * session's own `${task.id}-catchup` for the branch-side conflict a run
+ * starts with, `${task.id}-catchup-2` for the trunk-side one it can still
+ * hit at the very end, after a filing landed on `into` during the task's own
+ * life (`resolveTaskId`, T4.3.9). Each is dispatched directly through
+ * `track`, never through the `assembleContext` call that precedes the
+ * *implementing* session, so an id of this shape can never carry a
+ * `ContextAssembled` of its own — not today, and not by any narrower fix,
+ * only by `implement/loop.ts` growing a second call site that assembles
+ * context for one. Settled ids of this shape are excluded from
  * `settledTaskCount`/`instrumentedTaskCount` (coverage's population) for
  * exactly that reason: counting them dilutes `coverage` by a fraction that
  * says nothing about what `ratio` could ever measure. This run's own log has
  * 65 review-session ids among 90 otherwise-settled ones — coverage of 0/25,
  * not 0/90 — measured before the catchup shape existed, so that count is of
  * `-review` ids alone; the predicate below now also excludes `-catchup`
- * ones, on the same reasoning. Excluded ids still contribute their own real
- * busy time to `observedMs` below, which is not population-matched and is
- * not limited to what `ratio` measures.
+ * ones (numbered the same way `-review` rounds are), on the same reasoning.
+ * Excluded ids still contribute their own real busy time to `observedMs`
+ * below, which is not population-matched and is not limited to what `ratio`
+ * measures.
  *
  * Exported for `cli/commands.ts`'s `supersede` (T4.3.7): a session-only id
  * is never itself declared in the gated Plan artifact — `implement/loop.ts`
@@ -493,17 +497,17 @@ interface TaskIdPayload {
  * membership instead.
  */
 export function isSessionOnlyTaskId(taskId: string): boolean {
-  return /-review(-\d+)?$|-catchup$/.test(taskId);
+  return /-review(-\d+)?$|-catchup(-\d+)?$/.test(taskId);
 }
 
 /**
  * The plan task a session-only id belongs to: strips the same
- * `-review(-\d+)?|-catchup` suffix `isSessionOnlyTaskId` matches. Callers
- * must check `isSessionOnlyTaskId(taskId)` first — this does not validate
- * its input and returns `taskId` unchanged when it does not match.
+ * `-review(-\d+)?|-catchup(-\d+)?` suffix `isSessionOnlyTaskId` matches.
+ * Callers must check `isSessionOnlyTaskId(taskId)` first — this does not
+ * validate its input and returns `taskId` unchanged when it does not match.
  */
 export function sessionParentTaskId(taskId: string): string {
-  return taskId.replace(/-review(-\d+)?$|-catchup$/, '');
+  return taskId.replace(/-review(-\d+)?$|-catchup(-\d+)?$/, '');
 }
 
 /**
