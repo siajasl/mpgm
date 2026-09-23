@@ -1457,7 +1457,11 @@ describe('supersede', () => {
         {
           runId: 'r1',
           type: 'TaskDispatched',
-          payload: { taskId: 'T4.1.4-catchup', role: 'implementer', model: 'claude-sonnet-5' },
+          payload: {
+            taskId: 'T4.1.4-catchup',
+            role: 'implementer',
+            model: 'claude-sonnet-5',
+          },
         },
       ]);
     } finally {
