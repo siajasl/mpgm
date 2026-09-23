@@ -641,6 +641,62 @@ export class WorktreeManager {
     }
   }
 
+  /**
+   * Paths that differ between two revisions in a task's checkout, or
+   * `undefined` when the question cannot be answered — no checkout, or a
+   * revision git does not know.
+   *
+   * What bounds a conflict resolution mechanically rather than trusting the
+   * prompt alone (T4.3.9, `conflict.ts`): `renderConflict` tells a resolver
+   * to keep only what each side actually changed, but that is prose, and
+   * nothing checked it was followed. Comparing this against what `into`
+   * itself changed (a second call, `from` and `to` swapped to `into`'s own
+   * range) is what lets a caller tell "this merge pulled the trunk forward,
+   * same as any other" from "this commit also touched a file neither side
+   * had a reason to".
+   */
+  async diffPaths(
+    taskId: string,
+    from: string,
+    to: string,
+  ): Promise<string[] | undefined> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return undefined;
+    }
+    try {
+      const output = await this.#git(
+        ['diff', '--name-only', `${from}..${to}`],
+        found.path,
+      );
+      return output === '' ? [] : output.split('\n');
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The nearest common ancestor of two revisions in a task's checkout, or
+   * `undefined` when the question cannot be answered — no checkout, no
+   * common history, or a revision git does not know.
+   *
+   * Paired with {@link diffPaths}: the ancestor is where `into`'s own range
+   * of changes starts from, so a caller can ask "what did `into` change
+   * since the two sides last agreed" rather than "what has `into` ever
+   * changed".
+   */
+  async mergeBase(taskId: string, a: string, b: string): Promise<string | undefined> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return undefined;
+    }
+    try {
+      return await this.#git(['merge-base', a, b], found.path);
+    } catch {
+      return undefined;
+    }
+  }
+
   release(taskId: string, options: ReleaseOptions = {}): Promise<ReleaseResult> {
     assertUsableTaskId(taskId);
     return this.#serial(() => this.#release(taskId, options));

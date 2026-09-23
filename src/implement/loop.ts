@@ -600,6 +600,12 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     | { readonly status: 'refused'; readonly detail: string }
     | { readonly status: 'blocked'; readonly reason: string }
   > => {
+    // Read before `catchUp` touches anything, so the bound checked near the
+    // bottom of this function has something to diff a resolved commit
+    // against: the branch tip as it stood before this merge attempt, not
+    // after.
+    const preConflictTip = await options.worktrees.head(task.id);
+
     // `leaveConflicted` so that a conflict is handed to `track('resolve-
     // conflict', ...)` below with its markers still in place, rather than
     // aborted before anything could see them (T4.3.9, `conflict.ts`).
@@ -726,6 +732,47 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
           `as one that committed, to 'MERGE_HEAD' alone. Resolving it is a ` +
           `change somebody has to make; until it is made, a pull request ` +
           `for this branch cannot report checks at all.`,
+      );
+    }
+
+    // `MERGE_HEAD` clear and `into` fully contained proves the merge
+    // finished, not that it finished honestly. `renderConflict` tells the
+    // resolver to keep only what each side actually changed, but that is
+    // prose in a prompt, and nothing before this checked it was followed —
+    // a resolver's commit could touch a file neither side had ever changed
+    // and nothing here would notice. Bound it mechanically instead: whatever
+    // the reconciled commit changes beyond the conflicted files themselves
+    // has to be exactly what `into` already carried in from its own
+    // commits — the part of any ordinary merge that pulls the trunk's
+    // changes forward — or it is content nothing reviewed, introduced
+    // through the one path IMP-4 exists to close (T4.3.9, `conflict.ts`).
+    const trunkBase =
+      preConflictTip === undefined
+        ? undefined
+        : await options.worktrees.mergeBase(task.id, preConflictTip, into);
+    const touched =
+      preConflictTip === undefined
+        ? undefined
+        : await options.worktrees.diffPaths(task.id, preConflictTip, 'HEAD');
+    const trunkChanged =
+      trunkBase === undefined
+        ? undefined
+        : await options.worktrees.diffPaths(task.id, trunkBase, into);
+    if (touched === undefined || trunkChanged === undefined) {
+      return blocked(
+        `${conflictSummary} It was reported resolved, but what the resolution ` +
+          `actually touched could not be checked against '${into}', so it cannot ` +
+          `be trusted without a person reading it by hand.`,
+      );
+    }
+    const allowed = new Set([...caughtUp.files, ...trunkChanged]);
+    const unexpected = touched.filter((file) => !allowed.has(file));
+    if (unexpected.length > 0) {
+      return blocked(
+        `${conflictSummary} The resolving agent's commit also changed ` +
+          `${unexpected.join(', ')}, which neither '${into}' nor the conflict ` +
+          `itself touched; a reconciliation is only trusted to carry forward what ` +
+          `each side already changed (IMP-4), so this is refused rather than merged.`,
       );
     }
     return { status: 'clean' };

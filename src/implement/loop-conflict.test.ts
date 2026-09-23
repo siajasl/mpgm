@@ -516,6 +516,72 @@ class StagesButDoesNotCommit implements AgentSessionProvider {
 }
 
 /**
+ * Resolves the conflict honestly — same as `ResolvesHeaderConflict` — but
+ * also edits a file neither side ever touched, in the same commit. Pins the
+ * bound the reviewer of this task's second attempt asked for: a
+ * reconciliation is only trusted to carry forward what each side already
+ * changed (IMP-4), and `renderConflict`'s prose alone was never enough to
+ * guarantee that.
+ */
+class ResolvesButAlsoEditsAnUnrelatedFile implements AgentSessionProvider {
+  readonly requests: SessionRequest[] = [];
+  #calls = 0;
+
+  constructor(private readonly worktreePath: string) {}
+
+  run(request: SessionRequest): Promise<SessionResult> {
+    this.requests.push(request);
+    this.#calls += 1;
+
+    if (this.#calls === 1) {
+      writeFileSync(
+        join(this.worktreePath, 'PLAN.md'),
+        ['# PLAN', '', '**Status:** v0.22', '**Upstream:** DESIGN v0.36', ''].join('\n'),
+      );
+      // Neither side ever touched this file — nothing the conflict named,
+      // nothing `into` carried in.
+      writeFileSync(join(this.worktreePath, 'README.md'), '# sample\n\nunrelated edit\n');
+      git(this.worktreePath, ['add', 'PLAN.md', 'README.md']);
+      git(this.worktreePath, ['commit', '--no-edit']);
+      const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+      return Promise.resolve(
+        scriptedSuccess({
+          ref,
+          summary: 'kept both edits, and tidied README.md while at it',
+          files: ['PLAN.md', 'README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+      );
+    }
+
+    // Reached only if the loop wrongly trusts the resolution above.
+    const ref = git(this.worktreePath, ['rev-parse', 'HEAD']);
+    return Promise.resolve(
+      this.#calls === 2
+        ? scriptedSuccess({
+            ref,
+            summary: 'nothing further to do',
+            files: [],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          })
+        : scriptedSuccess({
+            ref,
+            verdict: 'approve',
+            summary: 'looked fine',
+            findings: [],
+            deviations: [],
+          }),
+    );
+  }
+}
+
+/**
  * Simulates an operator pausing a run in the exact window `catchUpAndResolve`
  * (`implement/loop.ts`) cannot observe through `track`'s own guard: after
  * `catchUp` has found a conflict and left it in place, before any resolver
@@ -928,6 +994,67 @@ describe('a conflict between a task branch and the trunk (T4.3.9, IMP-1, IMP-4, 
     } finally {
       log.close();
     }
+  });
+
+  // The reviewer of this task's second attempt: rewriting `review.ref` onto
+  // the reconciled commit means `decideMerge`'s `review-is-stale` refusal can
+  // never fire for it, so the only thing bounding the resolver's commit to
+  // "what each side already changed" was `renderConflict`'s prose. This pins
+  // the mechanical bound that replaces trusting the prompt: a resolution that
+  // also edits a file neither side touched is refused, not merged, however
+  // honestly it resolved the actual conflict.
+  it('refuses a resolution that also edits a file neither side touched, even though the conflict itself was resolved honestly', async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+    const planPath = join(worktree.path, 'PLAN.md');
+    writeFileSync(
+      planPath,
+      readFileSync(planPath, 'utf8').replace(
+        '**Upstream:** DESIGN v0.35',
+        '**Upstream:** DESIGN v0.36',
+      ),
+    );
+    git(worktree.path, ['add', 'PLAN.md']);
+    git(worktree.path, ['commit', '-m', "the branch's own rework bumps DESIGN to v0.36"]);
+
+    const trunkPlanPath = join(repo, 'PLAN.md');
+    writeFileSync(
+      trunkPlanPath,
+      readFileSync(trunkPlanPath, 'utf8').replace(
+        '**Status:** v0.21',
+        '**Status:** v0.22',
+      ),
+    );
+    git(repo, ['add', 'PLAN.md']);
+    git(repo, ['commit', '-m', 'a filing bumps PLAN.md to v0.22']);
+
+    const provider = new ResolvesButAlsoEditsAnUnrelatedFile(worktree.path);
+    const log = openLog();
+
+    try {
+      const result = await implementTask(baseOptions(repo, provider, log));
+
+      expect(result.status).toBe('blocked');
+      // Only the conflict-resolution session ran — the loop never reached the
+      // implementing session, having caught the bound violation first.
+      expect(provider.requests).toHaveLength(1);
+      expect(result.reason).toContain('README.md');
+      expect(result.reason).toContain('IMP-4');
+
+      // The resolver did run a real `git commit`, unlike the "stages but
+      // never commits" case above, so there is no open merge here to abort —
+      // `blocked` only undoes a merge still in progress. What this refusal
+      // guarantees is that the untrusted commit is never published or merged,
+      // not that the worktree is rolled back to it; that is checked below.
+      expect(git(worktree.path, ['status', '--porcelain'])).toBe('');
+      expect(mergeInProgress(worktree.path)).toBe(false);
+    } finally {
+      log.close();
+    }
+
+    // Nothing landed on the trunk.
+    expect(readFileSync(join(repo, 'README.md'), 'utf8')).not.toContain('unrelated edit');
   });
 
   // The reviewer of this task's second attempt: the trunk-side retry's only
