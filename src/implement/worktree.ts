@@ -458,12 +458,30 @@ export class WorktreeManager {
    *
    * A clean merge is made here, by the kernel, because it is mechanical and
    * because the alternative is spending an expensive session on it. A
-   * conflicting one is not: it is left untouched and reported, the same
-   * choice `mergeChange` makes in the other direction — a half-merged
-   * checkout is worse than a refused merge, and resolving one is a task for
-   * an agent rather than a state for the kernel to sit in.
+   * conflicting one is not resolved here either — resolving one is a task for
+   * an agent rather than a state for the kernel to sit in (T4.3.9,
+   * `conflict.ts`) — but by default it is still left untouched and reported,
+   * the same choice `mergeChange` makes in the other direction, so that a
+   * caller with no resolver in hand never finds a checkout mid-merge.
    */
-  async catchUp(taskId: string, into: string): Promise<CatchUp> {
+  async catchUp(
+    taskId: string,
+    into: string,
+    options: {
+      /**
+       * Leave a conflicting merge in progress — `MERGE_HEAD` set, conflict
+       * markers in the working tree — instead of aborting it.
+       *
+       * For a caller about to hand the conflict to something that can
+       * resolve it in place (`git add`, `git commit`) rather than starting
+       * over from a clean checkout (T4.3.9). Everywhere else, the default
+       * (`false`) is what keeps this method's existing promise: a caller
+       * that does not go on to resolve it gets its checkout back exactly as
+       * it was.
+       */
+      readonly leaveConflicted?: boolean;
+    } = {},
+  ): Promise<CatchUp> {
     const found = await this.find(taskId);
     if (found === undefined) {
       return { status: 'refused', detail: `no checkout for '${taskId}'` };
@@ -487,22 +505,75 @@ export class WorktreeManager {
     }
 
     try {
-      await this.#git(['merge', '--no-edit', into], found.path);
+      // diff3 conflict markers carry the common ancestor as well as both
+      // sides. A resolver reading a conflict needs that to tell "both sides
+      // changed this" from "one side changed it and the other did not" — the
+      // difference between a real conflict and one that only looks like one
+      // because the two changes happen to sit on adjacent lines (T4.3.2,
+      // `conflict.ts`).
+      await this.#git(
+        ['-c', 'merge.conflictStyle=diff3', 'merge', '--no-edit', into],
+        found.path,
+      );
       return { status: 'merged', commits: behind };
     } catch (cause) {
       const files = await this.#git(
         ['diff', '--name-only', '--diff-filter=U'],
         found.path,
       ).catch(() => '');
-      await this.#git(['merge', '--abort'], found.path).catch(() => '');
-      // No conflicted paths and a failed merge means git refused before it
-      // started — a dirty checkout it would have overwritten, most often.
-      return files === ''
-        ? {
-            status: 'refused',
-            detail: cause instanceof Error ? cause.message : String(cause),
-          }
-        : { status: 'conflicted', files: files.split('\n') };
+      if (files === '') {
+        // No conflicted paths and a failed merge means git refused before it
+        // started — a dirty checkout it would have overwritten, most often —
+        // so there is nothing a resolver could work with and nothing left
+        // mid-merge to preserve.
+        await this.#git(['merge', '--abort'], found.path).catch(() => '');
+        return {
+          status: 'refused',
+          detail: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+      if (!(options.leaveConflicted ?? false)) {
+        await this.#git(['merge', '--abort'], found.path).catch(() => '');
+      }
+      return { status: 'conflicted', files: files.split('\n') };
+    }
+  }
+
+  /**
+   * Abort a merge a resolver left in progress (`catchUp` with
+   * `leaveConflicted: true`) rather than finishing.
+   *
+   * A no-op, not an error, when nothing is in progress: the loop calls this
+   * defensively after a resolution attempt is refused, and a resolver that
+   * never staged anything — or that finished the merge before reporting
+   * failure for some unrelated reason — has nothing here to undo.
+   */
+  async abortMerge(taskId: string): Promise<void> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return;
+    }
+    await this.#git(['merge', '--abort'], found.path).catch(() => '');
+  }
+
+  /**
+   * Whether a task's checkout is mid-merge — `MERGE_HEAD` still set.
+   *
+   * What tells a caller whether a resolver actually finished the merge
+   * (`git commit`) rather than only editing the conflicted files and
+   * claiming success: editing without committing leaves this `true`, and a
+   * resolution that leaves it `true` is not one (T4.3.9).
+   */
+  async mergeInProgress(taskId: string): Promise<boolean> {
+    const found = await this.find(taskId);
+    if (found === undefined) {
+      return false;
+    }
+    try {
+      await this.#git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], found.path);
+      return true;
+    } catch {
+      return false;
     }
   }
 

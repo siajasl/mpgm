@@ -2679,21 +2679,34 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
-  it('blocks rather than work in a checkout that cannot be brought up to the trunk', async () => {
-    // The kernel does not resolve conflicts. Saying so here costs one message;
-    // finding out from CI costs a session, a grace period waiting for checks
-    // that cannot exist, and a refusal that blames CI configuration.
+  it('blocks rather than guess when the agent it dispatches cannot honestly resolve a conflict (T4.3.9)', async () => {
+    // The kernel does not resolve conflicts itself — it dispatches an agent
+    // to (T4.3.9, `conflict.ts`) — but a real collision (both sides change
+    // one line to different values) has no rule that picks a winner, and an
+    // agent that reports so honestly still leaves the task blocked rather
+    // than merging a guess.
     const repo = newRepo();
     const worktrees = new WorktreeManager({ repo });
     const worktree = await worktrees.acquire('T1');
     writeFileSync(join(worktree.path, 'contested.txt'), 'what the branch says\n');
     git(worktree.path, ['add', '--all']);
     git(worktree.path, ['commit', '-m', 'the branch edits it']);
+    const branchTip = git(worktree.path, ['rev-parse', 'HEAD']);
     writeFileSync(join(repo, 'contested.txt'), 'what the trunk says\n');
     git(repo, ['add', '--all']);
     git(repo, ['commit', '-m', 'the trunk edits it too']);
 
-    const provider = new ScriptedProvider([]);
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: branchTip,
+        summary: 'left the conflict for a person to decide',
+        files: [],
+        tests: [],
+        complete: false,
+        remaining: 'contested.txt: both sides changed it to something different',
+        deviations: [],
+      }),
+    ]);
     const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
     log.append({
       runId: 'r',
@@ -2710,11 +2723,17 @@ describe('a review that never approves (NFR-1)', () => {
       expect(result.status).toBe('blocked');
       expect(result.reason).toContain('contested.txt');
       expect(result.reason).toMatch(/behind 'main'/);
-      // No session was spent finding this out.
-      expect(provider.requests).toHaveLength(0);
-      // And nothing was written about a task no session ever ran: a
-      // `TaskBlocked` for a task the run never dispatched is an event the fold
-      // refuses, which CI caught and these tests had not.
+      // One session was spent — the resolution attempt itself — but no
+      // implementing or review session followed it, since there was nothing
+      // to hand either of them.
+      expect(provider.requests).toHaveLength(1);
+      // The conflict was left alone once the resolution was refused: no
+      // merge in progress, nothing staged.
+      expect(git(worktree.path, ['status', '--porcelain'])).toBe('');
+      // And nothing was written about the owning task, which no session ever
+      // dispatched under its own id: a `TaskBlocked` for a task the run
+      // never dispatched is an event the fold refuses, which CI caught and
+      // these tests had not.
       expect(() => fold(log.read())).not.toThrow();
       expect(log.read().some((event) => event.type === 'TaskBlocked')).toBe(false);
     } finally {

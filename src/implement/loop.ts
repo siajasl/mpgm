@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { SessionRunner, TaskOutcome } from '../agent/runner.js';
 import {
   ESCALATION_COST_MULTIPLIER,
@@ -14,6 +16,7 @@ import { fold, redirectNoteFor, runControl } from '../state/reduce.js';
 import { changeSchema, codeReviewSchema } from '../schemas.js';
 import type { MergeVerdict } from './checks.js';
 import { conventionIdOf, undeclaredDeviations } from '../context/conventions.js';
+import { renderConflict } from './conflict.js';
 import {
   changeReviewed,
   decideMerge,
@@ -584,8 +587,13 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // that conflicts. `priorReview` is read first for the same reason in
   // reverse — a mechanical trunk merge moves the tip without answering
   // anything a reviewer said about the author's own work.
-  const caughtUp = await options.worktrees.catchUp(task.id, into);
-  if (caughtUp.status === 'conflicted' || caughtUp.status === 'refused') {
+  // `leaveConflicted` so that a conflict is handed to `track('resolve-
+  // conflict', ...)` below with its markers still in place, rather than
+  // aborted before anything could see them (T4.3.9, `conflict.ts`).
+  const caughtUp = await options.worktrees.catchUp(task.id, into, {
+    leaveConflicted: true,
+  });
+  if (caughtUp.status === 'refused') {
     // Not `stop`, which appends `TaskBlocked`: no session has been dispatched
     // yet, so the fold has no task for that event to be about and `requireTask`
     // refuses it — the same shape as the refusals in `cli/commands.ts` that
@@ -596,14 +604,95 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       taskId: task.id,
       branch: worktree.branch,
       worktree: worktree.path,
-      reason:
-        caughtUp.status === 'conflicted'
-          ? `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
-            `${caughtUp.files.join(', ')}. Resolving it is a change somebody has ` +
-            `to make; until it is made, a pull request for this branch cannot ` +
-            `report checks at all.`
-          : `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
+      reason: `could not bring '${worktree.branch}' up to '${into}': ${caughtUp.detail}`,
     };
+  }
+
+  if (caughtUp.status === 'conflicted') {
+    // The dispatch the comments in `worktree.ts` and `merge.ts` have long
+    // claimed happens: hand the conflict to the same role that authored the
+    // change, with the common ancestor visible, and ask it to reconcile the
+    // two sides honestly rather than have an operator do it by hand (T4.3.2,
+    // T4.3.9, `conflict.ts`).
+    const fileContents = new Map<string, string>();
+    for (const file of caughtUp.files) {
+      fileContents.set(
+        file,
+        await readFile(join(worktree.path, file), 'utf8').catch(
+          () => '(could not be read — a binary file, most likely)',
+        ),
+      );
+    }
+    const resolveTaskId = `${task.id}-catchup`;
+    const resolution = await track('resolve-conflict', 1, {
+      taskId: resolveTaskId,
+      role: implementerRole,
+      prompt: renderConflict({
+        taskId: task.id,
+        branch: worktree.branch,
+        into,
+        files: fileContents,
+      }),
+      policyRoot: worktree.path,
+    });
+
+    // Not `stop` here either, for the same reason as the `refused` branch
+    // above: the session just dispatched was under `resolveTaskId`, not
+    // `task.id` itself, so the fold still has no `TaskDispatched` for
+    // `task.id` for `TaskBlocked` to be about.
+    const blocked = async (reason: string): Promise<ImplementResult> => {
+      // Left as the resolver left it unless a merge is genuinely still open
+      // — a resolver that finished the merge but was refused for some other
+      // reason (an unparseable result, say) has nothing here to undo, and
+      // aborting it would throw its commit away for no reason connected to
+      // the merge itself.
+      if (await options.worktrees.mergeInProgress(task.id)) {
+        await options.worktrees.abortMerge(task.id);
+      }
+      return {
+        status: 'blocked',
+        taskId: task.id,
+        branch: worktree.branch,
+        worktree: worktree.path,
+        reason,
+      };
+    };
+
+    const conflictSummary =
+      `'${worktree.branch}' is behind '${into}' and merging it conflicts in ` +
+      `${caughtUp.files.join(', ')}.`;
+
+    if (resolution.status !== 'completed') {
+      return blocked(
+        `${conflictSummary} An agent was asked to resolve it and did not ` +
+          `finish: ${resolution.reason}`,
+      );
+    }
+    const resolved = changeSchema.safeParse(resolution.output);
+    if (!resolved.success) {
+      return blocked(
+        `${conflictSummary} The agent asked to resolve it did not report a ` +
+          `usable result: ${resolved.error.message}`,
+      );
+    }
+    if (!resolved.data.complete) {
+      return blocked(
+        `${conflictSummary} It could not be honestly resolved: ` +
+          `${resolved.data.remaining} Resolving it is a change somebody has ` +
+          `to make; until it is made, a pull request for this branch cannot ` +
+          `report checks at all.`,
+      );
+    }
+    if (await options.worktrees.mergeInProgress(task.id)) {
+      return blocked(
+        `${conflictSummary} The resolving agent reported success but left ` +
+          `the merge unfinished — 'MERGE_HEAD' is still set, so nothing here ` +
+          `treats it as resolved.`,
+      );
+    }
+    // The checkout now carries the trunk merge, the same as
+    // `caughtUp.status === 'merged'` would have; nothing below distinguishes
+    // the two.
   }
 
   // Timed and logged (T4.2.9, NFR-3), the same as `phase/runner.ts`'s own
