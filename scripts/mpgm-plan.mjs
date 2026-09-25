@@ -1968,6 +1968,89 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['IMP-4', 'IMP-3'],
             },
+            {
+              id: 'T4.3.14',
+              title:
+                'A transient network failure while polling CI kills the run ' +
+                'rather than being retried',
+              completionCriteria: [
+                'A transport failure asking CI for a verdict is retried with ' +
+                  'backoff and, on exhaustion, becomes a refusal that names ' +
+                  'the branch and its worktree. Today it ends the process. ' +
+                  'ghCli (implement/github-checks.ts) wraps every execFile ' +
+                  'rejection as GitHubChecksError; fetchCheckRuns does not ' +
+                  'catch it; awaitChecks (implement/checks.ts) calls ' +
+                  'options.poll() at the top of an unguarded for(;;) with no ' +
+                  'try around it; and no caller anywhere outside that module ' +
+                  'catches GitHubChecksError -- implementTask does not, and ' +
+                  "cli/commands.ts's implement wraps the call in try/finally " +
+                  'with no catch. The rejection escapes to the top and Node ' +
+                  'prints a stack trace. There is no retry or backoff on ' +
+                  'this path at all.',
+                'NFR-1 already requires the fix: "a failed model/tool call ' +
+                  'MUST retry with backoff and escalate on exhaustion, never ' +
+                  'silently drop a task". A CI poll is a tool call, one TLS ' +
+                  'handshake timeout drops the task, and nothing escalates. ' +
+                  'This is not a gap in the requirements, it is a path that ' +
+                  'never met them.',
+                'Measured on a live run, not supposed. T4.3.9 crashed with ' +
+                  'GitHubChecksError: gh api --paginate --slurp ' +
+                  'repos/siajasl/mpgm/commits/e886d5f/check-runs failed: ' +
+                  'net/http: TLS handshake timeout, thrown from ghCli ' +
+                  'through fetchCheckRuns, awaitChecks, repairUntilGreen and ' +
+                  'implementTask to bin/mpgm.mjs. It cost only a re-invoked ' +
+                  'round because the rework had already committed and ' +
+                  'pushed; the same timeout during that session would have ' +
+                  'ended the run with the work in the worktree alone, which ' +
+                  'is the T4.3.2 shape the escalation guard was built to ' +
+                  'stop and does not cover, because this is not a budget.',
+                'The distinction is already drawn sixty lines away and not ' +
+                  'applied here. checkRunLog catches its own api rejection ' +
+                  'with the comment that a log which "has expired or been ' +
+                  'redacted is not a reason to abandon the repair", while ' +
+                  'the poll that decides whether anything merges does not. ' +
+                  'The change makes the same judgement in the place it ' +
+                  'matters more, rather than inventing a new one.',
+                'It must not weaken "absence is not success" (IMP-2, ' +
+                  'implement/checks.ts). A check that failed, is pending, ' +
+                  'was skipped or was never configured all still block. What ' +
+                  'this task separates is the absence of a check from the ' +
+                  'absence of an answer: a transport error is not a verdict ' +
+                  'of any kind, and retrying it is not retrying a red one. A ' +
+                  'change that made a red verdict retryable has done the ' +
+                  'opposite of what is asked.',
+                'The observed failure exited non-zero with stdout "[]", so a ' +
+                  'shape that parses was on hand and discarded. The change ' +
+                  "must not start reading a failed command's stdout as an " +
+                  'answer: an empty array here is indistinguishable from a ' +
+                  "repository with no checks, which awaitChecks' grace " +
+                  'period would then settle as no-checks and the gate would ' +
+                  'refuse a branch whose CI was green. Say why whatever is ' +
+                  'read is safe to read.',
+                'The change picks between a bounded retry inside the poll ' +
+                  'provider, tolerating N consecutive poll rejections inside ' +
+                  'awaitChecks against its existing deadline, and catching ' +
+                  'at implementTask so any provider rejection becomes a ' +
+                  'blocked result. It says which and prices the ones it ' +
+                  'refused; the third alone would turn a one-second blip ' +
+                  'into an abandoned task, which is the outcome this task ' +
+                  'exists to stop, so a change that takes it says what ' +
+                  'retries first. Whichever is chosen, the retries are ' +
+                  'bounded and the exhaustion is logged (OBS-1), not ' +
+                  'swallowed.',
+                'The test drives a poll that rejects once and then answers, ' +
+                  'and asserts the run continues to the real verdict; and a ' +
+                  'poll that rejects past the retry bound, asserting a ' +
+                  'blocked result naming the branch rather than a rejected ' +
+                  'promise. Both fail against today: the first because the ' +
+                  'rejection escapes the loop, the second because nothing on ' +
+                  'this path produces a blocked result. A test that only ' +
+                  'asserts a green poll merges is the test this defect has ' +
+                  'always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['NFR-1', 'IMP-2', 'ORC-5'],
+            },
           ],
         },
       ],
