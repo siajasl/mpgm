@@ -1018,20 +1018,28 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         },
       });
     } catch (cause) {
-      // `options.checks` is `awaitChecks` wrapped around a real poll
-      // (`cli/commands.ts`), which already retries a transport failure with
-      // backoff and throws `ChecksPollError` only once that is exhausted
-      // (T4.3.14, NFR-1). Nothing retries past here — this is the refusal,
-      // not a second retry loop — and it names the branch and the worktree
-      // the same way every other blocked outcome in this function does,
-      // through `stop`, rather than letting the rejection escape to the top
-      // of the process the way it did on the live run this task was filed
-      // from.
-      const detail = cause instanceof Error ? cause.message : String(cause);
+      // `repairUntilGreen` also awaits the repair callback above — a real
+      // `git push` and a dispatched session (`cli/commands.ts`) — so a bare
+      // `catch` here would misreport *their* rejections as an unreachable CI,
+      // which is not what happened and not what was retried (review finding,
+      // T4.3.14). Only `options.checks` on this path throws
+      // `ChecksPollError`, and only once `awaitChecks` has already retried a
+      // transport failure with backoff and given up (NFR-1); anything else —
+      // a push failure, a session rejection, a programmer error in the
+      // `repair` callback — is rethrown as itself rather than laundered into
+      // a CI-outage refusal, the same way the sibling `openPullRequest` catch
+      // above wraps only its one call.
+      if (!(cause instanceof ChecksPollError)) {
+        throw cause;
+      }
+      // This is the refusal, not a second retry loop: it names the branch and
+      // the worktree the same way every other blocked outcome in this
+      // function does, through `stop`, rather than letting the rejection
+      // escape to the top of the process the way it did on the live run this
+      // task was filed from.
       return stop(
-        `CI could not be reached for '${latest.ref}' after retrying${
-          cause instanceof ChecksPollError ? ` (${String(cause.attempts)} attempts)` : ''
-        }: ${detail}`,
+        `CI could not be reached for '${latest.ref}' after retrying ` +
+          `(${String(cause.attempts)} attempts): ${cause.message}`,
         { ref: latest.ref },
       );
     }
