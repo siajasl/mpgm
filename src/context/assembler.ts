@@ -132,13 +132,59 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
     return false;
   });
 
-  const sections: string[] = [
-    '## Task',
-    '',
-    task.description.trim(),
-    '',
-    task.prompt.trim(),
-  ];
+  // Conventions come out of the knowledge base rather than from the caller:
+  // a task assembled without them would be one nobody remembered to pass them
+  // to, and the deviation would surface in review as the author's fault
+  // (IMP-4, CTX-1). The documents they came from are then not repeated in the
+  // digest below.
+  const conventionDocuments = kb.filter(isConventionsDocument);
+  const conventions = parseConventions(conventionDocuments);
+  const digest = kb.filter((document) => !isConventionsDocument(document));
+
+  // Project-stable content leads, per-task content follows. Caching is a
+  // prefix match, so the conventions register and the knowledge-base digest —
+  // byte-identical for every task in the project — only earn a cache hit when
+  // nothing task-specific precedes them. The reliable beneficiary is a single
+  // task's own implement/review/rework/repair rounds, which run back to back
+  // inside the cache lifetime; tasks far apart in time will miss regardless.
+  const sections: string[] = [];
+
+  if (conventionDocuments.length > 0) {
+    sections.push(
+      '## Conventions',
+      '',
+      'These are binding on this project. Follow them rather than your own',
+      'preference. A convention you believe is wrong is a finding somebody can',
+      'act on rather than something to work around.',
+      '',
+      'If your work requires departing from one, say so and say why. Where',
+      'your output has a `deviations` field, put the id there — an undeclared',
+      'deviation is refused at merge. Where it has no such field, write it in',
+      'the text of the element it affects.',
+      '',
+      'A convention id is never a trace target. `tracesTo` says what an',
+      'element serves, and a convention is a rule about how the work is done;',
+      'citing one there puts an id in the trace graph that nothing declares,',
+      'and hides the fact that the element traces to no requirement.',
+      '',
+      conventionDocuments
+        .map((document) => `### ${document.title}\n\n${document.content}`)
+        .join('\n\n'),
+      '',
+    );
+  }
+
+  if (digest.length > 0) {
+    sections.push('## Knowledge base', '');
+    sections.push(
+      digest
+        .map((document) => `### ${document.title}\n\n${document.content}`)
+        .join('\n\n'),
+      '',
+    );
+  }
+
+  sections.push('## Task', '', task.description.trim(), '', task.prompt.trim());
 
   if (artifacts.length > 0) {
     sections.push('', '## Upstream artifacts', '');
@@ -165,49 +211,6 @@ export function assembleContext(request: AssembleRequest): AssembledContext {
       'explicitly and say why — do not route around it silently.',
       '',
       decisions.map(renderDecision).join('\n\n'),
-    );
-  }
-
-  // Conventions come out of the knowledge base rather than from the caller:
-  // a task assembled without them would be one nobody remembered to pass them
-  // to, and the deviation would surface in review as the author's fault
-  // (IMP-4, CTX-1). The documents they came from are then not repeated in the
-  // digest below.
-  const conventionDocuments = kb.filter(isConventionsDocument);
-  const conventions = parseConventions(conventionDocuments);
-  const digest = kb.filter((document) => !isConventionsDocument(document));
-
-  if (conventionDocuments.length > 0) {
-    sections.push(
-      '',
-      '## Conventions',
-      '',
-      'These are binding on this project. Follow them rather than your own',
-      'preference. A convention you believe is wrong is a finding somebody can',
-      'act on rather than something to work around.',
-      '',
-      'If your work requires departing from one, say so and say why. Where',
-      'your output has a `deviations` field, put the id there — an undeclared',
-      'deviation is refused at merge. Where it has no such field, write it in',
-      'the text of the element it affects.',
-      '',
-      'A convention id is never a trace target. `tracesTo` says what an',
-      'element serves, and a convention is a rule about how the work is done;',
-      'citing one there puts an id in the trace graph that nothing declares,',
-      'and hides the fact that the element traces to no requirement.',
-      '',
-      conventionDocuments
-        .map((document) => `### ${document.title}\n\n${document.content}`)
-        .join('\n\n'),
-    );
-  }
-
-  if (digest.length > 0) {
-    sections.push('', '## Knowledge base', '');
-    sections.push(
-      digest
-        .map((document) => `### ${document.title}\n\n${document.content}`)
-        .join('\n\n'),
     );
   }
 
