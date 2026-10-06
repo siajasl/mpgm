@@ -35,6 +35,11 @@ function stubNpm(dir: string): string {
       'const path = process.env[key];',
       'if (path === undefined) { process.exit(0); }',
       "process.stdout.write(readFileSync(path, 'utf8'));",
+      // Mirrors real `npm audit --json`, which exits non-zero the moment it
+      // finds anything (or fails to run at all) while still printing its
+      // JSON report to stdout — `AUDIT_STUB_EXIT` lets a test simulate that
+      // without needing a real advisory list on either side.
+      "process.exit(Number(process.env.AUDIT_STUB_EXIT ?? '0'));",
       '',
     ].join('\n'),
   );
@@ -211,5 +216,41 @@ describe('audit-drift.mjs', () => {
 
     expect(result.code).toBe(0);
     expect(result.output).toContain('no advisories at or above the floor');
+  });
+
+  // [blocker] finding verified against real npm 11.19.1 with this repo's own
+  // package-lock.json: a registry/proxy/auth failure makes `npm audit --json`
+  // print `{"message": ..., "error": {...}}` and exit non-zero — no
+  // `vulnerabilities` key at all. Plain `npm audit --audit-level=high` goes
+  // red on that (it cannot tell "nothing found" from "could not look"), so
+  // this script must too. Fails against the code before this fix: the stub
+  // exits non-zero exactly like real npm does on this failure, `npmAuditJson`
+  // treats that non-zero exit's non-empty stdout as a valid report (the
+  // branch that already handles npm's normal "found something" non-zero
+  // exit), and the absent `vulnerabilities` key parsed as zero advisories —
+  // a clean pass having audited nothing.
+  it('fails closed when the audit itself could not be run, rather than reporting a clean pass', () => {
+    const repo = newRepo({});
+    const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
+    tempDirs.push(binDir);
+    const errorReport = join(repo, 'current.json');
+    writeFileSync(
+      errorReport,
+      JSON.stringify({
+        message:
+          'request to https://registry.npmjs.org/-/npm/v1/security/advisories/bulk failed',
+        error: { code: 'ENOTFOUND' },
+      }),
+    );
+
+    const result = runScript(repo, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      AUDIT_BASE_REF: 'main',
+      AUDIT_STUB_CURRENT: errorReport,
+      AUDIT_STUB_EXIT: '1',
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("did not carry a 'vulnerabilities' list");
   });
 });

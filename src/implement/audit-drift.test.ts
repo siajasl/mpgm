@@ -116,10 +116,14 @@ describe('meetsSeverity', () => {
     expect(meetsSeverity('moderate', 'high')).toBe(false);
   });
 
-  it('fails closed on an unrecognised severity rather than treating it as critical', () => {
-    // CONV-4: an unfamiliar string ranks as the lowest severity, not the
-    // highest — the direction that could silently drop a real finding.
-    expect(meetsSeverity('made-up', 'high')).toBe(false);
+  it('fails closed on an unrecognised severity by always meeting the floor', () => {
+    // CONV-4: an unfamiliar string ranks above every known severity, not
+    // below it — the direction that could silently drop a real finding by
+    // ranking it beneath the floor and filtering it out unseen. Whatever the
+    // floor is, an advisory `npm audit` labelled with something this code
+    // does not recognise still meets it and still blocks.
+    expect(meetsSeverity('made-up', 'high')).toBe(true);
+    expect(meetsSeverity('made-up', 'critical')).toBe(true);
     expect(meetsSeverity('made-up', 'info')).toBe(true);
   });
 });
@@ -182,5 +186,26 @@ describe('parseNpmAuditAdvisories', () => {
 
   it('raises a detailed error on output that is not valid JSON, rather than reading it as a clean audit', () => {
     expect(() => parseNpmAuditAdvisories('not json')).toThrow(/could not parse/);
+  });
+
+  // [blocker] finding: `npm audit --json` prints this shape and exits
+  // non-zero when the audit itself could not be run at all (registry
+  // unreachable, proxy/auth failure, offline runner) — it carries no
+  // `vulnerabilities` key. Reading that as "nothing found" is a clean pass
+  // having examined nothing, which is exactly the "way to merge past a real
+  // finding" T4.3.16 forbids. Fails against the code before this fix, which
+  // found no `vulnerabilities` object, iterated zero entries, and returned
+  // an empty advisory list indistinguishable from a genuinely clean audit.
+  it('raises a detailed error on a report that could not be run, rather than reading it as clean', () => {
+    const errorReport = JSON.stringify({
+      message:
+        'request to https://registry.npmjs.org/-/npm/v1/security/advisories/bulk failed',
+      error: { code: 'ENOTFOUND' },
+    });
+
+    expect(() => parseNpmAuditAdvisories(errorReport)).toThrow(
+      /did not carry a 'vulnerabilities' list/,
+    );
+    expect(() => parseNpmAuditAdvisories(errorReport)).toThrow(/registry.npmjs.org/);
   });
 });

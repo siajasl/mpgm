@@ -32,11 +32,16 @@ export type Severity = (typeof SEVERITY_ORDER)[number];
 
 function severityRank(severity: string): number {
   const index = SEVERITY_ORDER.indexOf(severity as Severity);
-  // An unrecognised severity string ranks as the lowest one, not the
-  // highest: failing open on a floor comparison (treating "unknown" as
-  // "definitely above the floor") would be the one direction a misread
-  // severity could quietly cost SAF-5 a real finding.
-  return index === -1 ? 0 : index;
+  // An unrecognised severity string ranks above every known one, not below
+  // (CONV-4): this value only ever feeds a floor comparison in
+  // `meetsSeverity`, and the one direction that could quietly cost SAF-5 a
+  // real finding is treating an advisory `npm audit` labelled with something
+  // this code does not recognise as *beneath* the floor, so it gets dropped
+  // from `current` or `trunk` and never considered at all. Ranking it highest
+  // means it always meets the floor and always blocks, whatever the floor is
+  // — the same "ambiguous input stops the merge" rule CONV-4 asks for, not a
+  // guess at how serious it actually is.
+  return index === -1 ? SEVERITY_ORDER.length : index;
 }
 
 /** Whether `severity` is at or above `minSeverity` on `npm audit`'s scale. */
@@ -67,6 +72,9 @@ interface NpmAuditVulnerability {
 
 interface NpmAuditReport {
   readonly vulnerabilities?: Readonly<Record<string, NpmAuditVulnerability>>;
+  /** Present instead of `vulnerabilities` when the audit itself could not run. */
+  readonly message?: string;
+  readonly error?: unknown;
 }
 
 const GHSA_PATTERN = /GHSA-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}/;
@@ -98,6 +106,28 @@ export function parseNpmAuditAdvisories(
         `${cause instanceof Error ? cause.message : String(cause)}. ` +
         `First 200 characters of what was given: ${raw.slice(0, 200)}`,
       { cause },
+    );
+  }
+
+  // CONV-4: a report that did not actually run the audit — `npm audit
+  // --json` prints `{"message": "...", "error": {...}}` and exits non-zero
+  // when the registry is unreachable, a proxy/auth step fails, or an
+  // offline runner has no network at all — must not read as "no
+  // advisories". A clean audit always carries `vulnerabilities`, even as an
+  // empty object; its absence means the audit itself did not happen, so
+  // this fails closed the same way an unparseable payload already does
+  // above, rather than letting the scan job go green having examined
+  // nothing (the one outcome T4.3.16 forbids).
+  if (report.vulnerabilities === undefined) {
+    // CONV-3: enough to fix the cause without reading this file.
+    const npmMessage =
+      report.message !== undefined ? `npm's own message: ${report.message}. ` : '';
+    throw new Error(
+      `'npm audit --json' output did not carry a 'vulnerabilities' list, which ` +
+        `means the audit itself did not run (registry unreachable, a proxy or ` +
+        `auth failure, or an offline runner) rather than that nothing was found. ` +
+        npmMessage +
+        `First 200 characters of what was given: ${raw.slice(0, 200)}`,
     );
   }
 

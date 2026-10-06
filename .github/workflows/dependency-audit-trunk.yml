@@ -70,7 +70,7 @@ jobs:
           \`\`\`json
           ${REPORT}
           \`\`\`"
-          EXISTING="$(gh issue list --search "$TITLE in:title" --state open --json number --jq '.[0].number' || true)"
+          EXISTING="$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq '.[0].number // empty' || true)"
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body "$BODY"
           else
