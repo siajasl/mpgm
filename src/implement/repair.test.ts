@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { canEscalate, escalateModel, MODEL_TIERS, tierOf } from '../agent/models.js';
 import type { EventInput } from '../event/envelope.js';
-import { awaitChecks, mergeVerdict, type CheckRun, type MergeVerdict } from './checks.js';
+import {
+  awaitChecks,
+  ChecksPollError,
+  mergeVerdict,
+  type CheckRun,
+  type MergeVerdict,
+} from './checks.js';
 import { renderFeedback, repairUntilGreen, tail, type RepairRequest } from './repair.js';
 
 const RUN = 'run-1';
@@ -453,5 +459,80 @@ describe('awaitChecks', () => {
 
     expect(polls).toBe(3);
     expect(settled.settled).toBe(true);
+  });
+
+  // T4.3.14: the live run this task was filed from crashed with
+  // `GitHubChecksError: ... net/http: TLS handshake timeout` escaping
+  // straight out of `awaitChecks`' unguarded `for(;;)`. A transport failure
+  // is retried with backoff and does not end the wait, as long as something
+  // eventually answers.
+  it('retries a poll that rejects once with a transient failure, then reaches the real verdict', async () => {
+    let calls = 0;
+    const slept: number[] = [];
+
+    const settled = await awaitChecks({
+      poll: () => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.reject(new Error('net/http: TLS handshake timeout'));
+        }
+        return Promise.resolve(verdictFor('c0', GREEN));
+      },
+      intervalMs: 5,
+      now: () => 0,
+      sleep: (ms) => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    });
+
+    // Fails against today: the rejection from the first call escapes
+    // `awaitChecks` uncaught instead of being retried.
+    expect(settled.settled).toBe(true);
+    expect(settled.verdict.mergeable).toBe(true);
+    expect(calls).toBe(2);
+    // Backed off once before the retry, rather than treating the failure as
+    // free.
+    expect(slept[0]).toBeGreaterThan(0);
+  });
+
+  it('gives up with `ChecksPollError`, not a settled result, once a poll keeps rejecting past the retry bound', async () => {
+    let calls = 0;
+
+    const attempt = awaitChecks({
+      poll: () => {
+        calls += 1;
+        return Promise.reject(new Error('net/http: TLS handshake timeout'));
+      },
+      pollRetries: 2,
+      intervalMs: 1000,
+      now: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+
+    // Fails against today: nothing on this path ever produces a rejection
+    // distinguishable from any other — this pins that it is specifically
+    // `ChecksPollError`, not a bare rejected promise, that reaches the
+    // caller once retries are exhausted.
+    await expect(attempt).rejects.toThrow(ChecksPollError);
+    await expect(attempt).rejects.toThrow(/TLS handshake timeout/);
+    // The bound plus the one failure that exceeded it.
+    expect(calls).toBe(3);
+  });
+
+  it('does not read a failed poll as an empty, checkless verdict', async () => {
+    // The observed failure exited non-zero with `stdout: '[]'`, which parses
+    // as a repository with no checks at all. If a rejection were ever turned
+    // into a resolved empty verdict, `awaitChecks`' grace period would settle
+    // it as `no-checks` and the gate would refuse a branch whose CI was
+    // actually green. This pins that a rejection stays a rejection.
+    const attempt = awaitChecks({
+      poll: () => Promise.reject(new Error('exit status 1: []')),
+      pollRetries: 0,
+      now: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+
+    await expect(attempt).rejects.toThrow(ChecksPollError);
   });
 });

@@ -266,6 +266,11 @@ export interface AwaitChecksOptions {
    * (see {@link DEFAULT_CHECKS_GRACE_MS}).
    */
   readonly graceMs?: number;
+  /**
+   * Consecutive `poll` rejections tolerated before giving up (T4.3.14,
+   * NFR-1; see {@link DEFAULT_CHECKS_POLL_RETRIES}).
+   */
+  readonly pollRetries?: number;
   /** Injectable so tests need no real time. */
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
@@ -300,10 +305,77 @@ export const DEFAULT_CHECKS_INTERVAL_MS = 15 * 1000;
  * lands, so a busy runner queue is exactly what this grace is for.
  */
 export const DEFAULT_CHECKS_GRACE_MS = 3 * 60 * 1000;
+/**
+ * Consecutive transport failures `awaitChecks` rides out before giving up
+ * (T4.3.14). Five polls at the default fifteen-second interval is a little
+ * over a minute of an oracle that answers nothing at all, which is long
+ * enough for one dropped TLS handshake or a GitHub blip to clear and short
+ * enough that a poll provider that is actually broken is reported this
+ * attempt, not after the full thirty-minute deadline has quietly ticked
+ * away retrying it.
+ */
+export const DEFAULT_CHECKS_POLL_RETRIES = 5;
 
+/**
+ * Thrown when `awaitChecks` could not get an answer out of `poll` at all:
+ * every attempt in a row rejected, or the deadline arrived while they were
+ * still failing.
+ *
+ * This is deliberately not a `MergeVerdict`, red or otherwise, and nothing
+ * on this path reads a rejected call's stdout as one — the observed failure
+ * this task was filed from exits non-zero with `stdout: '[]'`, which parses
+ * as "no checks have run" and would read as a clean ref if it were ever
+ * taken as an answer, when it is actually TLS failing before anything ran.
+ * A transport failure is an absent *answer*, not an absent *check*, and
+ * IMP-2's "absence is not success" is about the second: it must not be
+ * stretched to cover the first by quietly treating a rejection as a verdict.
+ * The caller that catches this is the one that knows the branch and the
+ * worktree a refusal needs to name — this function was only ever given a
+ * `ref`-less `poll` callback, not either of those.
+ */
+export class ChecksPollError extends Error {
+  /** Consecutive rejections immediately before this was thrown. */
+  readonly attempts: number;
+
+  constructor(attempts: number, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `asking CI for a verdict failed ${String(attempts)} ` +
+        `time${attempts === 1 ? '' : 's'} in a row: ${detail}`,
+      { cause },
+    );
+    this.attempts = attempts;
+  }
+}
+
+/**
+ * Retried here, with backoff, rather than inside the poll provider or only
+ * at `implementTask` (T4.3.14, NFR-1):
+ *
+ * - a provider-level retry (inside `ghCli`/`fetchCheckRuns`) would have to
+ *   reinvent this same bound once per provider a project adds (EXT-2/3),
+ *   and would have no view of the deadline a *wait* is already keeping —
+ *   only this loop knows how much of that budget is left to spend retrying.
+ * - catching only at `implementTask`, with no retry here at all, is what
+ *   today's bug already is in miniature: it would turn the one-second blip
+ *   this task was filed over into an abandoned task every single time,
+ *   which is the outcome NFR-1 and this change exist to stop, not a
+ *   fallback worth keeping on its own.
+ *
+ * So the retry happens here, bounded by `pollRetries` consecutive failures
+ * and by this wait's own `deadline` — no separate budget — and exhaustion
+ * is a thrown {@link ChecksPollError}, not a returned `SettledChecks`:
+ * returning one would hand the repair loop something that *looks* like a
+ * verdict to act on, when no verdict was ever received. A caller still has
+ * to decide what a never-answered poll means for the task, which is exactly
+ * what `implementTask` does with this (`loop.ts`), naming the branch and the
+ * worktree in a `blocked` result and logging it as `TaskBlocked` (OBS-1)
+ * rather than letting the rejection escape to the top of the process.
+ */
 export async function awaitChecks(options: AwaitChecksOptions): Promise<SettledChecks> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_CHECKS_TIMEOUT_MS;
   const intervalMs = options.intervalMs ?? DEFAULT_CHECKS_INTERVAL_MS;
+  const pollRetries = options.pollRetries ?? DEFAULT_CHECKS_POLL_RETRIES;
   const now = options.now ?? Date.now;
   const sleep =
     options.sleep ??
@@ -316,8 +388,23 @@ export async function awaitChecks(options: AwaitChecksOptions): Promise<SettledC
   const deadline = started + timeoutMs;
   const graceEnds = started + (options.graceMs ?? DEFAULT_CHECKS_GRACE_MS);
   let polls = 0;
+  let consecutiveFailures = 0;
   for (;;) {
-    const verdict = await options.poll();
+    let verdict: MergeVerdict;
+    try {
+      verdict = await options.poll();
+    } catch (cause) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures > pollRetries || now() >= deadline) {
+        throw new ChecksPollError(consecutiveFailures, cause);
+      }
+      // Exponential backoff, capped at the interval the happy path already
+      // polls on: a TLS handshake timeout is worth a short wait before
+      // trying again, not the full interval, and never longer than it.
+      await sleep(Math.min(intervalMs, 1000 * 2 ** (consecutiveFailures - 1)));
+      continue;
+    }
+    consecutiveFailures = 0;
     polls += 1;
     const reported = verdict.kinds.some((kind) => kind.runs.length > 0);
     const stillRunning = verdict.kinds.some((kind) => kind.problem === 'pending');

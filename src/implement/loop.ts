@@ -14,7 +14,7 @@ import type { EventLog } from '../event/store.js';
 import type { RoleRegistry } from '../role/loader.js';
 import { fold, redirectNoteFor, runControl } from '../state/reduce.js';
 import { changeSchema, codeReviewSchema } from '../schemas.js';
-import { blockingReasons, type MergeVerdict } from './checks.js';
+import { blockingReasons, ChecksPollError, type MergeVerdict } from './checks.js';
 import { conventionIdOf, undeclaredDeviations } from '../context/conventions.js';
 import { renderConflict } from './conflict.js';
 import {
@@ -956,61 +956,93 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // CI before review, and repair before review: an agent asked to read a
     // change that does not build is spending an expensive session on something
     // the build already said (IMP-2).
-    repair = await repairUntilGreen({
-      runId,
-      taskId: task.id,
-      ref: latest.ref,
-      model: implementerRole.model,
-      ...(options.maxRepairAttempts === undefined
-        ? {}
-        : { maxAttempts: options.maxRepairAttempts }),
-      checks: options.checks,
-      ...(options.logsFor === undefined ? {} : { logsFor: options.logsFor }),
-      emit: (event) => {
-        options.log.append(event);
-      },
-      // `track` already refuses to dispatch a repair session once the run is
-      // paused or killed, but `repairUntilGreen` keeps iterating without
-      // dispatching one whenever a repair produces nothing usable — which is
-      // exactly what an intervention causes here. Without this the loop would
-      // spend the rest of the repair budget on that instead of reporting the
-      // real cause (T4.2.4, HIL-3, CONV-3).
-      shouldContinue: () => {
-        const control = runControl(fold(options.log.read()), runId);
-        return control === 'running'
-          ? { ok: true }
-          : { ok: false, reason: `the run was ${control} by an operator` };
-      },
-      repair: async (request) => {
-        const retry = await track('repair', request.attempt, {
-          taskId: task.id,
-          role: implementerRole,
-          prompt: `${context.prompt}\n\n## The checks failed\n\n${request.feedback}`,
-          model: request.model,
-          policyRoot: worktree.path,
-        });
-        const fixed =
-          retry.status === 'completed' ? changeSchema.safeParse(retry.output) : undefined;
-        if (fixed?.success === true) {
-          latest = fixed.data;
-          // Read again immediately before publishing, for the same reason as
-          // the guard around the first publish above: the repair session just
-          // ran, and a kill or pause recorded while it was in flight lands
-          // after `track` last checked. This does not itself need to stop the
-          // loop — `shouldContinue` above and the next `track` call already
-          // do that — it only keeps the push from happening on the way there
-          // (T4.2.4, HIL-3).
-          const controlBeforeRepairPublish = runControl(fold(options.log.read()), runId);
-          if (controlBeforeRepairPublish === 'running') {
-            await options.publish?.(worktree.branch, fixed.data.ref);
+    try {
+      repair = await repairUntilGreen({
+        runId,
+        taskId: task.id,
+        ref: latest.ref,
+        model: implementerRole.model,
+        ...(options.maxRepairAttempts === undefined
+          ? {}
+          : { maxAttempts: options.maxRepairAttempts }),
+        checks: options.checks,
+        ...(options.logsFor === undefined ? {} : { logsFor: options.logsFor }),
+        emit: (event) => {
+          options.log.append(event);
+        },
+        // `track` already refuses to dispatch a repair session once the run is
+        // paused or killed, but `repairUntilGreen` keeps iterating without
+        // dispatching one whenever a repair produces nothing usable — which is
+        // exactly what an intervention causes here. Without this the loop would
+        // spend the rest of the repair budget on that instead of reporting the
+        // real cause (T4.2.4, HIL-3, CONV-3).
+        shouldContinue: () => {
+          const control = runControl(fold(options.log.read()), runId);
+          return control === 'running'
+            ? { ok: true }
+            : { ok: false, reason: `the run was ${control} by an operator` };
+        },
+        repair: async (request) => {
+          const retry = await track('repair', request.attempt, {
+            taskId: task.id,
+            role: implementerRole,
+            prompt: `${context.prompt}\n\n## The checks failed\n\n${request.feedback}`,
+            model: request.model,
+            policyRoot: worktree.path,
+          });
+          const fixed =
+            retry.status === 'completed'
+              ? changeSchema.safeParse(retry.output)
+              : undefined;
+          if (fixed?.success === true) {
+            latest = fixed.data;
+            // Read again immediately before publishing, for the same reason as
+            // the guard around the first publish above: the repair session just
+            // ran, and a kill or pause recorded while it was in flight lands
+            // after `track` last checked. This does not itself need to stop the
+            // loop — `shouldContinue` above and the next `track` call already
+            // do that — it only keeps the push from happening on the way there
+            // (T4.2.4, HIL-3).
+            const controlBeforeRepairPublish = runControl(
+              fold(options.log.read()),
+              runId,
+            );
+            if (controlBeforeRepairPublish === 'running') {
+              await options.publish?.(worktree.branch, fixed.data.ref);
+            }
           }
-        }
-        // A repair session that produced nothing usable leaves the ref where it
-        // was, so the next verdict is the same one and the budget still shrinks
-        // — rather than the loop losing track of which commit it is judging.
-        return { ref: fixed?.success === true ? fixed.data.ref : request.ref };
-      },
-    });
+          // A repair session that produced nothing usable leaves the ref where it
+          // was, so the next verdict is the same one and the budget still shrinks
+          // — rather than the loop losing track of which commit it is judging.
+          return { ref: fixed?.success === true ? fixed.data.ref : request.ref };
+        },
+      });
+    } catch (cause) {
+      // `repairUntilGreen` also awaits the repair callback above — a real
+      // `git push` and a dispatched session (`cli/commands.ts`) — so a bare
+      // `catch` here would misreport *their* rejections as an unreachable CI,
+      // which is not what happened and not what was retried (review finding,
+      // T4.3.14). Only `options.checks` on this path throws
+      // `ChecksPollError`, and only once `awaitChecks` has already retried a
+      // transport failure with backoff and given up (NFR-1); anything else —
+      // a push failure, a session rejection, a programmer error in the
+      // `repair` callback — is rethrown as itself rather than laundered into
+      // a CI-outage refusal, the same way the sibling `openPullRequest` catch
+      // above wraps only its one call.
+      if (!(cause instanceof ChecksPollError)) {
+        throw cause;
+      }
+      // This is the refusal, not a second retry loop: it names the branch and
+      // the worktree the same way every other blocked outcome in this
+      // function does, through `stop`, rather than letting the rejection
+      // escape to the top of the process the way it did on the live run this
+      // task was filed from.
+      return stop(
+        `CI could not be reached for '${latest.ref}' after retrying ` +
+          `(${String(cause.attempts)} attempts): ${cause.message}`,
+        { ref: latest.ref },
+      );
+    }
 
     if (repair.status !== 'green') {
       // 'stopped' is an operator's doing, not CI's (T4.2.4, CONV-3): saying
@@ -1578,7 +1610,25 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     }
     await options.publish?.(worktree.branch, reconciledRef);
 
-    const reconciledVerdict = await options.checks(reconciledRef);
+    let reconciledVerdict: MergeVerdict;
+    try {
+      reconciledVerdict = await options.checks(reconciledRef);
+    } catch (cause) {
+      // Same refusal as the repair loop's own `options.checks` above, for the
+      // same reason: `awaitChecks` has already retried a transport failure
+      // with backoff and given up (T4.3.14, NFR-1), so this names the branch
+      // and worktree through `stop` rather than letting the rejection escape.
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      return stop(
+        `CI could not be reached for the reconciled commit '${reconciledRef}' ` +
+          `after retrying${
+            cause instanceof ChecksPollError
+              ? ` (${String(cause.attempts)} attempts)`
+              : ''
+          }: ${detail}`,
+        { ref: reconciledRef, review, repair },
+      );
+    }
     options.log.append({
       runId,
       type: 'ChecksReported',
