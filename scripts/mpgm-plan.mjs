@@ -2051,6 +2051,81 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['NFR-1', 'IMP-2', 'ORC-5'],
             },
+            {
+              id: 'T4.3.15',
+              title:
+                'Cache token counts are dropped, so the reported token figure ' +
+                'is not what the run was billed for',
+              completionCriteria: [
+                "A session's cache-read and cache-creation input tokens are " +
+                  'recorded and reported alongside its uncached input. Today ' +
+                  'they are discarded. usageOf (agent/claude-provider.ts:237) ' +
+                  'destructures only input_tokens and output_tokens off the ' +
+                  "SDK result's usage object; cache_read_input_tokens and " +
+                  'cache_creation_input_tokens are present on it and are read ' +
+                  'by nothing. TokenUsage carries three fields, BudgetLedger ' +
+                  'sums inputTokens + outputTokens (agent/budget.ts:61), and ' +
+                  'SessionUsage persists that sum, so no consumer can see a ' +
+                  'cache hit even in principle.',
+                'OBS-2 already requires the fix: "the harness MUST track and ' +
+                  'report cost (tokens, spend), latency, and success/retry ' +
+                  'rates per phase, per agent role, and per run". A cache-read ' +
+                  'token is an input token that was billed at a different ' +
+                  'rate, so a figure that omits the class entirely does not ' +
+                  'report tokens -- it reports one of three kinds and calls ' +
+                  'that the total. This is not a gap in the requirements, it ' +
+                  'is a path that never met them.',
+                'Measured, not supposed. e3e91a8 reordered assembled context ' +
+                  'so the project-stable sections lead, specifically to earn a ' +
+                  "prefix cache hit across a task's own implement, review, " +
+                  'rework and repair rounds, and its own commit body states ' +
+                  'the revert condition: "the honest check is ' +
+                  'cache_read_input_tokens across a rework round, and if it ' +
+                  'does not move this should be reverted". Nothing records ' +
+                  'that field, so the condition cannot be evaluated either ' +
+                  'way. T4.3.14 ran nine sessions on one task at $11.42 with ' +
+                  'no way to say whether any of it was a cache hit.',
+                'The change must not restate the sum it replaces. ' +
+                  'BudgetLedger enforces a token budget (AGT-4) and a ' +
+                  'cache-read token is cheaper than an uncached one, so ' +
+                  'folding cache reads into the same total silently tightens ' +
+                  'every budget in the project against tokens the run was ' +
+                  'barely charged for. The change says whether the budget ' +
+                  'counts them, and prices what it chose: a budget that ' +
+                  'ignores cache reads understates real context size, one ' +
+                  'that counts them at face value overstates spend. Either is ' +
+                  'defensible, neither silently.',
+                'The existing cost figure must not move. costUsd comes from ' +
+                  "the SDK's total_cost_usd and already prices cache reads at " +
+                  'their own rate, so spend is correct today and only the ' +
+                  'token breakdown is wrong. A change that starts computing ' +
+                  'cost from token counts has replaced a billed number with ' +
+                  'an estimate, which is worse than the gap it closes.',
+                'mpgm status --metrics reports the new fields per phase, role ' +
+                  'and run, the way it already reports inputTokens and ' +
+                  'outputTokens (OBS-2 names all three scopes). A change that ' +
+                  'records the fields in the event log and leaves them ' +
+                  'unreadable by the operator has moved the gap rather than ' +
+                  'closed it.',
+                'Older SessionUsage events have no cache fields and must stay ' +
+                  'readable. The log is append-only and the projector folds ' +
+                  'every event ever written, so the absent fields read as ' +
+                  'unknown rather than as zero -- a run that predates this ' +
+                  'change had cache reads nobody recorded, and reporting them ' +
+                  'as zero would assert something false about it. Say which ' +
+                  'of the two the schema version means.',
+                'The test asserts a provider result carrying ' +
+                  'cache_read_input_tokens reaches SessionUsage with that ' +
+                  'value intact, and that a pre-change event lacking the ' +
+                  'fields still folds. Both fail against today: the first ' +
+                  'because usageOf drops the field, the second because there ' +
+                  'is no field to omit. A test that only asserts the existing ' +
+                  'two counts still round-trip is the test this defect has ' +
+                  'always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['OBS-2', 'NFR-2'],
+            },
           ],
         },
       ],
