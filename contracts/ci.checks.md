@@ -89,6 +89,22 @@ an unfamiliar status means CI has not spoken yet, while an unfamiliar
 conclusion means CI has spoken in words this code cannot read — and deciding a
 merge on a value nobody understood is the failure worth preventing.
 
+## A transport failure is not a verdict
+
+Asking CI can fail before CI ever answers — a dropped TLS handshake, a DNS
+blip — and that is not a check that failed, is pending, or was never
+configured; it is the absence of an *answer*, not the absence of a *check*
+(T4.3.14). `awaitChecks` retries a rejected poll with backoff, bounded by
+`pollRetries` consecutive failures (`DEFAULT_CHECKS_POLL_RETRIES`) and by the
+wait's own deadline — no second budget. Exhaustion throws `ChecksPollError`
+rather than returning a `SettledChecks`: a provider's own failed call is never
+read as an empty or clean report, however its output looked on the wire, so
+"absence is not success" is never stretched to cover a transport failure the
+way it already covers a red or missing check. The caller decides what an
+unanswered poll means for the task — `implementTask` (`src/implement/loop.ts`)
+turns it into a `blocked` result naming the branch and the worktree, logged
+as `TaskBlocked` (OBS-1), rather than letting it escape uncaught.
+
 ## What it does not cover yet
 
 - Legacy commit statuses (the pre-check-runs API). Actions reports check runs.

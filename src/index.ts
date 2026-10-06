@@ -507,8 +507,10 @@ export type {
 } from './implement/checks.js';
 export {
   awaitChecks,
+  ChecksPollError,
   DEFAULT_CHECKS_GRACE_MS,
   DEFAULT_CHECKS_INTERVAL_MS,
+  DEFAULT_CHECKS_POLL_RETRIES,
   DEFAULT_CHECKS_TIMEOUT_MS,
 } from './implement/checks.js';
 export { fetchCheckLog, jobIdFromUrl } from './implement/github-checks.js';
