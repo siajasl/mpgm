@@ -515,6 +515,20 @@ export {
 } from './implement/checks.js';
 export { fetchCheckLog, jobIdFromUrl } from './implement/github-checks.js';
 export type {
+  Advisory,
+  AuditClassification,
+  ClassifyAuditInput,
+  Severity,
+} from './implement/audit-drift.js';
+export {
+  authoredReasons,
+  classifyAudit,
+  driftReasons,
+  meetsSeverity,
+  parseNpmAuditAdvisories,
+  SEVERITY_ORDER,
+} from './implement/audit-drift.js';
+export type {
   AttemptRecord,
   RepairOptions,
   RepairOutcome,

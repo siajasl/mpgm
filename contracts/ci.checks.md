@@ -105,6 +105,45 @@ unanswered poll means for the task — `implementTask` (`src/implement/loop.ts`)
 turns it into a `blocked` result naming the branch and the worktree, logged
 as `TaskBlocked` (OBS-1), rather than letting it escape uncaught.
 
+## Dependency drift is not a `scan` regression (T4.3.16)
+
+`scan` covers `npm audit`, which answers one question — does the resolved
+tree carry a known advisory at or above a severity — with no regard for when
+the advisory was published or whether this change is what the tree looks the
+way it does. An advisory published after a branch was cut, against a package
+the branch never touched, read exactly like one the branch's own diff
+introduced: the `^scan\b` mapping above sees one refusal either way, and two
+real repair sessions (T4.3.14's hono/ip-address/proxy-addr/qs/source-map-js
+round; a second against `@modelcontextprotocol/sdk`, GHSA-6qxp-vccf-f47h)
+spent real money and time fixing drift neither task had asked for.
+
+`scripts/audit-drift.mjs`, the `scan` job's dependency-audit step, separates
+the two before deciding whether to block (`classifyAudit`,
+[`src/implement/audit-drift.ts`](../src/implement/audit-drift.ts)):
+
+- if this branch's own diff touches `package.json` or `package-lock.json`
+  against the trunk, it gets **no exemption at all** — every advisory the
+  audit reports blocks it, same as `--audit-level=high` always did. Editing
+  the manifest is exactly the diff that can introduce a finding, so there is
+  no partial exemption for a branch to widen;
+- otherwise, an advisory also present on `origin/main`'s own resolved tree,
+  read fresh at comparison time (never from a file this branch's diff could
+  edit — there is no baseline committed in this repository for a pull
+  request to tamper with), is the trunk's problem, not this branch's, and
+  does not block it.
+
+This does not weaken SAF-5: the full tree is still audited at the same
+`high` floor, and nothing here makes an advisory disappear — it moves who
+answers for it. A drift advisory let through unblocked is handed to
+[`.github/workflows/dependency-audit-trunk.yml`](../.github/workflows/dependency-audit-trunk.yml),
+which audits the trunk alone, on a schedule, with no other branch to blame
+anything on and so no exemption available there either; a failing run there
+files or updates a tracking issue naming the advisory, so the thing this
+script let through is not left for nobody to notice (the state both measured
+instances started from). Until PLAN's T5.1.3/T5.1.4 give mpgm its own signal
+ingestion for dependency advisories, a human reading that issue or that run
+is who closes it.
+
 ## What it does not cover yet
 
 - Legacy commit statuses (the pre-check-runs API). Actions reports check runs.
