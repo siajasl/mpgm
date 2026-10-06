@@ -206,6 +206,6 @@ describe('parseNpmAuditAdvisories', () => {
     expect(() => parseNpmAuditAdvisories(errorReport)).toThrow(
       /did not carry a 'vulnerabilities' list/,
     );
-    expect(() => parseNpmAuditAdvisories(errorReport)).toThrow(/registry.npmjs.org/);
+    expect(() => parseNpmAuditAdvisories(errorReport)).toThrow(/registry\.npmjs\.org/);
   });
 });
