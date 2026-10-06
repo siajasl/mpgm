@@ -82,7 +82,13 @@ describe('assembled context', () => {
     });
 
     expect(context.prompt).toMatchInlineSnapshot(`
-      "## Task
+      "## Knowledge base
+
+      ### Glossary
+
+      Artifact: a versioned document.
+
+      ## Task
 
       Turn elicitation material into a Definition artifact.
 
@@ -100,12 +106,6 @@ describe('assembled context', () => {
         ]
       }
       \`\`\`
-
-      ## Knowledge base
-
-      ### Glossary
-
-      Artifact: a versioned document.
       "
     `);
   });
