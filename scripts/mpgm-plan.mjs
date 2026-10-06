@@ -2126,6 +2126,83 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['OBS-2', 'NFR-2'],
             },
+            {
+              id: 'T4.3.16',
+              title:
+                'An advisory published after a branch is cut blocks it, so ' +
+                'every task pays for dependency drift it did not cause',
+              completionCriteria: [
+                'A dependency advisory a branch did not introduce does not ' +
+                  'block that branch, or it blocks it as an identified ' +
+                  'drift refusal that names the advisory and says the branch ' +
+                  'is not its author. Today it is indistinguishable from a ' +
+                  'finding the change caused. The CI scan job runs ' +
+                  '`npm audit --audit-level=high` ' +
+                  '(.github/workflows, "Dependency audit", SAF-5) against the ' +
+                  'whole dependency tree with no floor on advisory age and no ' +
+                  'comparison against the merge base, and ' +
+                  'checks.ts maps `^scan\\b` to the scan kind, so the gate ' +
+                  'reads one refusal with no way to tell drift from a ' +
+                  'regression.',
+                'Measured twice in two weeks, both times on a branch that ' +
+                  'touched no dependency. 9809a24 (T4.3.14) is a repair round ' +
+                  'inside a task about CI polling that bumped hono, ' +
+                  'ip-address, proxy-addr, qs and source-map-js across seven ' +
+                  'advisories -- $0.62 and 35 minutes of a session spent on ' +
+                  'work the task did not ask for. 94e660d did the same for ' +
+                  'GHSA-6qxp-vccf-f47h against @modelcontextprotocol/sdk, ' +
+                  'which reaches this project transitively through ' +
+                  '@anthropic-ai/claude-agent-sdk and blocked two unrelated ' +
+                  'PRs at once. Neither branch declared the package it was ' +
+                  'made to bump.',
+                'SAF-5 is not weakened. It requires agent-generated code to ' +
+                  'pass dependency audit before every merge, and it must keep ' +
+                  'doing so: a change that lets a branch merge with a known ' +
+                  'high-severity advisory unfixed has broken the requirement ' +
+                  'rather than the drift. What this task separates is **who ' +
+                  'the finding is about** -- an advisory against a package ' +
+                  'the branch added or whose version it moved is the ' +
+                  "branch's, and one published against a version the merge " +
+                  "base already had is the project's. Both still have to be " +
+                  "fixed; only one is the running task's business.",
+                'It must not become a way to merge past a real finding. The ' +
+                  'merge base is a moving reference an agent could advance, ' +
+                  'so whatever is compared against is read from the trunk ' +
+                  'rather than from the branch under review, and a branch ' +
+                  'that edits package.json or package-lock.json gets no ' +
+                  'exemption at all -- that is the diff that introduces a ' +
+                  'dependency finding. Say how a branch is prevented from ' +
+                  'widening its own exemption.',
+                'The drift still gets fixed, and by something. A refusal ' +
+                  'nobody acts on is a red trunk that every later branch ' +
+                  'inherits, which is the state this task starts from. The ' +
+                  'change says what closes a drift finding -- a task the ' +
+                  'harness files against itself, a scheduled job, or the next ' +
+                  'session that touches dependencies deliberately -- and ' +
+                  'prices the ones it refused. Doing nothing is not one of ' +
+                  'them: both measured instances were fixed only because an ' +
+                  'operator or a repair round noticed.',
+                'The repair round must stop being the place this lands. ' +
+                  'repairUntilGreen dispatches a session per red kind, and a ' +
+                  'drift refusal sends an implementer to read an advisory ' +
+                  'about a package its task never mentions -- the ' +
+                  'T4.3.14 shape, where the session correctly diagnosed "none ' +
+                  'introduced by this task\'s diff" and then fixed it anyway ' +
+                  'because that was the only way to go green. A change that ' +
+                  'leaves the repair round funding this has moved nothing.',
+                'The test indexes a branch whose diff touches no manifest ' +
+                  'against a trunk carrying a high-severity advisory, and ' +
+                  'asserts the branch is not refused as its author; and a ' +
+                  'branch that adds a dependency carrying one, asserting it ' +
+                  'is refused. Both fail against today, the first because the ' +
+                  'audit reports the same refusal either way, the second ' +
+                  'because there is nothing that distinguishes it. A test ' +
+                  'that only asserts a clean tree passes the audit is the ' +
+                  'test this defect has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['SAF-5', 'IMP-2'],
+            },
           ],
         },
       ],
