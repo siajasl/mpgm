@@ -2203,6 +2203,249 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['SAF-5', 'IMP-2'],
             },
+            {
+              id: 'T4.3.17',
+              title:
+                'A task re-invoked after it blocks gets a fresh review ' +
+                'budget, resetting the guards that blocked it',
+              completionCriteria: [
+                "A task's review budget, its declared deviations and its " +
+                  'one-time declaration extension survive re-invocation, or ' +
+                  'the loop says plainly that it is starting a new attempt ' +
+                  'and why that is allowed. Today all three reset silently. ' +
+                  'implementTask (implement/loop.ts) initialises ' +
+                  'declaredSoFar, extensionSpent and attempts as locals at ' +
+                  'the top of the review loop, and nothing reads prior ' +
+                  'rounds from the event log to seed them.',
+                'The code already states the property it does not hold. The ' +
+                  'comment above those three declarations reads: "Both live ' +
+                  'outside the loop because both are facts about the task, ' +
+                  'not about a round." They live outside the round loop and ' +
+                  'inside the invocation, so they are facts about the ' +
+                  'invocation. The fix is to make the comment true, not to ' +
+                  'delete it.',
+                'Measured, not supposed, five times in one session. T4.3.16 ' +
+                  'merged only because three successive invocations each ' +
+                  'granted a fresh budget of three rounds: invocation 1 ended ' +
+                  "at BudgetExceeded{kind:'escalation'} refusing a $22.28 " +
+                  'opus round; invocation 2 ended when its session died; ' +
+                  'invocation 3 merged on its own review 3. Within any single ' +
+                  'invocation the task would have blocked. T4.3.9 was ' +
+                  'restarted after an accidental kill and came back as ' +
+                  'T4.3.9-review rather than -review-3. The reset is ' +
+                  'load-bearing today, which is the uncomfortable part and ' +
+                  'the reason to decide it deliberately.',
+                'It defeats T4.3.8 by accident, which is the sharpest ' +
+                  'consequence. The escalation guard refuses a final-round ' +
+                  'model escalation whose estimated cost exceeds the role ' +
+                  'budget, before dispatch, because T4.3.2 lost two finished ' +
+                  'commits to a mid-round cap. A re-invocation makes round 1 ' +
+                  'not-final, so the guard does not fire and the same work ' +
+                  'proceeds on the cheaper model with a full budget again. ' +
+                  'Nothing records that a guard was bypassed, because from ' +
+                  "the loop's point of view nothing was.",
+                'The declaration state loses accumulated work rather than ' +
+                  'merely resetting a count. Measured on T4.3.16: invocation ' +
+                  '2 review 2 approved with CONV-1 and CONV-9 declared and ' +
+                  'CONV-5 outstanding; invocation 3 review 1 approved with ' +
+                  'CONV-5 declared and CONV-1 and CONV-9 back to undeclared. ' +
+                  'The branch had not changed. A declaration an earlier ' +
+                  'invocation paid a round for was discarded, and a round was ' +
+                  'spent re-earning it.',
+                'The change does not make a blocked task permanently ' +
+                  'unstartable. An operator must be able to resume a task ' +
+                  'after fixing what blocked it -- raising a role budget, ' +
+                  'fixing CI, amending a document -- and ORC-5 requires ' +
+                  'resume after a crash to lose nothing. What this task asks ' +
+                  'is that continuing be distinguishable from starting over: ' +
+                  'a resumed task says which round it is on, and a ' +
+                  'deliberately restarted one says an operator asked for ' +
+                  'that. A change that simply refuses the second invocation ' +
+                  'has broken resume and must say why that is right.',
+                'The budget is recoverable from the log, so the change does ' +
+                  'not need new state. ChangeReviewed is appended once per ' +
+                  'round under the task id, and implement/loop.ts already ' +
+                  'folds SessionUsage and ChangeReviewed for round cost ' +
+                  'accounting -- the same read seeds the round number, the ' +
+                  'declared set and whether the extension was spent. A change ' +
+                  'that adds a second store for this has made the event log ' +
+                  'not authoritative (ADR-4).',
+                'The test drives two invocations of the same task against one ' +
+                  'log, the first exhausting its rounds, and asserts the ' +
+                  'second does not start from round 1 with an unspent ' +
+                  'extension and an empty declared set. It fails against ' +
+                  'today in all three respects. A test that only asserts one ' +
+                  'invocation counts its own rounds correctly is the test this ' +
+                  'defect has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-3', 'ORC-5', 'OBS-1'],
+            },
+            {
+              id: 'T4.3.18',
+              title:
+                'A drift exemption is granted at the fork point, so an ' +
+                'advisory the trunk has already fixed is answered by nobody',
+              completionCriteria: [
+                'An advisory exempted from blocking a branch is one something ' +
+                  'else will actually answer for. Today one class is answered ' +
+                  'by nothing. classifyAudit compares against the fork point ' +
+                  '-- resolveBase derives it with git merge-base and ' +
+                  "trunkAdvisories(baseSha) materialises that commit's " +
+                  'manifests (implement/audit-drift.ts, scripts/' +
+                  'audit-drift.mjs) -- while the scheduled trunk job audits ' +
+                  'the trunk tip. An advisory present at the fork point and ' +
+                  'already fixed on the tip is therefore exempted on the ' +
+                  "branch and absent from the trunk job's report.",
+                'DESIGN already records this as accepted rather than absent, ' +
+                  'which is what makes it a task and not a finding: §9 ' +
+                  'decision 16 states the hole, says it is narrow because a ' +
+                  "merge ordinarily picks up the trunk's fixed lockfile, and " +
+                  'defers it. SAF-5 as amended says the merge check answers ' +
+                  'for what a change introduces and a standing check for what ' +
+                  'it inherits; this class is inherited and answered by ' +
+                  'neither, so the requirement is not met for it.',
+                'The fix must not become "compare against the tip". The fork ' +
+                  'point is deliberate: comparing against a moving tip makes ' +
+                  'the exemption depend on trunk traffic rather than on the ' +
+                  "branch, which is the defect T4.3.16's second review " +
+                  'reproduced and the merge-base derivation exists to stop. A ' +
+                  'change that reintroduces it has traded this hole for that ' +
+                  'one and must say so if it means to.',
+                'It must not weaken what the exemption already refuses. A ' +
+                  'manifest-touching branch still gets no exemption, an ' +
+                  'unmakeable comparison still grants none, and the floor is ' +
+                  'still clamped so a workflow can only lower it. The ' +
+                  'containment check against the hardcoded TRUNK_REF stays: ' +
+                  'whatever is compared must still be unreachable from the ' +
+                  "branch's own diff.",
+                'The change picks between narrowing the exemption to ' +
+                  'advisories present at both the fork point and the tip, ' +
+                  'having the trunk job audit the fork points of open pull ' +
+                  'requests as well as the tip, and reporting the difference ' +
+                  'so a human sees what fell between. It says which and ' +
+                  'prices the ones it refused -- the first is the smallest and ' +
+                  'costs a second audit per run; the second makes a scheduled ' +
+                  'job depend on open pull requests, which is a new coupling.',
+                'The test builds a trunk whose tip has fixed an advisory its ' +
+                  'earlier commit carried, branches from that earlier commit ' +
+                  'without touching a manifest, and asserts the advisory does ' +
+                  'not pass unanswered -- either it blocks the branch or it ' +
+                  'appears in what the trunk side reports. It fails against ' +
+                  'today, where the branch exits 0 and the trunk audit is ' +
+                  'clean. A test over an advisory present at both commits is ' +
+                  'the test this hole has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['SAF-5', 'IMP-2'],
+            },
+            {
+              id: 'T4.3.19',
+              title:
+                'Only the dependency audit distinguishes drift; static ' +
+                'analysis and secret scanning still refuse the next branch',
+              completionCriteria: [
+                'Every leg of SAF-5 attributes a finding before refusing a ' +
+                  'branch for it, or the legs that do not say why they need ' +
+                  'not. T4.3.16 fixed one of three. SAF-5 names static ' +
+                  'analysis, dependency audit and secret scanning; ' +
+                  'scripts/audit-drift.mjs covers the second, and the other ' +
+                  'two compare nothing against the trunk.',
+                'Measured for static analysis, not supposed. The CodeQL alert ' +
+                  'js/unnecessary-use-of-cat against src/role/freeze.test.ts' +
+                  ':239 has been open on refs/heads/main since ' +
+                  '2026-08-24 -- six weeks at the time of filing -- and is ' +
+                  "carried by no branch's own diff. The `CodeQL` check " +
+                  'reports "new alerts in code changed by this pull request", ' +
+                  'so a pre-existing alert does not block today; what is ' +
+                  'unestablished is whether that holds for every shape of ' +
+                  'finding, and nothing in this repository asserts it. The ' +
+                  'task starts by measuring which of the two legs actually ' +
+                  'drift and says so, rather than assuming both do.',
+                'Secret scanning is the opposite shape and must be read ' +
+                  'correctly. scripts/scan-secrets.mjs walks `git ls-files` ' +
+                  '-- every tracked file, not a diff -- so a secret committed ' +
+                  'on the trunk fails the scan on every branch cut after it, ' +
+                  'none of which introduced it. That is drift with no ' +
+                  'attribution at all, unlike CodeQL, which has one. The two ' +
+                  'legs therefore need different answers and the change says ' +
+                  'which each gets.',
+                'A secret must not become exempt because it is old. This is ' +
+                  'where the dependency-audit analogy breaks and the change ' +
+                  'must say so: an unpatched advisory on the trunk is a known ' +
+                  'risk being tracked, while a committed credential is ' +
+                  'already disclosed and the remedy is rotation, not a ' +
+                  'scheduled ticket. A change that gives secret scanning the ' +
+                  'same drift exemption the dependency audit got has made the ' +
+                  'worst leg the most permissive.',
+                "It must not weaken T4.3.16's own guarantees or duplicate " +
+                  'its machinery. Whatever is compared against is read from ' +
+                  "the trunk and not from anything the branch's diff can " +
+                  'edit, the comparison fails closed, and a branch that ' +
+                  'touches the files a leg scans gets no exemption for that ' +
+                  'leg. If the attribution belongs in one place for all three ' +
+                  'legs, the change says so and moves it rather than writing ' +
+                  'a third copy.',
+                'The test drives a branch whose diff introduces no finding ' +
+                  'against a trunk carrying one in each leg under ' +
+                  'examination, and asserts the stated outcome per leg -- ' +
+                  'exempt-and-reported, or blocking with the reason naming ' +
+                  'the trunk as its source. It fails against today for any ' +
+                  'leg the change says should attribute and does not. A test ' +
+                  'that only exercises the dependency audit is the test ' +
+                  'T4.3.16 already passes.',
+              ],
+              dependsOn: [],
+              tracesTo: ['SAF-5', 'IMP-2'],
+            },
+            {
+              id: 'T4.3.20',
+              title:
+                'probe:sdk fails on the design schema, so the cheap canary ' +
+                'CLAUDE.md says to run first is red',
+              completionCriteria: [
+                'npm run probe:sdk passes for every registered output schema, ' +
+                  "or the one it cannot satisfy is named in the script's own " +
+                  'output as a known gap with the reason. Today the design ' +
+                  'schema fails and the run reports FAIL, so the first thing ' +
+                  'CLAUDE.md tells a session to run when a live demo fails in ' +
+                  'the SDK layer is itself failing, and a real regression ' +
+                  'would be indistinguishable from the standing failure.',
+                'The failure is content, not wiring, and the task must not ' +
+                  'be read as an SDK problem. designSchema (src/schemas.ts) ' +
+                  'refines on crossCutting covering every concern DSG-2 ' +
+                  'names, refusing with "the design must address every ' +
+                  'cross-cutting concern DSG-2 names: ..." (authn among ' +
+                  'them). A minimal probe session does not produce a design ' +
+                  'addressing all of them, so the schema rejects a response ' +
+                  'the session was never asked to make complete.',
+                'Measured rather than supposed, twice in one session, and the ' +
+                  'same run billed real calls across the other schemas ' +
+                  "successfully -- so this is one schema's refinement " +
+                  'against one minimal prompt, not auth, not transport, and ' +
+                  'not the Agent SDK wiring CLAUDE.md lists above it.',
+                'The change picks between giving the design probe a prompt ' +
+                  'that can satisfy the refinement, probing the design schema ' +
+                  'with a fixture rather than a live call, and recording it as ' +
+                  'a known exclusion the script reports as such. It says ' +
+                  'which and prices the ones it refused. The third is a real ' +
+                  'option and the cheapest, but a probe that excludes a ' +
+                  'schema proves nothing about it, so a change that takes it ' +
+                  'says what then covers the design path.',
+                'It must stay cheap. The probe exists because it is seconds ' +
+                  'and cents against a whole milestone demo, and that is why ' +
+                  'CLAUDE.md puts it first. A change that makes the design ' +
+                  'probe a full design generation has replaced the canary ' +
+                  'with the thing the canary was for.',
+                'The test asserts the probe reports no failure for a schema ' +
+                  'it claims to cover, and names any it excludes. It fails ' +
+                  'against today because the run reports FAIL for design with ' +
+                  'nothing recording that as expected. A test that only ' +
+                  'asserts the probe runs is the test this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['TST-1', 'OBS-1'],
+            },
           ],
         },
       ],
