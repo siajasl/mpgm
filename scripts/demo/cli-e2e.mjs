@@ -386,7 +386,7 @@ try {
   const metrics = await call(['status', '--run', 'r1', '--metrics']);
   check(
     'status --metrics reports the run total',
-    /run: tasks \d+ {2}cost \$\d+\.\d{4} {2}tokens \d+ {2}avg-latency \S+ {2}retries \d+ {2}success \S+/.test(
+    /run: tasks \d+ {2}cost \$\d+\.\d{4} {2}tokens \d+ .*avg-latency \S+ {2}retries \d+ {2}success \S+/.test(
       metrics.output,
     ),
     metrics.output,

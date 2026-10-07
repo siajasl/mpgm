@@ -57,6 +57,19 @@ export class BudgetLedger {
     this.#startedAtMs = now();
   }
 
+  /**
+   * Cache-read and cache-creation tokens (T4.3.15) are deliberately left out
+   * of `#tokens`: AGT-4's token bound is a proxy for spend, and `costUsd`
+   * already prices a cache read at roughly a tenth of an uncached token and
+   * a cache creation above the uncached rate. Folding either into the same
+   * sum as `inputTokens`/`outputTokens` would retroactively tighten every
+   * role's existing token budget against activity its `costUsd` bound was
+   * never sized for — understating real context size by ignoring them is
+   * the alternative, and this chooses that side explicitly rather than
+   * silently picking either. The two fields are still summed into the task's
+   * reported usage (`src/state/reduce.ts`, `src/state/metrics.ts`) for OBS-2;
+   * only the enforced bound here excludes them.
+   */
   record(usage: SessionUsageReport): void {
     this.#tokens += usage.inputTokens + usage.outputTokens;
     this.#costUsd += usage.costUsd;
@@ -116,7 +129,13 @@ export async function runWithWallClock(
       resolve({
         termination: 'wall_clock',
         structuredOutput: undefined,
-        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0,
+        },
         turns: 0,
         denials: [],
         errorMessage: `session exceeded its wall-clock budget of ${String(seconds)}s`,

@@ -128,6 +128,8 @@ function sessionUsage(
       taskId,
       inputTokens: 1,
       outputTokens: 1,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
       costUsd: 0.01,
       durationMs,
       apiDurationMs,

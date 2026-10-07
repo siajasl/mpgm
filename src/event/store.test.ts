@@ -490,7 +490,10 @@ describe('EventLog schema evolution', () => {
 
         // Readers see the current shape, with the new fields `null` — the
         // reading this task requires: unmeasured, never fabricated as `0`.
-        expect(migrated?.schemaVersion).toBe(2);
+        // Current is v3 (T4.3.15 added a second upcaster on top of this
+        // one), so a v1 row crosses both and reads `null` for every field
+        // either one introduced.
+        expect(migrated?.schemaVersion).toBe(3);
         expect(migrated?.payload).toStrictEqual({
           taskId: 'T1',
           inputTokens: 10,
@@ -498,6 +501,8 @@ describe('EventLog schema evolution', () => {
           costUsd: 0.25,
           durationMs: null,
           apiDurationMs: null,
+          cacheReadInputTokens: null,
+          cacheCreationInputTokens: null,
         });
       } finally {
         log.close();
@@ -517,6 +522,8 @@ describe('EventLog schema evolution', () => {
           costUsd: 0.25,
           durationMs: 4200,
           apiDurationMs: 3100,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
         },
       });
       log.close();
@@ -530,10 +537,130 @@ describe('EventLog schema evolution', () => {
 
         // The two logs fold to different readings: one unmeasured, one with
         // the real numbers a live session actually reported.
-        expect(migrated?.schemaVersion).toBe(2);
+        expect(migrated?.schemaVersion).toBe(3);
         expect(migrated?.payload).toMatchObject({
           durationMs: 4200,
           apiDurationMs: 3100,
+        });
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
+  describe('SessionUsage v2 -> v3 (T4.3.15)', () => {
+    // v2 predates recording cache-read/cache-creation input tokens at all:
+    // every real event a pre-T4.3.15 run wrote names neither field. A run
+    // started before this task must still replay rather than throw
+    // `EventValidationError` on the first such row — the same shape T4.2.8's
+    // own v1 -> v2 upcaster established just above.
+    const v2Registry = new EventRegistry([
+      defineEvent(
+        'SessionUsage',
+        z.object({
+          taskId: z.string().min(1),
+          inputTokens: z.number().int().nonnegative(),
+          outputTokens: z.number().int().nonnegative(),
+          costUsd: z.number().nonnegative(),
+          durationMs: z.number().nonnegative().nullable(),
+          apiDurationMs: z.number().nonnegative().nullable(),
+        }),
+        [
+          (payload) => ({
+            ...(payload as object),
+            durationMs: null,
+            apiDurationMs: null,
+          }),
+        ],
+      ),
+    ]);
+
+    function writeV2(path: string): void {
+      const log = EventLog.open(path, { registry: v2Registry, clock: fixedClock });
+      log.append({
+        runId: 'run-1',
+        type: 'SessionUsage',
+        payload: {
+          taskId: 'T1',
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0.25,
+          durationMs: 1000,
+          apiDurationMs: 800,
+        },
+      });
+      log.close();
+    }
+
+    it('reads a pre-T4.3.15 event as unmeasured for cache tokens, not as a session that cached nothing', () => {
+      const path = tempDbPath();
+      writeV2(path);
+
+      const log = EventLog.open(path, { registry: kernelRegistry(), clock: fixedClock });
+      try {
+        const [raw] = log.readRaw();
+        const [migrated] = log.read();
+
+        // Stored bytes are untouched.
+        expect(raw?.schemaVersion).toBe(2);
+        expect(raw?.payload).toStrictEqual({
+          taskId: 'T1',
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0.25,
+          durationMs: 1000,
+          apiDurationMs: 800,
+        });
+
+        // Readers see the current shape, with the two new fields `null` —
+        // this run predates T4.3.15 and nothing ever counted a cache hit for
+        // it, so reporting `0` here would assert something nobody measured.
+        expect(migrated?.schemaVersion).toBe(3);
+        expect(migrated?.payload).toStrictEqual({
+          taskId: 'T1',
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0.25,
+          durationMs: 1000,
+          apiDurationMs: 800,
+          cacheReadInputTokens: null,
+          cacheCreationInputTokens: null,
+        });
+      } finally {
+        log.close();
+      }
+    });
+
+    it('folds a post-T4.3.15 event with its real cache counts unchanged', () => {
+      const path = tempDbPath();
+      const log = EventLog.open(path, { registry: kernelRegistry(), clock: fixedClock });
+      log.append({
+        runId: 'run-1',
+        type: 'SessionUsage',
+        payload: {
+          taskId: 'T1',
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0.25,
+          durationMs: 4200,
+          apiDurationMs: 3100,
+          cacheReadInputTokens: 900,
+          cacheCreationInputTokens: 40,
+        },
+      });
+      log.close();
+
+      const reopened = EventLog.open(path, {
+        registry: kernelRegistry(),
+        clock: fixedClock,
+      });
+      try {
+        const [migrated] = reopened.read();
+
+        expect(migrated?.schemaVersion).toBe(3);
+        expect(migrated?.payload).toMatchObject({
+          cacheReadInputTokens: 900,
+          cacheCreationInputTokens: 40,
         });
       } finally {
         reopened.close();

@@ -455,6 +455,8 @@ export class SessionRunner {
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
         costUsd: result.usage.costUsd,
+        cacheReadInputTokens: result.usage.cacheReadInputTokens,
+        cacheCreationInputTokens: result.usage.cacheCreationInputTokens,
         // How long this session itself took (T4.2.8) — the whole session and
         // the narrower time spent in the model. The difference between them
         // is *not* harness overhead as NFR-3 means it (T4.2.9's own module

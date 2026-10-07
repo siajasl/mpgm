@@ -82,11 +82,27 @@ export class UnknownRunError extends EventLogError {
   }
 }
 
+/**
+ * `null` on either side of a nullable field means that side's own total is
+ * already tainted by an unrecorded session, so the combined total cannot be
+ * known either and stays `null` (T4.3.15) — the same reasoning
+ * `zeroUsage`/`Usage`'s own doc gives, applied at the point two usages are
+ * folded together rather than only at the schema boundary.
+ */
+function addNullable(a: number | null, b: number | null): number | null {
+  return a === null || b === null ? null : a + b;
+}
+
 function addUsage(a: Usage, b: Usage): Usage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     costUsd: a.costUsd + b.costUsd,
+    cacheReadInputTokens: addNullable(a.cacheReadInputTokens, b.cacheReadInputTokens),
+    cacheCreationInputTokens: addNullable(
+      a.cacheCreationInputTokens,
+      b.cacheCreationInputTokens,
+    ),
   };
 }
 
@@ -265,6 +281,8 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
         inputTokens: payload.inputTokens,
         outputTokens: payload.outputTokens,
         costUsd: payload.costUsd,
+        cacheReadInputTokens: payload.cacheReadInputTokens,
+        cacheCreationInputTokens: payload.cacheCreationInputTokens,
       };
       const updated = withTask(run, { ...task, usage: addUsage(task.usage, delta) });
       return withRun(state, { ...updated, usage: addUsage(run.usage, delta) }, seq);

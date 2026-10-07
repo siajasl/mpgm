@@ -1137,6 +1137,8 @@ describe('supersede', () => {
             taskId: 'T4.1.4',
             inputTokens: 100,
             outputTokens: 50,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 50.84,
             durationMs: 1000,
             apiDurationMs: 800,
@@ -1702,6 +1704,8 @@ describe('status --metrics', () => {
             taskId: 'T2',
             inputTokens: 10,
             outputTokens: 5,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.25,
             durationMs: 1000,
             apiDurationMs: 800,
@@ -1739,11 +1743,13 @@ describe('status --metrics', () => {
     // T1 was dispatched but never reached a terminal event: nothing to
     // average and nothing settled, and neither must read as 0ms/0%.
     expect(output).toContain(
-      '  phase implement: tasks 1  cost $0.0000  tokens 0  avg-latency -  retries 0  success -',
+      '  phase implement: tasks 1  cost $0.0000  tokens 0 (cache-read 0  cache-creation 0)  ' +
+        'avg-latency -  retries 0  success -',
     );
     // T2 completed, so its bucket reports real numbers rather than "-".
     expect(output).toContain(
-      '  phase review: tasks 1  cost $0.2500  tokens 15  avg-latency 2000ms  retries 0  success 100% (1/1)',
+      '  phase review: tasks 1  cost $0.2500  tokens 15 (cache-read 0  cache-creation 0)  ' +
+        'avg-latency 2000ms  retries 0  success 100% (1/1)',
     );
     // No `ContextAssembled` event exists in this fixture, so nothing
     // measures the numerator: the ratio reads unmeasured, not 0%, even
@@ -1793,6 +1799,8 @@ describe('status --metrics', () => {
             taskId: 'T1',
             inputTokens: 1,
             outputTokens: 1,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.01,
             durationMs: null,
             apiDurationMs: null,
@@ -1872,6 +1880,8 @@ describe('status --metrics', () => {
             taskId: 'T1',
             inputTokens: 10,
             outputTokens: 5,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.25,
             durationMs: 1500,
             apiDurationMs: 1200,

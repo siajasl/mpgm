@@ -1569,7 +1569,15 @@ describe('a review that never approves (NFR-1)', () => {
           remaining: '',
           deviations: [],
         },
-        { usage: { inputTokens: 1000, outputTokens: 500, costUsd: 2 } },
+        {
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 500,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costUsd: 2,
+          },
+        },
       ),
       scriptedSuccess({
         ref: head,
@@ -1679,18 +1687,36 @@ describe('a review that never approves (NFR-1)', () => {
       // The expensive opening round, which an average would carry into every
       // estimate the task ever makes.
       scriptedSuccess(change, {
-        usage: { inputTokens: 3000, outputTokens: 1500, costUsd: 6 },
+        usage: {
+          inputTokens: 3000,
+          outputTokens: 1500,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 6,
+        },
       }),
       reject,
       // The cheap round immediately before the escalation: what the
       // multiplier was actually measured against.
       scriptedSuccess(change, {
-        usage: { inputTokens: 300, outputTokens: 150, costUsd: 0.3 },
+        usage: {
+          inputTokens: 300,
+          outputTokens: 150,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0.3,
+        },
       }),
       reject,
       // The escalated round, which this estimate has to let run.
       scriptedSuccess(change, {
-        usage: { inputTokens: 400, outputTokens: 200, costUsd: 0.5 },
+        usage: {
+          inputTokens: 400,
+          outputTokens: 200,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0.5,
+        },
       }),
       scriptedSuccess({
         ref: head,
@@ -1779,12 +1805,24 @@ describe('a review that never approves (NFR-1)', () => {
     const provider = new ScriptedProvider([
       // The round itself: an expensive implementing session...
       scriptedSuccess(change, {
-        usage: { inputTokens: 3000, outputTokens: 1500, costUsd: 3 },
+        usage: {
+          inputTokens: 3000,
+          outputTokens: 1500,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 3,
+        },
       }),
       // ...that goes red on CI and is repaired cheaply — the round
       // finishing, not a new one starting.
       scriptedSuccess(change, {
-        usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.05 },
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0.05,
+        },
       }),
       // The review that sends the now-green round back, at the cap — the
       // guard runs before the next (escalated) round would dispatch.
@@ -1864,7 +1902,13 @@ describe('a review that never approves (NFR-1)', () => {
       });
     const provider = new ScriptedProvider([
       scriptedSuccess(change, {
-        usage: { inputTokens: 1000, outputTokens: 500, costUsd: 2 },
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 2,
+        },
       }),
       // At the cap: approved, and reporting a convention nothing declared.
       // This is what buys the extra round.
@@ -1971,7 +2015,13 @@ describe('a review that never approves (NFR-1)', () => {
       // high enough that an escalation attempt on the next round would be
       // refused.
       scriptedSuccess(change, {
-        usage: { inputTokens: 1000, outputTokens: 500, costUsd: 2 },
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 2,
+        },
       }),
       // Round 2: approved, but reporting a convention nothing declared —
       // granted below the cap (round 2 of 3), so no extension is spent.
@@ -2067,7 +2117,13 @@ describe('a review that never approves (NFR-1)', () => {
     const killedAtCap: SessionResult = {
       termination: 'budget_exceeded',
       structuredOutput: undefined,
-      usage: { inputTokens: 4000, outputTokens: 2000, costUsd: 8.0142675 },
+      usage: {
+        inputTokens: 4000,
+        outputTokens: 2000,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 8.0142675,
+      },
       turns: 40,
       denials: [],
       errorMessage: 'session exceeded its cost budget',
@@ -2086,7 +2142,13 @@ describe('a review that never approves (NFR-1)', () => {
         if (index === 0) {
           return Promise.resolve(
             scriptedSuccess(change, {
-              usage: { inputTokens: 500, outputTokens: 250, costUsd: 0.5 },
+              usage: {
+                inputTokens: 500,
+                outputTokens: 250,
+                cacheReadInputTokens: 0,
+                cacheCreationInputTokens: 0,
+                costUsd: 0.5,
+              },
             }),
           );
         }
@@ -2217,7 +2279,13 @@ describe('a review that never approves (NFR-1)', () => {
     const killedAtCap: SessionResult = {
       termination: 'budget_exceeded',
       structuredOutput: undefined,
-      usage: { inputTokens: 4000, outputTokens: 2000, costUsd: 1 },
+      usage: {
+        inputTokens: 4000,
+        outputTokens: 2000,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 1,
+      },
       turns: 40,
       denials: [],
       errorMessage: 'session exceeded its cost budget',
@@ -2234,7 +2302,13 @@ describe('a review that never approves (NFR-1)', () => {
         if (index === 0) {
           return Promise.resolve(
             scriptedSuccess(change, {
-              usage: { inputTokens: 500, outputTokens: 250, costUsd: 0.5 },
+              usage: {
+                inputTokens: 500,
+                outputTokens: 250,
+                cacheReadInputTokens: 0,
+                cacheCreationInputTokens: 0,
+                costUsd: 0.5,
+              },
             }),
           );
         }
@@ -2345,7 +2419,13 @@ describe('a review that never approves (NFR-1)', () => {
     const killedAtCap: SessionResult = {
       termination: 'budget_exceeded',
       structuredOutput: undefined,
-      usage: { inputTokens: 4000, outputTokens: 2000, costUsd: 8.0142675 },
+      usage: {
+        inputTokens: 4000,
+        outputTokens: 2000,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 8.0142675,
+      },
       turns: 40,
       denials: [],
       errorMessage: 'session exceeded its cost budget',
@@ -2362,7 +2442,13 @@ describe('a review that never approves (NFR-1)', () => {
         if (index === 0) {
           return Promise.resolve(
             scriptedSuccess(change, {
-              usage: { inputTokens: 500, outputTokens: 250, costUsd: 0.5 },
+              usage: {
+                inputTokens: 500,
+                outputTokens: 250,
+                cacheReadInputTokens: 0,
+                cacheCreationInputTokens: 0,
+                costUsd: 0.5,
+              },
             }),
           );
         }
@@ -2462,7 +2548,13 @@ describe('a review that never approves (NFR-1)', () => {
     const killedNoCommits: SessionResult = {
       termination: 'budget_exceeded',
       structuredOutput: undefined,
-      usage: { inputTokens: 4000, outputTokens: 2000, costUsd: 8.0142675 },
+      usage: {
+        inputTokens: 4000,
+        outputTokens: 2000,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 8.0142675,
+      },
       turns: 40,
       denials: [],
       errorMessage: 'session exceeded its cost budget',
@@ -2478,7 +2570,13 @@ describe('a review that never approves (NFR-1)', () => {
         if (index === 0) {
           return Promise.resolve(
             scriptedSuccess(change, {
-              usage: { inputTokens: 500, outputTokens: 250, costUsd: 0.5 },
+              usage: {
+                inputTokens: 500,
+                outputTokens: 250,
+                cacheReadInputTokens: 0,
+                cacheCreationInputTokens: 0,
+                costUsd: 0.5,
+              },
             }),
           );
         }

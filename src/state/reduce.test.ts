@@ -76,6 +76,8 @@ describe('reduce', () => {
           taskId: 'T1',
           inputTokens: 1,
           outputTokens: 1,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
           costUsd: 0.01,
           durationMs: 1000,
           apiDurationMs: 800,
@@ -538,6 +540,8 @@ describe('reduce', () => {
             taskId: 'T1.1.3',
             inputTokens: 100,
             outputTokens: 50,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.5,
             durationMs: 1000,
             apiDurationMs: 800,
@@ -583,6 +587,8 @@ describe('reduce', () => {
       inputTokens: 100,
       outputTokens: 50,
       costUsd: 0.5,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
     });
   });
 

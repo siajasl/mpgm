@@ -108,6 +108,36 @@ describe('SessionRunner', () => {
     }
   });
 
+  it('records cache-read and cache-creation tokens alongside uncached usage (T4.3.15)', async () => {
+    // The defect this task fixes: `usageOf` (`./claude-provider.ts`) used to
+    // destructure only `input_tokens`/`output_tokens` off the SDK result's
+    // usage, so a cache hit never reached `SessionUsage` even though the SDK
+    // reported one. This asserts the whole path end to end — provider
+    // result -> `SessionResult.usage` -> the logged event — carries the
+    // value intact rather than dropping it.
+    const result = scriptedSuccess(validOutput, {
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 4_200,
+        cacheCreationInputTokens: 300,
+        costUsd: 0.01,
+      },
+    });
+    const { db, log, runner } = harness([result]);
+    try {
+      await runner.runTask(task);
+
+      const usage = log.read().find((event) => event.type === 'SessionUsage');
+      expect(usage?.payload).toMatchObject({
+        cacheReadInputTokens: 4_200,
+        cacheCreationInputTokens: 300,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('records a session the harness could not time as unmeasured, not as instant', async () => {
     const result = scriptedSuccess(validOutput, {
       durationMs: null,
@@ -505,7 +535,13 @@ describe('a session that overran its budget but finished', () => {
   // rather than voiding what came before.
   const overspend = () =>
     scriptedSuccess(validOutput, {
-      usage: { inputTokens: 100, outputTokens: 50, costUsd: role.budgets.costUsd + 1 },
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: role.budgets.costUsd + 1,
+      },
     });
 
   it('keeps the output it paid for, and records the overrun', async () => {
@@ -535,6 +571,8 @@ describe('a session that overran its budget but finished', () => {
           usage: {
             inputTokens: 100,
             outputTokens: 50,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: role.budgets.costUsd + 1,
           },
         },

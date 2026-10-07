@@ -346,6 +346,15 @@ export async function run(
  * `successRate`/`avgLatencyMs` render as `-` rather than `0%`/`0ms` when
  * null: a bucket with no settled task has not failed, it has nothing to
  * report yet, and the two must not read alike.
+ *
+ * `cache-read`/`cache-creation` (T4.3.15) render the same way, and for the
+ * same reason, as those two: `-` means at least one session folded into this
+ * bucket predates T4.3.15 and never recorded the field, not that the bucket
+ * cached nothing. They stand apart from `tokens` rather than folding into
+ * it, because a cache-read token is billed at a fraction of an uncached
+ * one's rate and a cache-creation token above it — summing them into the
+ * same figure `tokens` already reports would misstate what the run was
+ * actually charged for, which is exactly the gap this task closes.
  */
 function formatMetric(label: string, metric: AggregateMetric): string {
   const success =
@@ -354,9 +363,16 @@ function formatMetric(label: string, metric: AggregateMetric): string {
       : `${(metric.successRate * 100).toFixed(0)}% (${String(metric.completed)}/${String(metric.completed + metric.blocked)})`;
   const latency =
     metric.avgLatencyMs === null ? '-' : `${String(Math.round(metric.avgLatencyMs))}ms`;
+  const cacheRead =
+    metric.cacheReadInputTokens === null ? '-' : String(metric.cacheReadInputTokens);
+  const cacheCreation =
+    metric.cacheCreationInputTokens === null
+      ? '-'
+      : String(metric.cacheCreationInputTokens);
   return (
     `  ${label}: tasks ${String(metric.tasks)}  cost $${metric.costUsd.toFixed(4)}  ` +
-    `tokens ${String(metric.inputTokens + metric.outputTokens)}  ` +
+    `tokens ${String(metric.inputTokens + metric.outputTokens)} ` +
+    `(cache-read ${cacheRead}  cache-creation ${cacheCreation})  ` +
     `avg-latency ${latency}  retries ${String(metric.retries)}  success ${success}`
   );
 }

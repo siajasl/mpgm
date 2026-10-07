@@ -182,6 +182,8 @@ export function runProjection(
       costUsd: metric.costUsd,
       inputTokens: metric.inputTokens,
       outputTokens: metric.outputTokens,
+      cacheReadInputTokens: metric.cacheReadInputTokens,
+      cacheCreationInputTokens: metric.cacheCreationInputTokens,
     };
   }
 

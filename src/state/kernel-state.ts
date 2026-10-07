@@ -12,6 +12,17 @@ export interface Usage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costUsd: number;
+  /**
+   * Summed cache-read/cache-creation input tokens (T4.3.15, OBS-2). Null
+   * means at least one `SessionUsage` folded into this total predates
+   * T4.3.15 and never recorded the field — `addUsage` (`./reduce.ts`) lets
+   * that unknown taint the whole sum rather than treating the missing
+   * session as a cache-free one, because reporting 0 would assert something
+   * about that session nobody measured.
+   */
+  readonly cacheReadInputTokens: number | null;
+  /** Same null discipline as {@link Usage.cacheReadInputTokens} above. */
+  readonly cacheCreationInputTokens: number | null;
 }
 
 /**
@@ -272,4 +283,10 @@ export interface KernelState {
 
 export const emptyState: KernelState = { lastSeq: 0, runs: {}, spentConfirmations: {} };
 
-export const zeroUsage: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+export const zeroUsage: Usage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+};

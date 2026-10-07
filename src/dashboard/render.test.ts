@@ -4,7 +4,13 @@ import type { AggregateMetric, RunMetrics } from '../state/metrics.js';
 import type { DashboardRun, DashboardSummary } from './projection.js';
 import { errorPage, runDetailPage, runListPage, traceGraphPage } from './render.js';
 
-const ZERO_USAGE = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+const ZERO_USAGE = {
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+};
 
 function emptyMetric(overrides: Partial<AggregateMetric> = {}): AggregateMetric {
   return {
@@ -12,6 +18,8 @@ function emptyMetric(overrides: Partial<AggregateMetric> = {}): AggregateMetric 
     costUsd: 0,
     inputTokens: 0,
     outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
     retries: 0,
     completed: 0,
     blocked: 0,
@@ -66,7 +74,13 @@ function summary(overrides: Partial<DashboardSummary> = {}): DashboardSummary {
     project: 'mpgm',
     control: 'running',
     currentPhase: 'design',
-    usage: { inputTokens: 10, outputTokens: 20, costUsd: 1.2345 },
+    usage: {
+      inputTokens: 10,
+      outputTokens: 20,
+      costUsd: 1.2345,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    },
     blockedTasks: 0,
     pendingApprovals: 0,
     ...overrides,
@@ -80,7 +94,13 @@ function run(overrides: Partial<DashboardRun> = {}): DashboardRun {
     control: 'running',
     currentPhase: 'design',
     phaseHistory: ['definition', 'scope', 'design'],
-    usage: { inputTokens: 10, outputTokens: 20, costUsd: 1.2345 },
+    usage: {
+      inputTokens: 10,
+      outputTokens: 20,
+      costUsd: 1.2345,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    },
     interventions: 0,
     tasks: [],
     gates: [],
@@ -158,7 +178,13 @@ describe('runDetailPage', () => {
         runId: 'run-7',
         control: 'paused',
         currentPhase: 'implement',
-        usage: { inputTokens: 100, outputTokens: 50, costUsd: 3.5 },
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          costUsd: 3.5,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
         tasks: [
           {
             taskId: 'T1',

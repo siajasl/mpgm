@@ -217,7 +217,13 @@ class ToolAttemptingProvider implements AgentSessionProvider {
     return {
       termination: 'completed',
       structuredOutput: this.output,
-      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.01 },
+      usage: {
+        inputTokens: 10,
+        outputTokens: 10,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 0.01,
+      },
       turns: 1,
       denials,
       errorMessage: '',

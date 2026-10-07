@@ -21,6 +21,19 @@ export interface AggregateMetric {
   readonly inputTokens: number;
   readonly outputTokens: number;
   /**
+   * Summed cache-read input tokens across the bucket's sessions (T4.3.15,
+   * OBS-2) — cheaper than an uncached input token, and reported alongside
+   * it rather than folded into it so the breakdown survives into
+   * `mpgm status --metrics`. Null means at least one `SessionUsage` in this
+   * bucket predates T4.3.15 and never recorded the field; the same
+   * null-wins reasoning as `Usage.cacheReadInputTokens`
+   * (`src/state/kernel-state.ts`) applies here, now across tasks rather
+   * than across a single task's sessions.
+   */
+  readonly cacheReadInputTokens: number | null;
+  /** Same null discipline as {@link AggregateMetric.cacheReadInputTokens}. */
+  readonly cacheCreationInputTokens: number | null;
+  /**
    * `validationFailures` (AGT-3 retries inside a session's own structured-
    * output loop) plus every re-dispatch of the task's own `taskId` beyond
    * its first — a CI repair round or a review-rework round, each of which
@@ -83,6 +96,17 @@ export interface RunMetrics {
 
 const NO_PHASE = '(none)';
 
+/**
+ * Null-wins addition for a cache-token field (T4.3.15): once either side is
+ * unrecorded, the combined figure is unrecorded too rather than treating the
+ * missing side as a cache-free session — the same reasoning
+ * `Usage.cacheReadInputTokens` (`./kernel-state.ts`) gives, applied while
+ * folding this module's own second pass over the event slice.
+ */
+function addNullable(a: number | null, b: number | null): number | null {
+  return a === null || b === null ? null : a + b;
+}
+
 interface TaskFacts {
   readonly taskId: string;
   readonly role: string;
@@ -91,6 +115,8 @@ interface TaskFacts {
   readonly costUsd: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
+  readonly cacheReadInputTokens: number | null;
+  readonly cacheCreationInputTokens: number | null;
   readonly retries: number;
   readonly latencyMs: number | null;
 }
@@ -118,7 +144,13 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
   // place the full spend survives.
   const usageByTask = new Map<
     string,
-    { costUsd: number; inputTokens: number; outputTokens: number }
+    {
+      costUsd: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number | null;
+      cacheCreationInputTokens: number | null;
+    }
   >();
 
   for (const event of events) {
@@ -163,16 +195,28 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
           readonly costUsd: number;
           readonly inputTokens: number;
           readonly outputTokens: number;
+          readonly cacheReadInputTokens: number | null;
+          readonly cacheCreationInputTokens: number | null;
         };
         const prior = usageByTask.get(payload.taskId) ?? {
           costUsd: 0,
           inputTokens: 0,
           outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
         };
         usageByTask.set(payload.taskId, {
           costUsd: prior.costUsd + payload.costUsd,
           inputTokens: prior.inputTokens + payload.inputTokens,
           outputTokens: prior.outputTokens + payload.outputTokens,
+          cacheReadInputTokens: addNullable(
+            prior.cacheReadInputTokens,
+            payload.cacheReadInputTokens,
+          ),
+          cacheCreationInputTokens: addNullable(
+            prior.cacheCreationInputTokens,
+            payload.cacheCreationInputTokens,
+          ),
         });
         break;
       }
@@ -228,6 +272,8 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
       costUsd: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
     };
 
     facts.push({
@@ -238,6 +284,8 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
       costUsd: usage.costUsd,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
       retries: task.validationFailures + redispatches,
       latencyMs,
     });
@@ -249,6 +297,8 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
   let costUsd = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadInputTokens: number | null = 0;
+  let cacheCreationInputTokens: number | null = 0;
   let retries = 0;
   let completed = 0;
   let blocked = 0;
@@ -262,6 +312,11 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
     costUsd += fact.costUsd;
     inputTokens += fact.inputTokens;
     outputTokens += fact.outputTokens;
+    cacheReadInputTokens = addNullable(cacheReadInputTokens, fact.cacheReadInputTokens);
+    cacheCreationInputTokens = addNullable(
+      cacheCreationInputTokens,
+      fact.cacheCreationInputTokens,
+    );
     retries += fact.retries;
     if (fact.latencyMs !== null) {
       latencySum += fact.latencyMs;
@@ -292,6 +347,8 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
     costUsd,
     inputTokens,
     outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
     retries,
     completed,
     blocked,
