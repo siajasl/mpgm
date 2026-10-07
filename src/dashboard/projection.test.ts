@@ -300,6 +300,8 @@ describe('runProjection / summaryOf', () => {
             taskId: 'T1',
             inputTokens: 200,
             outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 1.0,
             durationMs: 1000,
             apiDurationMs: 800,
@@ -319,6 +321,8 @@ describe('runProjection / summaryOf', () => {
             taskId: 'T1',
             inputTokens: 20,
             outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.25,
             durationMs: 1000,
             apiDurationMs: 800,
@@ -345,6 +349,152 @@ describe('runProjection / summaryOf', () => {
       db.close();
     }
   });
+
+  it("carries a task's recorded cache-read and cache-creation tokens into its dashboard usage (T4.3.15)", () => {
+    // `dashboardTask` reads `byTaskUsage`, built straight from
+    // `computeRunMetrics(...).byTask` (`projection.ts`'s module doc) rather
+    // than `task.usage` — replacing `cacheReadInputTokens:
+    // metric.cacheReadInputTokens` with a literal `0` in `runProjection`
+    // would leave this at 0 while every other fixture in this file also
+    // uses 0 for both cache fields, so nothing before this test would
+    // catch that drop.
+    const { db, log, projector } = harness();
+    try {
+      log.appendMany([
+        { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 200,
+            outputTokens: 0,
+            cacheReadInputTokens: 4000,
+            cacheCreationInputTokens: 150,
+            costUsd: 1.0,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: RUN,
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+
+      const run = requireRun(projector.project(), RUN);
+      const projection = runProjection(run, log.read());
+      const task = projection.tasks.find((entry) => entry.taskId === 'T1');
+
+      expect(task?.usage.cacheReadInputTokens).toBe(4000);
+      expect(task?.usage.cacheCreationInputTokens).toBe(150);
+    } finally {
+      db.close();
+    }
+  });
+
+  it(
+    "reports a task's recorded cache-read sum even when one of its own sessions " +
+      'predates T4.3.15, unlike RunState.usage which the same mix taints to null ' +
+      '(review-2 major, T4.3.15)',
+    () => {
+      // The exact shape review 2 named: a task dispatched before T4.3.15 and
+      // reworked after it has one session with no cache fields at all (a raw
+      // v2 `SessionUsage` row, inserted directly rather than through
+      // `log.appendMany` because the current registry cannot write that
+      // shape) and one real post-T4.3.15 session. `DashboardTask.usage`
+      // (built from `AggregateMetric`) and `RunState.usage`/`task.usage`
+      // (built from `addUsage`) read this same pair of sessions and must
+      // disagree, by design: one taints to null on the unrecorded session,
+      // the other reports the recorded sum and counts the rest. A fix that
+      // made the two producers agree by tainting `DashboardTask.usage` to
+      // null too would pass every other test in this file (all of which use
+      // a single fully-recorded session) and fail only this one.
+      const { db, log, projector } = harness();
+      try {
+        log.appendMany([
+          {
+            runId: RUN,
+            type: 'RunStarted',
+            payload: { project: 'mpgm', operator: 'op' },
+          },
+          {
+            runId: RUN,
+            type: 'TaskDispatched',
+            payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+          },
+        ]);
+
+        // A pre-T4.3.15 session: written as a raw v2 row (no cache fields at
+        // all), the same shape `store.test.ts`'s own v2 -> v3 upcast test
+        // uses, so the upcaster — not this test — is what turns it into
+        // `null` on read.
+        db.prepare(
+          `INSERT INTO events (ts, run_id, type, schema_version, payload)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(
+          '2026-01-01T00:00:00.000Z',
+          RUN,
+          'SessionUsage',
+          2,
+          JSON.stringify({
+            taskId: 'T1',
+            inputTokens: 200,
+            outputTokens: 0,
+            costUsd: 1.0,
+            durationMs: null,
+            apiDurationMs: null,
+          }),
+        );
+
+        log.appendMany([
+          // A rework round's own, real, post-T4.3.15 session.
+          {
+            runId: RUN,
+            type: 'SessionUsage',
+            payload: {
+              taskId: 'T1',
+              inputTokens: 20,
+              outputTokens: 0,
+              cacheReadInputTokens: 4200,
+              cacheCreationInputTokens: 0,
+              costUsd: 0.25,
+              durationMs: 1000,
+              apiDurationMs: 800,
+            },
+          },
+          {
+            runId: RUN,
+            type: 'TaskCompleted',
+            payload: { taskId: 'T1', artifactRefs: [] },
+          },
+        ]);
+
+        const run = requireRun(projector.project(), RUN);
+        // `addUsage`'s own discipline: one unrecorded session taints the
+        // whole fold, on both the task and the run.
+        expect(run.tasks.T1?.usage.cacheReadInputTokens).toBeNull();
+        expect(run.usage.cacheReadInputTokens).toBeNull();
+
+        const projection = runProjection(run, log.read());
+        const task = projection.tasks.find((entry) => entry.taskId === 'T1');
+        // `AggregateMetric`'s discipline, read through `DashboardTask.usage`:
+        // the one session that did record it is not thrown away by the one
+        // that did not.
+        expect(task?.usage.cacheReadInputTokens).toBe(4200);
+        expect(projection.metrics.byTask.T1?.cacheReadInputTokens).toBe(4200);
+        expect(projection.metrics.byTask.T1?.cacheReadUnrecordedSessions).toBe(1);
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it('lists every run known to the log', () => {
     const { db, log, projector } = harness();

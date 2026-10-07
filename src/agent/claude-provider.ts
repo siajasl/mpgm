@@ -116,7 +116,13 @@ export class ClaudeAgentProvider implements AgentSessionProvider {
     return {
       termination: 'error',
       structuredOutput: undefined,
-      usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 0,
+      },
       turns: 0,
       denials: [],
       errorMessage: 'session ended without a result message',
@@ -234,13 +240,33 @@ export function terminationFor(subtype: string): SessionTermination {
   }
 }
 
-function usageOf(
+/**
+ * `cache_read_input_tokens`/`cache_creation_input_tokens` are present on
+ * every SDK result's `usage` object and were, until T4.3.15, read by nothing
+ * — so a cache hit was invisible even in principle, and e3e91a8's own revert
+ * condition ("the honest check is `cache_read_input_tokens` across a rework
+ * round") could never be evaluated. Defaulting an absent field to `0` here is
+ * safe rather than false: this function only ever runs against a live
+ * result message that just arrived from the SDK, never against a
+ * reconstructed historical one, so "absent" here means "the SDK reported no
+ * cache activity", not "nobody recorded it" (that second case is
+ * `SessionUsageReport`'s `null`, produced only when replaying a pre-T4.3.15
+ * log event — see `src/event/catalog.ts`'s `sessionUsage` upcaster).
+ */
+export function usageOf(
   costUsd: number,
-  usage: { input_tokens?: number; output_tokens?: number },
+  usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  },
 ) {
   return {
     inputTokens: usage.input_tokens ?? 0,
     outputTokens: usage.output_tokens ?? 0,
+    cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
     costUsd,
   };
 }

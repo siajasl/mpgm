@@ -12,6 +12,36 @@ export interface Usage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costUsd: number;
+  /**
+   * Summed cache-read/cache-creation input tokens (T4.3.15, OBS-2).
+   *
+   * This type has two producers and they do not share one discipline for
+   * null, because they are folding different things. `addUsage`
+   * (`./reduce.ts`) folds one session's figure into another session's — a
+   * single, specific thing that either was or was not measured — and there
+   * null means *that* fold is tainted: at least one `SessionUsage` folded in
+   * predates T4.3.15 and never recorded the field, so the unknown value
+   * poisons the whole sum rather than being read as cache-free. `RunState`'s
+   * own `usage` and every `TaskState.usage` are built this way.
+   *
+   * `dashboard/projection.ts`'s `runProjection` is the other producer:
+   * `DashboardTask.usage` is read from `computeRunMetrics(...).byTask`
+   * (`AggregateMetric`, `state/metrics.ts`), which is a *bucket* of however
+   * many sessions a task's own repair/rework rounds ran, not one session's
+   * own fold. There, per the operator's own precedent for `successRate`/
+   * `avgLatencyMs`, a session that did not record the field does not taint
+   * the bucket — null there means *no* session in the task recorded it, and
+   * a non-null figure is the sum over the sessions that did, which can be a
+   * partial sum even though this field alone cannot say so. A consumer that
+   * needs to tell a fully- from a partly-measured task figure apart reads
+   * `RunMetrics.byTask[taskId].cacheReadUnrecordedSessions`/
+   * `cacheCreationUnrecordedSessions` instead, which is where that count
+   * lives — this type has nowhere to carry it, because `addUsage`'s own
+   * producer has no equivalent count to carry.
+   */
+  readonly cacheReadInputTokens: number | null;
+  /** Same dual discipline as {@link Usage.cacheReadInputTokens} above. */
+  readonly cacheCreationInputTokens: number | null;
 }
 
 /**
@@ -272,4 +302,10 @@ export interface KernelState {
 
 export const emptyState: KernelState = { lastSeq: 0, runs: {}, spentConfirmations: {} };
 
-export const zeroUsage: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+export const zeroUsage: Usage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+};

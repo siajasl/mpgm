@@ -385,8 +385,8 @@ try {
   // status --metrics — T4.2.1, OBS-2: cost/tokens/latency/retry/success per phase and role.
   const metrics = await call(['status', '--run', 'r1', '--metrics']);
   check(
-    'status --metrics reports the run total',
-    /run: tasks \d+ {2}cost \$\d+\.\d{4} {2}tokens \d+ {2}avg-latency \S+ {2}retries \d+ {2}success \S+/.test(
+    'status --metrics reports the run total, with cache-read/cache-creation tokens alongside it (T4.3.15)',
+    /run: tasks \d+ {2}cost \$\d+\.\d{4} {2}tokens \d+ \(cache-read \S+ {2}cache-creation \S+\) {2}avg-latency \S+ {2}retries \d+ {2}success \S+/.test(
       metrics.output,
     ),
     metrics.output,
@@ -408,8 +408,10 @@ try {
     metrics.output,
   );
   check(
-    'status --metrics breaks cost/latency/retries/success down by role',
-    /role \S+: tasks \d+/.test(metrics.output),
+    'status --metrics breaks cost/latency/retries/success down by role, with cache-read/cache-creation tokens alongside it (T4.3.15)',
+    /role \S+: tasks \d+ {2}cost \$\d+\.\d{4} {2}tokens \d+ \(cache-read \S+ {2}cache-creation \S+\) {2}avg-latency \S+ {2}retries \d+ {2}success \S+/.test(
+      metrics.output,
+    ),
     metrics.output,
   );
   check(

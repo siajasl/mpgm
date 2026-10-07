@@ -4,6 +4,7 @@ import {
   errorDetailOf,
   gateHooks,
   terminationFor,
+  usageOf,
 } from './claude-provider.js';
 import type { PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import type { ToolDecision, ToolGate } from './session.js';
@@ -66,6 +67,48 @@ describe('durationsOf', () => {
     expect(durationsOf({ duration_ms: 5000, duration_api_ms: 3200 })).toStrictEqual({
       durationMs: 5000,
       apiDurationMs: 3200,
+    });
+  });
+});
+
+/**
+ * T4.3.15: the SDK's `usage` object carries `cache_read_input_tokens` and
+ * `cache_creation_input_tokens` alongside the two counts that were already
+ * read. `usageOf` is the single line the defect lived on — the mapping had
+ * never been unit-tested, only exercised indirectly through fixtures whose
+ * usage was already camelCase, so reinstating the drop (`?? 0` → `0`)
+ * passed the whole suite. Exported and tested directly here for the same
+ * reason T4.2.8 exported `durationsOf`.
+ */
+describe('usageOf', () => {
+  it('reads both cache fields the SDK reports, not only the uncached counts', () => {
+    expect(
+      usageOf(0.1234, {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: 4200,
+        cache_creation_input_tokens: 300,
+      }),
+    ).toStrictEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadInputTokens: 4200,
+      cacheCreationInputTokens: 300,
+      costUsd: 0.1234,
+    });
+  });
+
+  it('reads an absent cache field as no cache activity, not as unrecorded', () => {
+    // This function only ever runs against a live result message that just
+    // arrived from the SDK (see the doc comment above it), so "absent" here
+    // means the SDK reported none — unlike `SessionUsageReport`'s `null`,
+    // which means nobody recorded it.
+    expect(usageOf(0, { input_tokens: 10, output_tokens: 5 })).toStrictEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0,
     });
   });
 });

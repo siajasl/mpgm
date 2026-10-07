@@ -11,6 +11,23 @@ export interface SessionUsageReport {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costUsd: number;
+  /**
+   * Input tokens served from the prompt cache, billed at a fraction of the
+   * uncached rate (T4.3.15, OBS-2). Always a real number — 0 included, when
+   * nothing was cached — because this report describes a session that just
+   * ran, and the SDK's result message always carries one. `null` is a
+   * property of the *logged* event (`SessionUsage`, `src/event/catalog.ts`)
+   * once replayed from a pre-T4.3.15 run that never recorded it, not of a
+   * fresh report, so `inputTokens`/`outputTokens`-style non-nullability
+   * holds here too.
+   */
+  readonly cacheReadInputTokens: number;
+  /**
+   * Input tokens spent writing a new prompt-cache entry, billed above the
+   * uncached rate (T4.3.15, OBS-2). Same reasoning as
+   * {@link SessionUsageReport.cacheReadInputTokens} above.
+   */
+  readonly cacheCreationInputTokens: number;
 }
 
 export interface ToolDenial {

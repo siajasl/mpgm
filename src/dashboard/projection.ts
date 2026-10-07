@@ -67,6 +67,17 @@ export interface DashboardTask {
   readonly checks: ChecksState | null;
   readonly review: ReviewState | null;
   readonly merged: MergeState | null;
+  /**
+   * Sourced from `computeRunMetrics(...).byTask`, not from `addUsage`'s own
+   * fold (see `dashboardTask` below) — so `cacheReadInputTokens`/
+   * `cacheCreationInputTokens` here use the *other* of the two disciplines
+   * `Usage`'s own doc (`state/kernel-state.ts`) describes: non-null is a sum
+   * over only the sessions in this task that recorded the field, which can
+   * be a partial sum across a repair or rework round without this field
+   * saying so. Read `metrics.byTask[taskId].cacheReadUnrecordedSessions`/
+   * `cacheCreationUnrecordedSessions` (`DashboardRun.metrics`) alongside this
+   * to tell a fully- from a partly-measured task apart.
+   */
   readonly usage: Usage;
 }
 
@@ -128,6 +139,10 @@ export interface TraceGraph {
  * never dispatches and so appears in no `TaskDispatched`) reports
  * `zeroUsage` rather than `task.usage`'s already-correct-by-construction
  * zero, so the two agree either way.
+ *
+ * The cache-token fields on the result (T4.3.15) carry the recorded-subset
+ * discipline `AggregateMetric` uses, not the null-taint one `addUsage` uses
+ * for `task.usage` itself — see `DashboardTask.usage`'s own doc above.
  */
 function dashboardTask(
   task: TaskState,
@@ -182,6 +197,8 @@ export function runProjection(
       costUsd: metric.costUsd,
       inputTokens: metric.inputTokens,
       outputTokens: metric.outputTokens,
+      cacheReadInputTokens: metric.cacheReadInputTokens,
+      cacheCreationInputTokens: metric.cacheCreationInputTokens,
     };
   }
 

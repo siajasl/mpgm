@@ -236,7 +236,13 @@ describe('through the event log', () => {
       return {
         termination: 'completed',
         structuredOutput: { note: 'done' },
-        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.001 },
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0.001,
+        },
         turns: 1,
         denials: [],
         errorMessage: '',

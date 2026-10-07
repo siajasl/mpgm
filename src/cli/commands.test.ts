@@ -1137,6 +1137,8 @@ describe('supersede', () => {
             taskId: 'T4.1.4',
             inputTokens: 100,
             outputTokens: 50,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 50.84,
             durationMs: 1000,
             apiDurationMs: 800,
@@ -1702,6 +1704,8 @@ describe('status --metrics', () => {
             taskId: 'T2',
             inputTokens: 10,
             outputTokens: 5,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.25,
             durationMs: 1000,
             apiDurationMs: 800,
@@ -1737,13 +1741,18 @@ describe('status --metrics', () => {
     expect(result.ok).toBe(true);
     const output = writes.join('\n');
     // T1 was dispatched but never reached a terminal event: nothing to
-    // average and nothing settled, and neither must read as 0ms/0%.
+    // average and nothing settled, and neither must read as 0ms/0%. T1 also
+    // never recorded a `SessionUsage` at all, so the cache fields have
+    // nothing to report either (T4.3.15) — `-`, not `0`, for the same
+    // reason `avg-latency`/`success` below are `-` rather than `0ms`/`0%`.
     expect(output).toContain(
-      '  phase implement: tasks 1  cost $0.0000  tokens 0  avg-latency -  retries 0  success -',
+      '  phase implement: tasks 1  cost $0.0000  tokens 0 (cache-read -  cache-creation -)  ' +
+        'avg-latency -  retries 0  success -',
     );
     // T2 completed, so its bucket reports real numbers rather than "-".
     expect(output).toContain(
-      '  phase review: tasks 1  cost $0.2500  tokens 15  avg-latency 2000ms  retries 0  success 100% (1/1)',
+      '  phase review: tasks 1  cost $0.2500  tokens 15 (cache-read 0  cache-creation 0)  ' +
+        'avg-latency 2000ms  retries 0  success 100% (1/1)',
     );
     // No `ContextAssembled` event exists in this fixture, so nothing
     // measures the numerator: the ratio reads unmeasured, not 0%, even
@@ -1760,6 +1769,228 @@ describe('status --metrics', () => {
         'coverage 0/1 tasks (0%); run busy span 2000ms; context-assembly 0ms over 0 calls; ' +
         'non-API session time 200ms over 1 sessions (agent tool execution, not harness — ' +
         'excluded from the ratio); cannot see scheduling, validation)',
+    );
+  });
+
+  it('renders a non-zero cache count at run, phase and role scope (T4.3.15)', () => {
+    // Every other fixture in this file uses 0 for both cache fields, which is
+    // also `aggregate`'s own initializer and `usageByTask`'s own default —
+    // indistinguishable from the aggregation step doing nothing to them.
+    // OBS-2 names run, role and phase; `scripts/demo/cli-e2e.mjs` only ever
+    // pins the phase line down, so this is the only place the run-scope and
+    // role-scope lines are checked at all.
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        { runId: 'r1', type: 'PhaseEntered', payload: { phase: 'implement' } },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 4200,
+            cacheCreationInputTokens: 300,
+            costUsd: 0.25,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      '  run: tasks 1  cost $0.2500  tokens 150 (cache-read 4200  cache-creation 300)  ' +
+        'avg-latency 0ms  retries 0  success 100% (1/1)',
+    );
+    expect(output).toContain(
+      '  phase implement: tasks 1  cost $0.2500  tokens 150 (cache-read 4200  ' +
+        'cache-creation 300)  avg-latency 0ms  retries 0  success 100% (1/1)',
+    );
+    expect(output).toContain(
+      '  role implementer: tasks 1  cost $0.2500  tokens 150 (cache-read 4200  ' +
+        'cache-creation 300)  avg-latency 0ms  retries 0  success 100% (1/1)',
+    );
+  });
+
+  it('sums the recorded sessions in a mixed bucket instead of tainting it to unknown', () => {
+    // A bucket that mixes a session which recorded the field with one that
+    // did not is permanent on every run from here on — role and run buckets
+    // span a task that landed before T4.3.15 and one dispatched after it —
+    // so reading the whole bucket as unknown because one session in it did
+    // not record the field (what an earlier version of this line did) would
+    // leave every such bucket showing `-` forever. T1 here is a real,
+    // post-T4.3.15 session; T2 is shaped like a session the v2->v3 upcaster
+    // produced — a `SessionUsage` that explicitly records `null` rather than
+    // omitting the field, which is what the current schema accepts directly
+    // (the wire shape with no field at all is the upcaster's own concern,
+    // covered in `store.test.ts`). An operator reading this run must see
+    // T1's real count, with T2 named as the reason it is not the whole
+    // story, rather than losing it to a bare `-`.
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-mixed-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 4200,
+            cacheCreationInputTokens: 300,
+            costUsd: 0.25,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T2', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T2',
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: null,
+            cacheCreationInputTokens: null,
+            costUsd: 0.05,
+            durationMs: 500,
+            apiDurationMs: 400,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T2', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      '  run: tasks 2  cost $0.3000  tokens 165 (cache-read 4200 (1 sessions unrecorded)  ' +
+        'cache-creation 300 (1 sessions unrecorded))  ',
+    );
+    expect(output).toContain(
+      '  role implementer: tasks 2  cost $0.3000  tokens 165 ' +
+        '(cache-read 4200 (1 sessions unrecorded)  ' +
+        'cache-creation 300 (1 sessions unrecorded))  ',
+    );
+  });
+
+  it('renders - only when no session in the bucket recorded the cache fields at all', () => {
+    // The replacement for the taint test above: a bucket where every session
+    // predates T4.3.15 (or upcasts from a v2 payload) still has nothing to
+    // report, and must still read as `-` rather than as a sum of zero
+    // recorded sessions standing in for "cached nothing".
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-none-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: null,
+            cacheCreationInputTokens: null,
+            costUsd: 0.05,
+            durationMs: 500,
+            apiDurationMs: 400,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      '  run: tasks 1  cost $0.0500  tokens 15 (cache-read -  cache-creation -)  ',
     );
   });
 
@@ -1793,6 +2024,8 @@ describe('status --metrics', () => {
             taskId: 'T1',
             inputTokens: 1,
             outputTokens: 1,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.01,
             durationMs: null,
             apiDurationMs: null,
@@ -1872,6 +2105,8 @@ describe('status --metrics', () => {
             taskId: 'T1',
             inputTokens: 10,
             outputTokens: 5,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
             costUsd: 0.25,
             durationMs: 1500,
             apiDurationMs: 1200,

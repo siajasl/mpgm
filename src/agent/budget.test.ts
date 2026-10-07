@@ -14,6 +14,15 @@ import type { AgentSessionProvider, SessionResult } from './session.js';
 
 const budget = { tokens: 1000, costUsd: 1, steps: 10, wallClockSeconds: 60 };
 
+/** A `SessionUsageReport` fixture — T4.3.15 made the cache fields required. */
+function usage(overrides: {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costUsd: number;
+}) {
+  return { cacheReadInputTokens: 0, cacheCreationInputTokens: 0, ...overrides };
+}
+
 function roleWith(overrides: Partial<typeof budget>, wallClockSeconds = 60) {
   const merged = { ...budget, ...overrides, wallClockSeconds };
   return parseRole(
@@ -61,7 +70,7 @@ function harness(provider: AgentSessionProvider, now?: () => number) {
 describe('BudgetLedger', () => {
   it('reports no breach while under every bound', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 100, outputTokens: 100, costUsd: 0.5 });
+    ledger.record(usage({ inputTokens: 100, outputTokens: 100, costUsd: 0.5 }));
 
     expect(ledger.breach()).toBeNull();
     expect(ledger.remainingCostUsd).toBeCloseTo(0.5);
@@ -69,18 +78,56 @@ describe('BudgetLedger', () => {
 
   it('accumulates across sessions, because retries share one task budget', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 });
+    ledger.record(usage({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 }));
     expect(ledger.breach()).toBeNull();
 
     // Neither session alone exceeds $1; together they do.
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 });
+    ledger.record(usage({ inputTokens: 0, outputTokens: 0, costUsd: 0.6 }));
 
     expect(ledger.breach()).toMatchObject({ kind: 'cost', limit: 1 });
   });
 
   it('detects a token breach', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 600, outputTokens: 600, costUsd: 0 });
+    ledger.record(usage({ inputTokens: 600, outputTokens: 600, costUsd: 0 }));
+
+    expect(ledger.breach()).toMatchObject({ kind: 'tokens', observed: 1200 });
+  });
+
+  it('excludes cache-read and cache-creation tokens from the AGT-4 bound (T4.3.15)', () => {
+    // `record`'s own doc argues this choice; nothing before this test
+    // enforced it — every fixture in this file (including `usage` above)
+    // passes 0 for both cache fields, so folding
+    // `cacheReadInputTokens + cacheCreationInputTokens` into `#tokens`
+    // left the whole suite green. A session whose cache counts alone would
+    // blow `tokens` must still report no breach: `costUsd` already prices
+    // a cache read and creation at their own rate, and this bound is a
+    // proxy for spend `costUsd` already covers.
+    const ledger = new BudgetLedger(budget, () => 0);
+    ledger.record({
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 0,
+      cacheReadInputTokens: 10_000,
+      cacheCreationInputTokens: 10_000,
+    });
+
+    expect(ledger.breach()).toBeNull();
+  });
+
+  it("reports a token breach's observed count as input+output only, not cache (T4.3.15)", () => {
+    // Same regression as above, from the other side: a session that does
+    // breach on `inputTokens`/`outputTokens` must still report `observed` as
+    // just that sum, not inflated by cache counts that happen to ride along
+    // on the same session.
+    const ledger = new BudgetLedger(budget, () => 0);
+    ledger.record({
+      inputTokens: 600,
+      outputTokens: 600,
+      costUsd: 0,
+      cacheReadInputTokens: 10_000,
+      cacheCreationInputTokens: 10_000,
+    });
 
     expect(ledger.breach()).toMatchObject({ kind: 'tokens', observed: 1200 });
   });
@@ -91,8 +138,8 @@ describe('BudgetLedger', () => {
     // the first. Steps are bounded per session by the SDK instead; what the
     // ledger raises is what it can measure.
     const ledger = new BudgetLedger({ ...budget, steps: 1 }, () => 0);
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    ledger.record(usage({ inputTokens: 0, outputTokens: 0, costUsd: 0 }));
+    ledger.record(usage({ inputTokens: 0, outputTokens: 0, costUsd: 0 }));
 
     expect(ledger.breach()).toBeNull();
   });
@@ -107,7 +154,7 @@ describe('BudgetLedger', () => {
 
   it('never reports negative remaining budget', () => {
     const ledger = new BudgetLedger(budget, () => 0);
-    ledger.record({ inputTokens: 0, outputTokens: 0, costUsd: 5 });
+    ledger.record(usage({ inputTokens: 0, outputTokens: 0, costUsd: 5 }));
 
     expect(ledger.remainingCostUsd).toBe(0);
   });
@@ -239,7 +286,7 @@ describe('budget enforcement in the runner', () => {
   it('blocks when retries collectively exhaust the cost budget', async () => {
     const role = roleWith({ costUsd: 1 });
     const expensive = scriptedSuccess(bad, {
-      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.7 },
+      usage: usage({ inputTokens: 10, outputTokens: 10, costUsd: 0.7 }),
     });
     const { db, log, runner } = harness(new ScriptedProvider([expensive, expensive]));
     try {
@@ -272,11 +319,11 @@ describe('budget enforcement in the runner', () => {
     const role = roleWith({ costUsd: 1, steps: 10 });
     const provider = new ScriptedProvider([
       scriptedSuccess(bad, {
-        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.3 },
+        usage: usage({ inputTokens: 1, outputTokens: 1, costUsd: 0.3 }),
         turns: 4,
       }),
       scriptedSuccess(good, {
-        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.1 },
+        usage: usage({ inputTokens: 1, outputTokens: 1, costUsd: 0.1 }),
         turns: 1,
       }),
     ]);
@@ -301,7 +348,7 @@ describe('budget enforcement in the runner', () => {
     // succeed and reports a breach as though the agent had misbehaved.
     const role = roleWith({ costUsd: 1 });
     const spent = scriptedSuccess(bad, {
-      usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.5 },
+      usage: usage({ inputTokens: 1, outputTokens: 1, costUsd: 0.5 }),
     });
     const provider = new ScriptedProvider([spent, spent]);
     const { db, log, runner } = harness(provider);

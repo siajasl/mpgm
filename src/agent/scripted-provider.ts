@@ -39,7 +39,13 @@ export function scriptedSuccess(
   return {
     termination: 'completed',
     structuredOutput: output,
-    usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.01 },
+    usage: {
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0.01,
+    },
     turns: 1,
     denials: [],
     errorMessage: '',

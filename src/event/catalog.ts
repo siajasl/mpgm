@@ -78,6 +78,22 @@ const upcastSessionUsageV1: Upcaster = (payload) => ({
   apiDurationMs: null,
 });
 
+/**
+ * v2 → v3 (T4.3.15): v2 predates recording cache-read and cache-creation
+ * input tokens, so a pre-existing event names neither field. `null` here
+ * means the same thing it means for `durationMs`/`apiDurationMs` above —
+ * *unrecorded*, not *zero*. The run this event describes may well have hit
+ * the prefix cache; nothing counted it, so this upcaster must not assert a
+ * count that was never taken. A session recorded from T4.3.15 onward always
+ * supplies a real number here (0 is a measured absence of a cache hit, which
+ * is different from an unmeasured one).
+ */
+const upcastSessionUsageV2: Upcaster = (payload) => ({
+  ...(payload as object),
+  cacheReadInputTokens: null,
+  cacheCreationInputTokens: null,
+});
+
 export const sessionUsage = defineEvent(
   'SessionUsage',
   z.object({
@@ -110,8 +126,28 @@ export const sessionUsage = defineEvent(
      * this catalog can bracket that is harness code and not agent work.
      */
     apiDurationMs: z.number().nonnegative().nullable(),
+    /**
+     * Input tokens served from Anthropic's prompt cache rather than
+     * processed fresh, billed at a fraction of the uncached rate (T4.3.15,
+     * OBS-2). Null means unrecorded — a pre-T4.3.15 event upcast by
+     * {@link upcastSessionUsageV2} — never a measured zero; a session
+     * recorded from this point on always reports a real count, 0 included,
+     * because the SDK's result always carries one. `BudgetLedger` does not
+     * fold this into the enforced token bound (`src/agent/budget.ts`): a
+     * cache-read token is priced far below an uncached one in `costUsd`
+     * already, so counting it at face value against a token budget would
+     * tighten every existing budget against spend the run barely incurred.
+     */
+    cacheReadInputTokens: z.number().int().nonnegative().nullable(),
+    /**
+     * Input tokens spent writing a new entry into the prompt cache, billed
+     * above the uncached rate (T4.3.15, OBS-2). Same null discipline as
+     * {@link sessionUsage}'s `cacheReadInputTokens` immediately above, and
+     * excluded from the enforced token budget for the same reason.
+     */
+    cacheCreationInputTokens: z.number().int().nonnegative().nullable(),
   }),
-  [upcastSessionUsageV1],
+  [upcastSessionUsageV1, upcastSessionUsageV2],
 );
 
 /**
