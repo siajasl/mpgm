@@ -21,18 +21,41 @@ export interface AggregateMetric {
   readonly inputTokens: number;
   readonly outputTokens: number;
   /**
-   * Summed cache-read input tokens across the bucket's sessions (T4.3.15,
-   * OBS-2) — cheaper than an uncached input token, and reported alongside
-   * it rather than folded into it so the breakdown survives into
-   * `mpgm status --metrics`. Null means at least one `SessionUsage` in this
-   * bucket predates T4.3.15 and never recorded the field; the same
-   * null-wins reasoning as `Usage.cacheReadInputTokens`
-   * (`src/state/kernel-state.ts`) applies here, now across tasks rather
-   * than across a single task's sessions.
+   * Summed cache-read input tokens across every session in the bucket that
+   * recorded one (T4.3.15, OBS-2) — cheaper than an uncached input token,
+   * and reported alongside it rather than folded into it so the breakdown
+   * survives into `mpgm status --metrics`.
+   *
+   * Null only when *no* session in the bucket recorded the field — the same
+   * "nothing to report yet" reading `successRate`/`avgLatencyMs` already
+   * give a bucket with nothing settled. A bucket with a mix of sessions that
+   * did and did not (a run spanning this task's own landing, say) is not
+   * tainted to null by the ones that did not: this is deliberately *not*
+   * the null-wins discipline `Usage.cacheReadInputTokens`
+   * (`src/state/kernel-state.ts`) uses for folding one session's own usage
+   * onto a task — there, null means *that session's* value is unknown, and
+   * nothing recorded can fill it in. Here, a bucket is many sessions, most
+   * of which usually did record it, and reading the whole bucket as unknown
+   * because one did not throws away a real number the bucket after this
+   * change will always recover from. {@link cacheReadUnrecordedSessions}
+   * says how many sessions contributed nothing to the sum, so a reader can
+   * tell a fully-measured bucket from a partly-measured one even though
+   * both render a number.
    */
   readonly cacheReadInputTokens: number | null;
-  /** Same null discipline as {@link AggregateMetric.cacheReadInputTokens}. */
+  /**
+   * Count of sessions folded into this bucket that predate T4.3.15 (or
+   * folded a v2 `SessionUsage` the upcaster mapped to null) and so
+   * contributed nothing to {@link cacheReadInputTokens}. Zero does not mean
+   * the bucket is fully measured by itself — pair it with `tasks`/session
+   * counts elsewhere on this metric if that matters — it means no session
+   * in the bucket was *known* to be missing the field.
+   */
+  readonly cacheReadUnrecordedSessions: number;
+  /** Same discipline as {@link AggregateMetric.cacheReadInputTokens}. */
   readonly cacheCreationInputTokens: number | null;
+  /** Same discipline as {@link AggregateMetric.cacheReadUnrecordedSessions}. */
+  readonly cacheCreationUnrecordedSessions: number;
   /**
    * `validationFailures` (AGT-3 retries inside a session's own structured-
    * output loop) plus every re-dispatch of the task's own `taskId` beyond
@@ -97,14 +120,57 @@ export interface RunMetrics {
 const NO_PHASE = '(none)';
 
 /**
- * Null-wins addition for a cache-token field (T4.3.15): once either side is
- * unrecorded, the combined figure is unrecorded too rather than treating the
- * missing side as a cache-free session — the same reasoning
- * `Usage.cacheReadInputTokens` (`./kernel-state.ts`) gives, applied while
- * folding this module's own second pass over the event slice.
+ * One cache-token field's running total across however many sessions have
+ * been folded into it so far (T4.3.15) — the sum of every session that
+ * recorded the field, plus a count of the sessions that did not, kept apart
+ * rather than collapsed into a single nullable number until the very last
+ * step (`settleTally` below). Keeping the two separate through every fold in
+ * this module (a task's own sessions in `collectFacts`, then tasks into a
+ * bucket in `aggregate`) is what lets a bucket mixing recorded and
+ * unrecorded sessions still report the recorded sum instead of tainting to
+ * null the moment one session in it did not record the field.
  */
-function addNullable(a: number | null, b: number | null): number | null {
-  return a === null || b === null ? null : a + b;
+interface CacheTally {
+  readonly tokens: number;
+  readonly recordedSessions: number;
+  readonly unrecordedSessions: number;
+}
+
+const EMPTY_CACHE_TALLY: CacheTally = {
+  tokens: 0,
+  recordedSessions: 0,
+  unrecordedSessions: 0,
+};
+
+/** Folds one `SessionUsage` payload's cache field into a running tally. */
+function tallySession(tally: CacheTally, value: number | null): CacheTally {
+  return value === null
+    ? { ...tally, unrecordedSessions: tally.unrecordedSessions + 1 }
+    : {
+        tokens: tally.tokens + value,
+        recordedSessions: tally.recordedSessions + 1,
+        unrecordedSessions: tally.unrecordedSessions,
+      };
+}
+
+/** Folds one task's (or bucket's) tally into another at the same grain. */
+function combineTally(a: CacheTally, b: CacheTally): CacheTally {
+  return {
+    tokens: a.tokens + b.tokens,
+    recordedSessions: a.recordedSessions + b.recordedSessions,
+    unrecordedSessions: a.unrecordedSessions + b.unrecordedSessions,
+  };
+}
+
+/** The final nullable public shape: null only when nothing was recorded. */
+function settleTally(tally: CacheTally): {
+  tokens: number | null;
+  unrecordedSessions: number;
+} {
+  return {
+    tokens: tally.recordedSessions === 0 ? null : tally.tokens,
+    unrecordedSessions: tally.unrecordedSessions,
+  };
 }
 
 interface TaskFacts {
@@ -115,8 +181,8 @@ interface TaskFacts {
   readonly costUsd: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
-  readonly cacheReadInputTokens: number | null;
-  readonly cacheCreationInputTokens: number | null;
+  readonly cacheRead: CacheTally;
+  readonly cacheCreation: CacheTally;
   readonly retries: number;
   readonly latencyMs: number | null;
 }
@@ -148,8 +214,8 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
       costUsd: number;
       inputTokens: number;
       outputTokens: number;
-      cacheReadInputTokens: number | null;
-      cacheCreationInputTokens: number | null;
+      cacheRead: CacheTally;
+      cacheCreation: CacheTally;
     }
   >();
 
@@ -202,19 +268,16 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
           costUsd: 0,
           inputTokens: 0,
           outputTokens: 0,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
+          cacheRead: EMPTY_CACHE_TALLY,
+          cacheCreation: EMPTY_CACHE_TALLY,
         };
         usageByTask.set(payload.taskId, {
           costUsd: prior.costUsd + payload.costUsd,
           inputTokens: prior.inputTokens + payload.inputTokens,
           outputTokens: prior.outputTokens + payload.outputTokens,
-          cacheReadInputTokens: addNullable(
-            prior.cacheReadInputTokens,
-            payload.cacheReadInputTokens,
-          ),
-          cacheCreationInputTokens: addNullable(
-            prior.cacheCreationInputTokens,
+          cacheRead: tallySession(prior.cacheRead, payload.cacheReadInputTokens),
+          cacheCreation: tallySession(
+            prior.cacheCreation,
             payload.cacheCreationInputTokens,
           ),
         });
@@ -272,8 +335,8 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
       costUsd: 0,
       inputTokens: 0,
       outputTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
+      cacheRead: EMPTY_CACHE_TALLY,
+      cacheCreation: EMPTY_CACHE_TALLY,
     };
 
     facts.push({
@@ -284,8 +347,8 @@ function collectFacts(run: RunState, events: readonly StoredEvent[]): TaskFacts[
       costUsd: usage.costUsd,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
-      cacheReadInputTokens: usage.cacheReadInputTokens,
-      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+      cacheRead: usage.cacheRead,
+      cacheCreation: usage.cacheCreation,
       retries: task.validationFailures + redispatches,
       latencyMs,
     });
@@ -297,8 +360,8 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
   let costUsd = 0;
   let inputTokens = 0;
   let outputTokens = 0;
-  let cacheReadInputTokens: number | null = 0;
-  let cacheCreationInputTokens: number | null = 0;
+  let cacheRead: CacheTally = EMPTY_CACHE_TALLY;
+  let cacheCreation: CacheTally = EMPTY_CACHE_TALLY;
   let retries = 0;
   let completed = 0;
   let blocked = 0;
@@ -312,11 +375,8 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
     costUsd += fact.costUsd;
     inputTokens += fact.inputTokens;
     outputTokens += fact.outputTokens;
-    cacheReadInputTokens = addNullable(cacheReadInputTokens, fact.cacheReadInputTokens);
-    cacheCreationInputTokens = addNullable(
-      cacheCreationInputTokens,
-      fact.cacheCreationInputTokens,
-    );
+    cacheRead = combineTally(cacheRead, fact.cacheRead);
+    cacheCreation = combineTally(cacheCreation, fact.cacheCreation);
     retries += fact.retries;
     if (fact.latencyMs !== null) {
       latencySum += fact.latencyMs;
@@ -342,13 +402,17 @@ function aggregate(facts: readonly TaskFacts[]): AggregateMetric {
   }
 
   const settled = completed + blocked;
+  const read = settleTally(cacheRead);
+  const creation = settleTally(cacheCreation);
   return {
     tasks: facts.length,
     costUsd,
     inputTokens,
     outputTokens,
-    cacheReadInputTokens,
-    cacheCreationInputTokens,
+    cacheReadInputTokens: read.tokens,
+    cacheReadUnrecordedSessions: read.unrecordedSessions,
+    cacheCreationInputTokens: creation.tokens,
+    cacheCreationUnrecordedSessions: creation.unrecordedSessions,
     retries,
     completed,
     blocked,

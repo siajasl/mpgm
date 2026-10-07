@@ -64,6 +64,28 @@ function usage(taskId: string, costUsd: number): EventInput {
   };
 }
 
+/** Like {@link usage}, with explicit (possibly null, i.e. unrecorded) cache fields. */
+function usageWithCache(
+  taskId: string,
+  cacheReadInputTokens: number | null,
+  cacheCreationInputTokens: number | null,
+): EventInput {
+  return {
+    runId: RUN,
+    type: 'SessionUsage',
+    payload: {
+      taskId,
+      inputTokens: 10,
+      outputTokens: 10,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
+      costUsd: 0.1,
+      durationMs: 1000,
+      apiDurationMs: 800,
+    },
+  };
+}
+
 function completed(taskId: string): EventInput {
   return { runId: RUN, type: 'TaskCompleted', payload: { taskId, artifactRefs: [] } };
 }
@@ -109,6 +131,8 @@ describe('computeRunMetrics', () => {
       outputTokens: 20,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
+      cacheReadUnrecordedSessions: 0,
+      cacheCreationUnrecordedSessions: 0,
       retries: 1,
       completed: 1,
       blocked: 1,
@@ -127,6 +151,8 @@ describe('computeRunMetrics', () => {
       outputTokens: 10,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
+      cacheReadUnrecordedSessions: 0,
+      cacheCreationUnrecordedSessions: 0,
       retries: 1,
       completed: 1,
       blocked: 0,
@@ -143,6 +169,8 @@ describe('computeRunMetrics', () => {
       outputTokens: 10,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
+      cacheReadUnrecordedSessions: 0,
+      cacheCreationUnrecordedSessions: 0,
       retries: 0,
       completed: 0,
       blocked: 1,
@@ -435,6 +463,66 @@ describe('computeRunMetrics', () => {
 
     expect(report.byTask.T1?.costUsd).toBeCloseTo(1.25);
     expect(run.tasks.T1?.usage.costUsd).toBeCloseTo(0.25);
+  });
+
+  it('sums cache tokens over the sessions that recorded them, in a bucket that also has one that did not (T4.3.15)', () => {
+    // T1 recorded both cache fields; T2's session is shaped like a pre-
+    // T4.3.15 (or v2-upcast) `SessionUsage` that never did. Both land in the
+    // same role bucket. The fix this task makes is that the role bucket
+    // reports T1's real count rather than tainting to null the moment T2's
+    // unrecorded session folds in — mutating `combineTally`/`settleTally`
+    // back to the old null-wins rule (`a === null || b === null ? null : …`)
+    // would make this assert null and fail.
+    const events = logWith([
+      runStarted,
+      dispatched('T1', 'implementer'),
+      usageWithCache('T1', 4000, 100),
+      completed('T1'),
+      dispatched('T2', 'implementer'),
+      usageWithCache('T2', null, null),
+      completed('T2'),
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    const report = computeRunMetrics(run, events);
+
+    expect(report.byRole.implementer).toMatchObject({
+      cacheReadInputTokens: 4000,
+      cacheReadUnrecordedSessions: 1,
+      cacheCreationInputTokens: 100,
+      cacheCreationUnrecordedSessions: 1,
+    });
+    expect(report.overall).toMatchObject({
+      cacheReadInputTokens: 4000,
+      cacheReadUnrecordedSessions: 1,
+    });
+  });
+
+  it('reports null, not 0, when every session in the bucket is unrecorded (T4.3.15)', () => {
+    // Replacing `settleTally`'s `recordedSessions === 0 ? null : …` with a
+    // bare `tally.tokens` would read this bucket as "cached nothing" (0)
+    // rather than "nothing measured" (null) — the same distinction
+    // `successRate`/`avgLatencyMs` already draw for a bucket with nothing
+    // settled.
+    const events = logWith([
+      runStarted,
+      dispatched('T1', 'implementer'),
+      usageWithCache('T1', null, null),
+      completed('T1'),
+    ]);
+    const run = fold(events).runs[RUN];
+    if (run === undefined) {
+      throw new Error('fixture did not fold a run');
+    }
+
+    const report = computeRunMetrics(run, events);
+
+    expect(report.overall.cacheReadInputTokens).toBeNull();
+    expect(report.overall.cacheReadUnrecordedSessions).toBe(1);
+    expect(report.overall.cacheCreationInputTokens).toBeNull();
   });
 
   it('a task dispatched after PhaseReopened is grouped under the reopened phase', () => {

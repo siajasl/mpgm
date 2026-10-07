@@ -350,6 +350,55 @@ describe('runProjection / summaryOf', () => {
     }
   });
 
+  it("carries a task's recorded cache-read and cache-creation tokens into its dashboard usage (T4.3.15)", () => {
+    // `dashboardTask` reads `byTaskUsage`, built straight from
+    // `computeRunMetrics(...).byTask` (`projection.ts`'s module doc) rather
+    // than `task.usage` — replacing `cacheReadInputTokens:
+    // metric.cacheReadInputTokens` with a literal `0` in `runProjection`
+    // would leave this at 0 while every other fixture in this file also
+    // uses 0 for both cache fields, so nothing before this test would
+    // catch that drop.
+    const { db, log, projector } = harness();
+    try {
+      log.appendMany([
+        { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'engineer', model: 'claude-sonnet-5' },
+        },
+        {
+          runId: RUN,
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 200,
+            outputTokens: 0,
+            cacheReadInputTokens: 4000,
+            cacheCreationInputTokens: 150,
+            costUsd: 1.0,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: RUN,
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+
+      const run = requireRun(projector.project(), RUN);
+      const projection = runProjection(run, log.read());
+      const task = projection.tasks.find((entry) => entry.taskId === 'T1');
+
+      expect(task?.usage.cacheReadInputTokens).toBe(4000);
+      expect(task?.usage.cacheCreationInputTokens).toBe(150);
+    } finally {
+      db.close();
+    }
+  });
+
   it('lists every run known to the log', () => {
     const { db, log, projector } = harness();
     try {

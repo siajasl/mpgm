@@ -347,15 +347,28 @@ export async function run(
  * null: a bucket with no settled task has not failed, it has nothing to
  * report yet, and the two must not read alike.
  *
- * `cache-read`/`cache-creation` (T4.3.15) render the same way, and for the
- * same reason, as those two: `-` means at least one session folded into this
- * bucket predates T4.3.15 and never recorded the field, not that the bucket
- * cached nothing. They stand apart from `tokens` rather than folding into
- * it, because a cache-read token is billed at a fraction of an uncached
- * one's rate and a cache-creation token above it — summing them into the
- * same figure `tokens` already reports would misstate what the run was
- * actually charged for, which is exactly the gap this task closes.
+ * `cache-read`/`cache-creation` (T4.3.15) render `-` only when *no* session
+ * folded into this bucket recorded the field — the same "nothing to report
+ * yet" reading as `successRate`/`avgLatencyMs` above, not the null-wins
+ * taint an earlier version of this line used. A bucket mixing sessions that
+ * did and did not record it (any bucket spanning this change's own landing,
+ * permanently) renders the sum over the ones that did, with how many did
+ * not in parentheses — `AggregateMetric.cacheReadUnrecordedSessions`'s own
+ * doc has the reasoning. They stand apart from `tokens` rather than folding
+ * into it, because a cache-read token is billed at a fraction of an
+ * uncached one's rate and a cache-creation token above it — summing them
+ * into the same figure `tokens` already reports would misstate what the
+ * run was actually charged for, which is exactly the gap this task closes.
  */
+function formatCacheTokens(tokens: number | null, unrecordedSessions: number): string {
+  if (tokens === null) {
+    return '-';
+  }
+  return unrecordedSessions === 0
+    ? String(tokens)
+    : `${String(tokens)} (${String(unrecordedSessions)} sessions unrecorded)`;
+}
+
 function formatMetric(label: string, metric: AggregateMetric): string {
   const success =
     metric.successRate === null
@@ -363,12 +376,14 @@ function formatMetric(label: string, metric: AggregateMetric): string {
       : `${(metric.successRate * 100).toFixed(0)}% (${String(metric.completed)}/${String(metric.completed + metric.blocked)})`;
   const latency =
     metric.avgLatencyMs === null ? '-' : `${String(Math.round(metric.avgLatencyMs))}ms`;
-  const cacheRead =
-    metric.cacheReadInputTokens === null ? '-' : String(metric.cacheReadInputTokens);
-  const cacheCreation =
-    metric.cacheCreationInputTokens === null
-      ? '-'
-      : String(metric.cacheCreationInputTokens);
+  const cacheRead = formatCacheTokens(
+    metric.cacheReadInputTokens,
+    metric.cacheReadUnrecordedSessions,
+  );
+  const cacheCreation = formatCacheTokens(
+    metric.cacheCreationInputTokens,
+    metric.cacheCreationUnrecordedSessions,
+  );
   return (
     `  ${label}: tasks ${String(metric.tasks)}  cost $${metric.costUsd.toFixed(4)}  ` +
     `tokens ${String(metric.inputTokens + metric.outputTokens)} ` +

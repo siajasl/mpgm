@@ -1741,9 +1741,12 @@ describe('status --metrics', () => {
     expect(result.ok).toBe(true);
     const output = writes.join('\n');
     // T1 was dispatched but never reached a terminal event: nothing to
-    // average and nothing settled, and neither must read as 0ms/0%.
+    // average and nothing settled, and neither must read as 0ms/0%. T1 also
+    // never recorded a `SessionUsage` at all, so the cache fields have
+    // nothing to report either (T4.3.15) — `-`, not `0`, for the same
+    // reason `avg-latency`/`success` below are `-` rather than `0ms`/`0%`.
     expect(output).toContain(
-      '  phase implement: tasks 1  cost $0.0000  tokens 0 (cache-read 0  cache-creation 0)  ' +
+      '  phase implement: tasks 1  cost $0.0000  tokens 0 (cache-read -  cache-creation -)  ' +
         'avg-latency -  retries 0  success -',
     );
     // T2 completed, so its bucket reports real numbers rather than "-".
@@ -1838,21 +1841,21 @@ describe('status --metrics', () => {
     );
   });
 
-  it('taints the run-level cache figure once any session in it recorded it as unknown', () => {
-    // The null-means-unrecorded discipline is asserted today only inside the
-    // event-upcaster test (`src/event/store.test.ts`) — nothing above the
-    // event log constructs a mixed bucket, so `metrics.ts`'s own `addNullable`
-    // can be replaced with `(a ?? 0) + (b ?? 0)` (treating a pre-T4.3.15
-    // session's unrecorded cache count as 0) and both `metrics.test.ts` and
-    // the single-task cache fixture above stay green. T1 here is a real,
+  it('sums the recorded sessions in a mixed bucket instead of tainting it to unknown', () => {
+    // A bucket that mixes a session which recorded the field with one that
+    // did not is permanent on every run from here on — role and run buckets
+    // span a task that landed before T4.3.15 and one dispatched after it —
+    // so reading the whole bucket as unknown because one session in it did
+    // not record the field (what an earlier version of this line did) would
+    // leave every such bucket showing `-` forever. T1 here is a real,
     // post-T4.3.15 session; T2 is shaped like a session the v2->v3 upcaster
     // produced — a `SessionUsage` that explicitly records `null` rather than
     // omitting the field, which is what the current schema accepts directly
     // (the wire shape with no field at all is the upcaster's own concern,
-    // covered in `store.test.ts`). An operator reading this run must see the
-    // combined figure as unknown, not as T1's real count standing in for the
-    // whole run.
-    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-null-'));
+    // covered in `store.test.ts`). An operator reading this run must see
+    // T1's real count, with T2 named as the reason it is not the whole
+    // story, rather than losing it to a bare `-`.
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-mixed-'));
     const writes: string[] = [];
     const db = openDatabase(join(root, '.mpgm', 'state.db'));
     try {
@@ -1924,11 +1927,70 @@ describe('status --metrics', () => {
     expect(result.ok).toBe(true);
     const output = writes.join('\n');
     expect(output).toContain(
-      '  run: tasks 2  cost $0.3000  tokens 165 (cache-read -  cache-creation -)  ',
+      '  run: tasks 2  cost $0.3000  tokens 165 (cache-read 4200 (1 sessions unrecorded)  ' +
+        'cache-creation 300 (1 sessions unrecorded))  ',
     );
     expect(output).toContain(
-      '  role implementer: tasks 2  cost $0.3000  tokens 165 (cache-read -  ' +
-        'cache-creation -)  ',
+      '  role implementer: tasks 2  cost $0.3000  tokens 165 ' +
+        '(cache-read 4200 (1 sessions unrecorded)  ' +
+        'cache-creation 300 (1 sessions unrecorded))  ',
+    );
+  });
+
+  it('renders - only when no session in the bucket recorded the cache fields at all', () => {
+    // The replacement for the taint test above: a bucket where every session
+    // predates T4.3.15 (or upcasts from a v2 payload) still has nothing to
+    // report, and must still read as `-` rather than as a sum of zero
+    // recorded sessions standing in for "cached nothing".
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-none-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: null,
+            cacheCreationInputTokens: null,
+            costUsd: 0.05,
+            durationMs: 500,
+            apiDurationMs: 400,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      '  run: tasks 1  cost $0.0500  tokens 15 (cache-read -  cache-creation -)  ',
     );
   });
 

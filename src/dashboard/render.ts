@@ -275,6 +275,15 @@ ${summaries.map(summaryRow)}
   return page('mpgm dashboard', body).toString();
 }
 
+/**
+ * `task.usage.cacheReadInputTokens`/`cacheCreationInputTokens` (T4.3.15)
+ * reach this far correctly (`projection.test.ts` asserts it) but are not
+ * rendered: no column here, and `mpgm status --metrics` (`cli/commands.ts`)
+ * has no per-task scope at all, only run/phase/role. Declared out of scope
+ * for T4.3.15 rather than left to be found as a silent drop — the per-task
+ * breakdown a rework round's own revert condition (e3e91a8) needs is
+ * reachable today only by reading this run's JSON projection directly.
+ */
 function taskRow(task: DashboardTask): SafeHtml {
   return markup`<tr class="${task.blocked ? 'blocked' : ''}">
 <td>${task.taskId}</td>

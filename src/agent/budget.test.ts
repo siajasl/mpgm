@@ -94,6 +94,44 @@ describe('BudgetLedger', () => {
     expect(ledger.breach()).toMatchObject({ kind: 'tokens', observed: 1200 });
   });
 
+  it('excludes cache-read and cache-creation tokens from the AGT-4 bound (T4.3.15)', () => {
+    // `record`'s own doc argues this choice; nothing before this test
+    // enforced it — every fixture in this file (including `usage` above)
+    // passes 0 for both cache fields, so folding
+    // `cacheReadInputTokens + cacheCreationInputTokens` into `#tokens`
+    // left the whole suite green. A session whose cache counts alone would
+    // blow `tokens` must still report no breach: `costUsd` already prices
+    // a cache read and creation at their own rate, and this bound is a
+    // proxy for spend `costUsd` already covers.
+    const ledger = new BudgetLedger(budget, () => 0);
+    ledger.record({
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 0,
+      cacheReadInputTokens: 10_000,
+      cacheCreationInputTokens: 10_000,
+    });
+
+    expect(ledger.breach()).toBeNull();
+  });
+
+  it("reports a token breach's observed count as input+output only, not cache (T4.3.15)", () => {
+    // Same regression as above, from the other side: a session that does
+    // breach on `inputTokens`/`outputTokens` must still report `observed` as
+    // just that sum, not inflated by cache counts that happen to ride along
+    // on the same session.
+    const ledger = new BudgetLedger(budget, () => 0);
+    ledger.record({
+      inputTokens: 600,
+      outputTokens: 600,
+      costUsd: 0,
+      cacheReadInputTokens: 10_000,
+      cacheCreationInputTokens: 10_000,
+    });
+
+    expect(ledger.breach()).toMatchObject({ kind: 'tokens', observed: 1200 });
+  });
+
   it('does not account steps, because it cannot measure them in the units it caps', () => {
     // The SDK's `maxTurns` and the `num_turns` a result reports count
     // different things, so a running total of the second is not spend against
