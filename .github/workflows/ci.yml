@@ -143,21 +143,33 @@ jobs:
     name: scan
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 — scripts/audit-drift.mjs (T4.3.16) reads `origin/main`
+      # to tell a dependency finding this branch introduced apart from one it
+      # merely inherited, and a shallow checkout leaves no local `origin/main`
+      # to read.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: '24.x'
           cache: npm
       - run: npm ci
+      - name: Build
+        run: npm run build
 
-      # SAF-5, dependency audit.
+      # SAF-5, dependency audit. Still the whole tree, still at `high`: an
+      # advisory this branch's own diff introduced blocks it exactly as
+      # before. One the trunk already carries, that this branch's diff never
+      # touched a manifest to cause, does not — see the script's own header
+      # for why that is not a hole an agent can widen, and
+      # .github/workflows/dependency-audit-trunk.yml for what still catches
+      # it (T4.3.16).
       - name: Dependency audit
-        run: npm audit --audit-level=high
+        run: node scripts/audit-drift.mjs
 
       # SAF-5, secret scanning — the same patterns the kernel redacts with
       # (SAF-6), so there is one definition of what a credential looks like.
-      - name: Build
-        run: npm run build
       - name: Secret scan
         run: node scripts/scan-secrets.mjs
 

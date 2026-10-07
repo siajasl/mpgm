@@ -1,0 +1,99 @@
+name: Dependency audit (trunk)
+
+on:
+  schedule:
+    # Weekly, not nightly: a trunk-only advisory is not an emergency the
+    # moment it is published (`.github/workflows/ci.yml`'s `scan` job still
+    # catches, same day, anything a branch actually introduces) — this is
+    # the backstop for drift nothing introduced, and it has to be cheap
+    # enough to run unattended indefinitely, not tuned for latency.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+# T4.3.16: scripts/audit-drift.mjs (the per-branch `scan` job) lets a
+# dependency advisory through unblocked when it is drift — already on the
+# trunk, and this branch's diff never touched a manifest to cause it. That
+# is not SAF-5 satisfied by itself; it only moves *who* has to answer the
+# advisory off a branch whose task never mentioned the package. This job is
+# who: it audits the trunk alone, with no other branch to blame anything on
+# and so no exemption to grant, on a schedule independent of any pull
+# request. "Doing nothing" is not an option this repair is allowed to leave
+# on the table (T4.3.16's own completion criterion) — a run of this job that
+# finds a high-severity advisory fails red and files or updates a tracking
+# issue naming it, so the drift this script let through is handed to
+# something, not merely logged somewhere nobody is watching. Until T5.1.3/
+# T5.1.4 (PLAN M5.1) give mpgm its own signal ingestion for this, a human
+# reading the failed run or the issue it opens is who closes it — same as
+# both measured instances (9809a24, 94e660d) were closed before this task,
+# except noticed by a scheduled check instead of by accident.
+jobs:
+  audit:
+    name: audit trunk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci
+
+      # No drift script here: the trunk has nothing else to compare itself
+      # against, so every high-severity advisory found is this job's to
+      # report, full stop — the same command the branch-side job falls back
+      # to when it cannot read the trunk at all (fail closed, CONV-4).
+      - name: Dependency audit
+        id: audit
+        run: npm audit --audit-level=high
+
+      - name: File or update a tracking issue
+        if: failure() && steps.audit.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The plain-text summary, not --json: a multi-advisory round (T4.3.14
+          # carried seven) renders the full JSON report well past GitHub's
+          # 65,536-character issue-body limit, and this step runs under
+          # set -euo pipefail, so the 422 that creating or commenting on such
+          # an issue would raise failed the step silently before this fix --
+          # exactly the "doing nothing" this backstop exists to not be. A
+          # second truncation below is a hard ceiling regardless of what the
+          # summary ever grows to.
+          REPORT="$(npm audit --audit-level=high || true)"
+          REPORT_LIMIT=20000
+          if [ "${#REPORT}" -gt "$REPORT_LIMIT" ]; then
+            # No pipe: `head -c` closing early under `set -o pipefail` made
+            # `printf`'s SIGPIPE exit 141, which this assignment propagated,
+            # which killed this step under `set -e` before `gh issue
+            # create`/`comment` ever ran -- the exact "doing nothing" this
+            # truncation exists to prevent, and exactly the multi-advisory
+            # round (T4.3.14's seven) it would have hit. Plain parameter
+            # expansion has no pipe to fail.
+            REPORT="${REPORT:0:$REPORT_LIMIT}
+          ... (truncated at ${REPORT_LIMIT} characters; full report: ${RUN_URL})"
+          fi
+          TITLE="Dependency drift: trunk carries a high-severity advisory"
+          BODY="The scheduled trunk-only dependency audit (T4.3.16) found at least
+          one advisory at or above \`high\` on \`${{ github.ref_name }}\`
+          (run: ${RUN_URL}).
+
+          This is not any one branch's finding — it is the trunk's own, which is
+          exactly why the per-branch \`scan\` job does not block a branch for it.
+          Something still has to fix it: either this issue, by the next session
+          that touches dependencies deliberately, or a task filed against it.
+
+          \`\`\`
+          ${REPORT}
+          \`\`\`"
+          EXISTING="$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq '.[0].number // empty' || true)"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
