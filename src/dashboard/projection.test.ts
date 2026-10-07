@@ -419,7 +419,11 @@ describe('runProjection / summaryOf', () => {
       const { db, log, projector } = harness();
       try {
         log.appendMany([
-          { runId: RUN, type: 'RunStarted', payload: { project: 'mpgm', operator: 'op' } },
+          {
+            runId: RUN,
+            type: 'RunStarted',
+            payload: { project: 'mpgm', operator: 'op' },
+          },
           {
             runId: RUN,
             type: 'TaskDispatched',
@@ -465,7 +469,11 @@ describe('runProjection / summaryOf', () => {
               apiDurationMs: 800,
             },
           },
-          { runId: RUN, type: 'TaskCompleted', payload: { taskId: 'T1', artifactRefs: [] } },
+          {
+            runId: RUN,
+            type: 'TaskCompleted',
+            payload: { taskId: 'T1', artifactRefs: [] },
+          },
         ]);
 
         const run = requireRun(projector.project(), RUN);
