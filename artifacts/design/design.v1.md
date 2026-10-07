@@ -8,9 +8,9 @@ tracesTo:
   - DSG-2
   - DSG-4
 producedBy:
-  task: T4.2.16
+  task: saf5-joint-satisfaction
   role: implementer
-  model: claude-sonnet-5
+  model: claude-opus-5
   runId: bootstrap
 supersedes: null
 egress: internal
@@ -349,8 +349,10 @@ data:
         structurally constrained, read-only sessions (SAF-3); destructive tools
         requiring dry-run then confirmation, keyed by a fingerprint over every
         parameter but the dry-run flag (SAF-4); merge-blocking security scanning
-        (SAF-5); egress classes at context assembly with an
-        unlabelled-is-restricted default (SAF-6) (§7).
+        (SAF-5), with the dependency audit's findings attributed between the
+        change and the commit it was cut from and the latter answered by a
+        standing scheduled check (§9 decision 16); egress classes at context
+        assembly with an unlabelled-is-restricted default (SAF-6) (§7).
       tracesTo:
         - SAF-2
         - SAF-3
@@ -609,7 +611,7 @@ mpgm's own design (DESIGN.md v0.35), derived from it the way T4.3.1's Scope was 
 - {"id":"X-2","concern":"authz","approach":"Least-privilege role toolsets (AGT-2) enforced outside the model via the SDK's canUseTool/hook interface: per-role allowlists of tools, file globs, network hosts and shell patterns, with every dimension defaulting to empty so a role reaches only what it names (ADR-6, §7).","tracesTo":["AGT-2","SAF-1"]}
 - {"id":"X-3","concern":"observability","approach":"The event log is the telemetry source; a projection layer derives per-phase/per-role cost, latency, retry and success metrics and longitudinal quality metrics (gate rejection rate, rework rate, escaped defects), with every tool call and approval an event (§4.5, §7).","tracesTo":["OBS-1","OBS-2","OBS-3","OBS-4"]}
 - {"id":"X-4","concern":"failure-modes","approach":"Crash-safe resume via event-log fold plus intent-before-effect for side-effectful steps; retry-with-backoff on model/tool failure and escalation on exhaustion rather than a silently dropped task; worktree preservation and resume-with-context on session death (§6).","tracesTo":["NFR-1"]}
-- {"id":"X-5","concern":"security","approach":"Secret brokering at the tool boundary with symbolic references and exact-value log redaction (SAF-2); untrusted external content handled by structurally constrained, read-only sessions (SAF-3); destructive tools requiring dry-run then confirmation, keyed by a fingerprint over every parameter but the dry-run flag (SAF-4); merge-blocking security scanning (SAF-5); egress classes at context assembly with an unlabelled-is-restricted default (SAF-6) (§7).","tracesTo":["SAF-2","SAF-3","SAF-4","SAF-5","SAF-6"]}
+- {"id":"X-5","concern":"security","approach":"Secret brokering at the tool boundary with symbolic references and exact-value log redaction (SAF-2); untrusted external content handled by structurally constrained, read-only sessions (SAF-3); destructive tools requiring dry-run then confirmation, keyed by a fingerprint over every parameter but the dry-run flag (SAF-4); merge-blocking security scanning (SAF-5), with the dependency audit's findings attributed between the change and the commit it was cut from and the latter answered by a standing scheduled check (§9 decision 16); egress classes at context assembly with an unlabelled-is-restricted default (SAF-6) (§7).","tracesTo":["SAF-2","SAF-3","SAF-4","SAF-5","SAF-6"]}
 
 ## adrs
 

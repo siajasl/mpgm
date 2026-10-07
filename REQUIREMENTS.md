@@ -1,6 +1,6 @@
 # REQUIREMENTS — mpgm Agentic SDLC Harness
 
-**Status:** v0.4 — adds GitHub project-management integration (PMG) · **Owner:** macg@enthropic.io · **Last updated:** 2026-08-23
+**Status:** v0.5 — SAF-5 qualified: the merge check answers for what a change introduces, a standing trunk check for what it inherits, with §8 decision 4 recording why · **Owner:** macg@enthropic.io · **Last updated:** 2026-10-07
 
 ## 1. Purpose
 
@@ -90,7 +90,7 @@ Requirement keywords **MUST**, **SHOULD**, **MAY** follow RFC 2119. Requirements
 - **SAF-2** Secrets MUST never enter model context; the harness MUST broker credentials so agents reference them symbolically.
 - **SAF-3** All content ingested from outside the project (web pages, third-party issues, dependency docs) MUST be treated as untrusted data; instructions embedded in it MUST NOT be executed.
 - **SAF-4** Destructive operations MUST be dry-run capable and reversible where the underlying system permits; the harness MUST prefer reversible paths.
-- **SAF-5** Agent-generated code MUST pass automated security scanning (static analysis, dependency audit, secret scanning) before every merge (enforced via IMP-2).
+- **SAF-5** Agent-generated code MUST pass automated security scanning (static analysis, dependency audit, secret scanning) before every merge: the merge check MUST answer for every finding the change itself introduces (the merge limb enforced via IMP-2). A project MAY declare a standing check over the trunk to answer for findings a change did not introduce; that check MUST run on a declared schedule, MUST raise a tracked, severity-prioritized work item for each finding (MNT-1, MNT-3), and its runs MUST be observable. Where no such check is declared, every finding the scan reports MUST block the merge. See §8 decision 4.
 - **SAF-6** The project MUST declare a data-egress policy classifying what may be sent to which model providers; the harness MUST enforce it on context assembly, and personally identifiable or operator-restricted data MUST NOT enter third-party model calls without explicit policy allowance.
 
 ### Extensibility (EXT)
@@ -203,3 +203,4 @@ Until the harness can run its own gates, this document is accepted by direct ope
 1. **Substrate & models:** v1 builds on Claude Code and the Claude Agent SDK, targeting Anthropic Claude models. EXT-2 still applies: workflows, phase definitions, and artifacts remain provider-portable.
 2. **Operator model:** single-operator v1; team collaboration (multiple approvers, role-based gates) deferred to v2.
 3. **Autonomous replanning:** per PLN-4 — simple/small plan adjustments are autonomous and logged; complex or large adjustments require Plan gate re-entry.
+4. **Who answers for a security finding:** a merge is refused for what the change introduced; findings the tree it was cut from already carries are answered by a standing check over the trunk (MNT-1, MNT-3), after the merge and within one interval of that check's schedule, not by the next branch to arrive. This narrows what a merge refuses, not what must be fixed. Rationale and mechanism: DESIGN §9 decision 16.

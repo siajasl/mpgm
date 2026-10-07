@@ -1,7 +1,7 @@
 # PLAN — mpgm Build Plan
 
 **Status:** v0.30 — T4.3.16 added: the CI dependency audit has no floor on advisory age and no merge-base comparison, so an advisory published after a branch is cut blocks it indistinguishably from a finding it caused, and the task's repair round pays for the fix · **Owner:** macg@enthropic.io · **Last updated:** 2026-10-06
-**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.4 · [DESIGN.md](DESIGN.md) v0.37. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
+**Upstream:** [REQUIREMENTS.md](REQUIREMENTS.md) v0.5 · [DESIGN.md](DESIGN.md) v0.38. Structured per PLN-1: **plan phases → milestones → tasks**; each task is a single unit of work sized for one agent session, with completion criteria. Milestones carry verification demos (PLN-3), not time estimates. Task `traces` cite DESIGN sections/ADRs; requirement coverage flows through them (ART-2).
 
 ## 1. Bootstrap Note
 
