@@ -187,16 +187,16 @@ const artifact = store.write({
   basePath: 'artifacts/scope/requirements.md',
   schema: 'scope',
   producedBy: {
-    task: 'T4.3.1',
+    task: 'saf5-joint-satisfaction',
     role: 'implementer',
-    model: 'claude-sonnet-5',
+    model: 'claude-opus-5',
     runId: 'bootstrap',
   },
   tracesTo: ['SCP-1', 'SCP-2', 'SCP-3'],
   egress: 'internal',
   data: {
     summary:
-      `mpgm's own requirement set (REQUIREMENTS.md v0.4), derived mechanically ` +
+      `mpgm's own requirement set (REQUIREMENTS.md v0.5), derived mechanically ` +
       `so the ${String(requirements.length)} ids REQUIREMENTS.md already assigns carry across ` +
       `unchanged (ORC-1, TST-5, OBS-4 and every other id any commit trailer, ` +
       `ADR or artifact already cites resolve against this artifact rather ` +

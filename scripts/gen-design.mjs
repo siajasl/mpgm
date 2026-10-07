@@ -567,7 +567,10 @@ const crossCutting = [
       'handled by structurally constrained, read-only sessions (SAF-3); ' +
       'destructive tools requiring dry-run then confirmation, keyed by a ' +
       'fingerprint over every parameter but the dry-run flag (SAF-4); ' +
-      'merge-blocking security scanning (SAF-5); egress classes at context ' +
+      "merge-blocking security scanning (SAF-5), with the dependency audit's " +
+      'findings attributed between the change and the commit it was cut from and ' +
+      'the latter answered by a standing scheduled check (§9 decision 16); ' +
+      'egress classes at context ' +
       'assembly with an unlabelled-is-restricted default (SAF-6) (§7).',
     tracesTo: ['SAF-2', 'SAF-3', 'SAF-4', 'SAF-5', 'SAF-6'],
   },
@@ -586,9 +589,9 @@ const request = {
   basePath,
   schema: 'design',
   producedBy: {
-    task: 'T4.2.16',
+    task: 'saf5-joint-satisfaction',
     role: 'implementer',
-    model: 'claude-sonnet-5',
+    model: 'claude-opus-5',
     runId: 'bootstrap',
   },
   tracesTo: ['DSG-1', 'DSG-2', 'DSG-4'],
