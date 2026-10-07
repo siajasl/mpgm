@@ -592,6 +592,121 @@ describe('reduce', () => {
     });
   });
 
+  it('sums a non-zero cache count into both the task and the run total', () => {
+    // T4.3.15: a prior test ('tracks the lifecycle...') only ever exercised
+    // cache fields at 0, which is also addUsage's and zeroUsage's own
+    // default — indistinguishable from the fold doing nothing to them. This
+    // is the end the gap was supposed to be closed at: a cache hit the
+    // provider actually reported has to survive folding into the state an
+    // operator reads.
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude-opus-5' },
+        },
+        {
+          runId: RUN,
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 4200,
+            cacheCreationInputTokens: 300,
+            costUsd: 0.5,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: RUN,
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: 800,
+            cacheCreationInputTokens: 0,
+            costUsd: 0.1,
+            durationMs: 200,
+            apiDurationMs: 150,
+          },
+        },
+      ]),
+    );
+
+    const expected = {
+      inputTokens: 110,
+      outputTokens: 55,
+      costUsd: 0.6,
+      cacheReadInputTokens: 5000,
+      cacheCreationInputTokens: 300,
+    };
+    expect(state.runs[RUN]?.tasks.T1?.usage).toStrictEqual(expected);
+    expect(state.runs[RUN]?.usage).toStrictEqual(expected);
+  });
+
+  it('taints the folded cache total once any session recorded it as unknown', () => {
+    // The null-means-unrecorded discipline (T4.3.15's doc comment on
+    // `addNullable`) cannot fail above the event log today: nothing
+    // constructs a `SessionUsage` payload with a null cache field except the
+    // v2->v3 upcaster test. A pre-T4.3.15 session folded alongside a real one
+    // has to leave the combined total unknown, not silently report the known
+    // half as the whole.
+    const state = fold(
+      logWith([
+        runStartedInput,
+        {
+          runId: RUN,
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude-opus-5' },
+        },
+        {
+          runId: RUN,
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 4200,
+            cacheCreationInputTokens: 300,
+            costUsd: 0.5,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: RUN,
+          // The schema the current registry accepts directly: a live event
+          // can still carry `null` here (the upcaster test above covers the
+          // pre-T4.3.15 wire shape that has no field at all), so this is the
+          // shortest fixture that reaches `addNullable` with one side tainted.
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 0.1,
+            durationMs: 200,
+            apiDurationMs: 150,
+            cacheReadInputTokens: null,
+            cacheCreationInputTokens: null,
+          },
+        },
+      ]),
+    );
+
+    const task = state.runs[RUN]?.tasks.T1;
+    expect(task?.usage.inputTokens).toBe(110);
+    expect(task?.usage.cacheReadInputTokens).toBeNull();
+    expect(task?.usage.cacheCreationInputTokens).toBeNull();
+    expect(state.runs[RUN]?.usage.cacheReadInputTokens).toBeNull();
+    expect(state.runs[RUN]?.usage.cacheCreationInputTokens).toBeNull();
+  });
+
   it('records gate decisions with who made them', () => {
     const state = fold(
       logWith([

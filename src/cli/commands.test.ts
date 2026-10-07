@@ -1769,6 +1769,169 @@ describe('status --metrics', () => {
     );
   });
 
+  it('renders a non-zero cache count at run, phase and role scope (T4.3.15)', () => {
+    // Every other fixture in this file uses 0 for both cache fields, which is
+    // also `aggregate`'s own initializer and `usageByTask`'s own default —
+    // indistinguishable from the aggregation step doing nothing to them.
+    // OBS-2 names run, role and phase; `scripts/demo/cli-e2e.mjs` only ever
+    // pins the phase line down, so this is the only place the run-scope and
+    // role-scope lines are checked at all.
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        { runId: 'r1', type: 'PhaseEntered', payload: { phase: 'implement' } },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 4200,
+            cacheCreationInputTokens: 300,
+            costUsd: 0.25,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      '  run: tasks 1  cost $0.2500  tokens 150 (cache-read 4200  cache-creation 300)  ' +
+        'avg-latency 0ms  retries 0  success 100% (1/1)',
+    );
+    expect(output).toContain(
+      '  phase implement: tasks 1  cost $0.2500  tokens 150 (cache-read 4200  ' +
+        'cache-creation 300)  avg-latency 0ms  retries 0  success 100% (1/1)',
+    );
+    expect(output).toContain(
+      '  role implementer: tasks 1  cost $0.2500  tokens 150 (cache-read 4200  ' +
+        'cache-creation 300)  avg-latency 0ms  retries 0  success 100% (1/1)',
+    );
+  });
+
+  it('taints the run-level cache figure once any session in it recorded it as unknown', () => {
+    // The null-means-unrecorded discipline is asserted today only inside the
+    // event-upcaster test (`src/event/store.test.ts`) — nothing above the
+    // event log constructs a mixed bucket, so `metrics.ts`'s own `addNullable`
+    // can be replaced with `(a ?? 0) + (b ?? 0)` (treating a pre-T4.3.15
+    // session's unrecorded cache count as 0) and both `metrics.test.ts` and
+    // the single-task cache fixture above stay green. T1 here is a real,
+    // post-T4.3.15 session; T2 is shaped like a session the v2->v3 upcaster
+    // produced — a `SessionUsage` that explicitly records `null` rather than
+    // omitting the field, which is what the current schema accepts directly
+    // (the wire shape with no field at all is the upcaster's own concern,
+    // covered in `store.test.ts`). An operator reading this run must see the
+    // combined figure as unknown, not as T1's real count standing in for the
+    // whole run.
+    const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-cache-null-'));
+    const writes: string[] = [];
+    const db = openDatabase(join(root, '.mpgm', 'state.db'));
+    try {
+      const log = EventLog.attach(db, {
+        registry: kernelRegistry(),
+        clock: () => '2026-01-01T00:00:00.000Z',
+      });
+      log.appendMany([
+        {
+          runId: 'r1',
+          type: 'RunStarted',
+          payload: { project: 'x', operator: 'operator' },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T1', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T1',
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 4200,
+            cacheCreationInputTokens: 300,
+            costUsd: 0.25,
+            durationMs: 1000,
+            apiDurationMs: 800,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T1', artifactRefs: [] },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskDispatched',
+          payload: { taskId: 'T2', role: 'implementer', model: 'claude' },
+        },
+        {
+          runId: 'r1',
+          type: 'SessionUsage',
+          payload: {
+            taskId: 'T2',
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadInputTokens: null,
+            cacheCreationInputTokens: null,
+            costUsd: 0.05,
+            durationMs: 500,
+            apiDurationMs: 400,
+          },
+        },
+        {
+          runId: 'r1',
+          type: 'TaskCompleted',
+          payload: { taskId: 'T2', artifactRefs: [] },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = status(newContext(root, writes), 'r1', { metrics: true });
+
+    expect(result.ok).toBe(true);
+    const output = writes.join('\n');
+    expect(output).toContain(
+      '  run: tasks 2  cost $0.3000  tokens 165 (cache-read -  cache-creation -)  ',
+    );
+    expect(output).toContain(
+      '  role implementer: tasks 2  cost $0.3000  tokens 165 (cache-read -  ' +
+        'cache-creation -)  ',
+    );
+  });
+
   it('reads a run with no recorded session duration as unmeasured, not 0%', () => {
     const root = mkdtempSync(join(tmpdir(), 'mpgm-status-metrics-unmeasured-'));
     const writes: string[] = [];

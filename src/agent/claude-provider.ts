@@ -253,7 +253,7 @@ export function terminationFor(subtype: string): SessionTermination {
  * `SessionUsageReport`'s `null`, produced only when replaying a pre-T4.3.15
  * log event — see `src/event/catalog.ts`'s `sessionUsage` upcaster).
  */
-function usageOf(
+export function usageOf(
   costUsd: number,
   usage: {
     input_tokens?: number;
