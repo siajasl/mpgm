@@ -68,7 +68,14 @@ jobs:
           REPORT="$(npm audit --audit-level=high || true)"
           REPORT_LIMIT=20000
           if [ "${#REPORT}" -gt "$REPORT_LIMIT" ]; then
-            REPORT="$(printf '%s' "$REPORT" | head -c "$REPORT_LIMIT")
+            # No pipe: `head -c` closing early under `set -o pipefail` made
+            # `printf`'s SIGPIPE exit 141, which this assignment propagated,
+            # which killed this step under `set -e` before `gh issue
+            # create`/`comment` ever ran -- the exact "doing nothing" this
+            # truncation exists to prevent, and exactly the multi-advisory
+            # round (T4.3.14's seven) it would have hit. Plain parameter
+            # expansion has no pipe to fail.
+            REPORT="${REPORT:0:$REPORT_LIMIT}
           ... (truncated at ${REPORT_LIMIT} characters; full report: ${RUN_URL})"
           fi
           TITLE="Dependency drift: trunk carries a high-severity advisory"
