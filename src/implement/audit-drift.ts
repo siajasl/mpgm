@@ -49,6 +49,62 @@ export function meetsSeverity(severity: string, minSeverity: string): boolean {
   return severityRank(severity) >= severityRank(minSeverity);
 }
 
+/**
+ * Throws when `minSeverity` is not one of {@link SEVERITY_ORDER}, rather than
+ * letting it reach {@link meetsSeverity} unexamined.
+ *
+ * The "unrecognised ranks highest" rule above is right for an *advisory's*
+ * severity (an unfamiliar label must not let a real finding slip beneath the
+ * floor), but it is exactly backwards for the floor itself: `meetsSeverity`
+ * compares every advisory's rank against `severityRank(minSeverity)`, so an
+ * unrecognised floor — `AUDIT_MIN_SEVERITY=High` (capital H) reproduces this —
+ * ranks *above every real severity there is*, and nothing meets it. That is a
+ * clean audit having filtered out every advisory unseen, the precise fail-open
+ * CONV-4 forbids, and it is indistinguishable from an audit that genuinely
+ * found nothing. Validating the floor where it enters this module closes that
+ * regardless of which caller supplied it (the `scan` job's `AUDIT_MIN_SEVERITY`
+ * or a direct call here).
+ */
+function assertKnownSeverity(minSeverity: string): asserts minSeverity is Severity {
+  if (!SEVERITY_ORDER.includes(minSeverity as Severity)) {
+    // CONV-3: names the bad value and the scale it was checked against, so
+    // the cause is fixable without reading this file.
+    throw new Error(
+      `minSeverity '${minSeverity}' is not one of npm audit's own severities ` +
+        `(${SEVERITY_ORDER.join(', ')}). Treating it as if it ranked above ` +
+        `every real severity (so nothing met the floor) would report a clean ` +
+        `audit having examined nothing — fix the caller instead (this is ` +
+        `'AUDIT_MIN_SEVERITY' if it came from the 'scan' job's dependency audit).`,
+    );
+  }
+}
+
+/**
+ * The floor `scripts/audit-drift.mjs` should actually use, given what
+ * `AUDIT_MIN_SEVERITY` asked for.
+ *
+ * `AUDIT_MIN_SEVERITY` is read from `process.env`, and the only thing that
+ * sets a step's environment is `.github/workflows/ci.yml` — part of the
+ * branch's own diff. Lowering the floor only ever finds *more* advisories, so
+ * there is nothing there for a branch to widen. Raising it above `high` is
+ * the opposite: `AUDIT_MIN_SEVERITY=critical` would make `meetsSeverity` drop
+ * every high-severity advisory from both `current` and `trunk` before
+ * `classifyAudit` ever sees them, in either direction — an advisory this
+ * branch itself introduced would disappear entirely rather than merely being
+ * misclassified. That is `--audit-level=high` itself being narrowed by a
+ * one-line workflow edit, which CONV-4 forbids regardless of the drift
+ * question; this clamps the ceiling so a request to raise it past `high` is
+ * silently capped there instead, while an invalid value still raises via
+ * {@link assertKnownSeverity} — a typo must stop the job, not widen it.
+ */
+export function clampSeverityCeiling(
+  minSeverity: string,
+  ceiling: Severity = 'high',
+): Severity {
+  assertKnownSeverity(minSeverity);
+  return severityRank(minSeverity) > severityRank(ceiling) ? ceiling : minSeverity;
+}
+
 /** One advisory against one package, as read out of `npm audit --json`. */
 export interface Advisory {
   /** GHSA id where the report carries one, else the registry's own numeric id. */
@@ -94,6 +150,7 @@ export function parseNpmAuditAdvisories(
   options: { readonly minSeverity?: string } = {},
 ): Advisory[] {
   const minSeverity = options.minSeverity ?? 'high';
+  assertKnownSeverity(minSeverity);
   let report: NpmAuditReport;
   try {
     report = JSON.parse(raw) as NpmAuditReport;

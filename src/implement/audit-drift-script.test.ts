@@ -68,8 +68,16 @@ function auditJson(advisories: { id: string; pkg: string; severity?: string }[])
   return JSON.stringify({ auditReportVersion: 2, vulnerabilities });
 }
 
-/** A repo with `main` at one commit and a feature branch optionally diverging from it. */
-function newRepo(options: { readonly lockOnFeatureBranch?: string }): string {
+/**
+ * A repo with `main` at one commit and, by default, a `feature` branch
+ * checked out on top of it (optionally diverging with its own lockfile
+ * commit). `checkoutFeature: false` leaves `HEAD` on `main` itself — the
+ * `push: branches: [main]` shape, where `origin/main` *is* `HEAD`.
+ */
+function newRepo(options: {
+  readonly lockOnFeatureBranch?: string;
+  readonly checkoutFeature?: boolean;
+}): string {
   const dir = mkdtempSync(join(tmpdir(), 'mpgm-audit-'));
   tempDirs.push(dir);
   const run = (args: string[]): void => {
@@ -82,7 +90,18 @@ function newRepo(options: { readonly lockOnFeatureBranch?: string }): string {
   writeFileSync(join(dir, 'package-lock.json'), '{"lockfileVersion":3}\n');
   run(['add', '--all']);
   run(['commit', '-m', 'trunk']);
+  if (options.checkoutFeature === false) {
+    return dir;
+  }
   run(['checkout', '-b', 'feature']);
+  // A real `pull_request` run checks out a merge commit layered on top of
+  // both tips by default, so a feature branch's HEAD is never literally
+  // `main`'s own commit even when it has not touched the manifest — this
+  // commit (never the manifest) keeps the fixture that honest, rather than
+  // leaving `feature` sitting on exactly the commit `main` resolves to.
+  writeFileSync(join(dir, 'NOTES.md'), 'unrelated feature work\n');
+  run(['add', '--all']);
+  run(['commit', '-m', 'unrelated feature work']);
   if (options.lockOnFeatureBranch !== undefined) {
     writeFileSync(join(dir, 'package-lock.json'), options.lockOnFeatureBranch);
     run(['add', '--all']);
@@ -252,5 +271,122 @@ describe('audit-drift.mjs', () => {
 
     expect(result.code).not.toBe(0);
     expect(result.output).toContain("did not carry a 'vulnerabilities' list");
+  });
+
+  // [major] T4.3.16 review, scripts/audit-drift.mjs:127: when the base ref
+  // resolves to the same commit as HEAD — every `push: branches: [main]` run
+  // of ci.yml — the trunk audited itself and every advisory classified as
+  // drift, exiting 0 with a high-severity advisory unblocked. Reproduced here
+  // with HEAD on `main` and `AUDIT_BASE_REF=main` (the literal shape of that
+  // run: `origin/main` resolves to `HEAD`). Fails against the code before
+  // this fix, which printed "drift (not blocking)" and exited 0.
+  it('blocks on the trunk itself when the base ref resolves to HEAD, rather than auditing the trunk against itself', () => {
+    const repo = newRepo({ checkoutFeature: false });
+    const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
+    tempDirs.push(binDir);
+    const current = join(repo, 'current.json');
+    writeFileSync(
+      current,
+      auditJson([{ id: 'GHSA-trunk-trunk-trunk', pkg: 'left-pad' }]),
+    );
+
+    const result = runScript(repo, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      AUDIT_BASE_REF: 'main',
+      AUDIT_STUB_CURRENT: current,
+      AUDIT_STUB_TRUNK: current,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('resolves to HEAD itself');
+    expect(result.output).toContain('blocking');
+    expect(result.output).toContain('GHSA-trunk-trunk-trunk');
+  });
+
+  // [major] T4.3.16 review, scripts/audit-drift.mjs:51: AUDIT_BASE_REF is read
+  // from process.env, and the only thing that sets a step's environment is
+  // ci.yml's own env: — part of the branch's own diff. AUDIT_BASE_REF=HEAD
+  // audits a branch against itself (every advisory then looks like the
+  // trunk's own), a complete bypass via a one-line workflow edit. Fails
+  // against the code before this fix, which granted the exemption.
+  it('grants no exemption when AUDIT_BASE_REF points at HEAD, even though the branch touched no manifest', () => {
+    const repo = newRepo({});
+    const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
+    tempDirs.push(binDir);
+    const current = join(repo, 'current.json');
+    writeFileSync(
+      current,
+      auditJson([{ id: 'GHSA-bypass-bypass-bypass', pkg: 'left-pad' }]),
+    );
+
+    const result = runScript(repo, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      AUDIT_BASE_REF: 'HEAD',
+      AUDIT_STUB_CURRENT: current,
+      AUDIT_STUB_TRUNK: current,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('resolves to HEAD itself');
+    expect(result.output).toContain('blocking');
+    expect(result.output).toContain('GHSA-bypass-bypass-bypass');
+  });
+
+  // [minor] T4.3.16 review, audit-drift-script.test.ts:118: the script's
+  // central fail-closed branch — the catch around manifestChanged/
+  // trunkAdvisories that grants no exemption when the trunk cannot be read —
+  // had no test. A base ref that does not resolve at all (a typo'd
+  // AUDIT_BASE_REF, or a shallow checkout missing `origin/main`) must refuse
+  // the exemption and list the advisory as blocking rather than silently
+  // falling through.
+  it('fails closed with the advisory listed as blocking when the base ref cannot be read at all', () => {
+    const repo = newRepo({});
+    const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
+    tempDirs.push(binDir);
+    const current = join(repo, 'current.json');
+    writeFileSync(current, auditJson([{ id: 'GHSA-unreadable-trunk', pkg: 'left-pad' }]));
+
+    const result = runScript(repo, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      AUDIT_BASE_REF: 'this-ref-does-not-exist',
+      AUDIT_STUB_CURRENT: current,
+      AUDIT_STUB_TRUNK: current,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('no drift exemption for this run');
+    expect(result.output).toContain('blocking');
+    expect(result.output).toContain('GHSA-unreadable-trunk');
+  });
+
+  // [major] T4.3.16 review, src/implement/audit-drift.ts:48: AUDIT_MIN_SEVERITY
+  // is read from process.env (set by ci.yml, part of the branch's own diff);
+  // raising it past `high` made every real advisory rank beneath it, so the
+  // job reported a clean audit having examined nothing. A floor raised to
+  // 'critical' must still catch a high-severity advisory this branch
+  // introduced. Fails against the code before this fix, which passed
+  // AUDIT_MIN_SEVERITY straight through and exited 0.
+  it('does not let AUDIT_MIN_SEVERITY raised past high drop a high-severity advisory this branch introduced', () => {
+    const repo = newRepo({
+      lockOnFeatureBranch: '{"lockfileVersion":3,"bumped":true}\n',
+    });
+    const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
+    tempDirs.push(binDir);
+    const current = join(repo, 'current.json');
+    writeFileSync(current, auditJson([{ id: 'GHSA-ceiling-ceiling', pkg: 'left-pad' }]));
+    const trunk = join(repo, 'unused.json');
+    writeFileSync(trunk, auditJson([]));
+
+    const result = runScript(repo, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      AUDIT_BASE_REF: 'main',
+      AUDIT_MIN_SEVERITY: 'critical',
+      AUDIT_STUB_CURRENT: current,
+      AUDIT_STUB_TRUNK: trunk,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('blocking');
+    expect(result.output).toContain('GHSA-ceiling-ceiling');
   });
 });

@@ -132,6 +132,21 @@ the two before deciding whether to block (`classifyAudit`,
   request to tamper with), is the trunk's problem, not this branch's, and
   does not block it.
 
+The script reads its base ref and floor from `AUDIT_BASE_REF`/
+`AUDIT_MIN_SEVERITY`, and those *are* settable by `.github/workflows/ci.yml`'s
+own `env:` — part of the branch's own diff, not outside it. What stops a
+branch widening its own exemption through either one is not that they are
+unreachable (they exist so the test suite can point the script at a
+throwaway repo and a stubbed `npm`); it is that their effect is bounded
+whatever a workflow sets them to: no exemption is granted unless the
+resolved base commit is a proper ancestor of `HEAD` and distinct from it
+(refusing both `AUDIT_BASE_REF=HEAD` and the `push: branches: [main]` shape
+where `origin/main` already *is* `HEAD`), and the floor is clamped so it can
+only be lowered, never raised past `high`. Review (T4.3.16) reproduced both
+as a one-line bypass before this was added; the fixes are
+`resolveBase`/`isAncestor` and `clampSeverityCeiling` in
+`scripts/audit-drift.mjs`/`src/implement/audit-drift.ts`.
+
 This does not weaken SAF-5: the full tree is still audited at the same
 `high` floor, and nothing here makes an advisory disappear — it moves who
 answers for it. A drift advisory let through unblocked is handed to

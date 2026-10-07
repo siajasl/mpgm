@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   authoredReasons,
   classifyAudit,
+  clampSeverityCeiling,
   driftReasons,
   meetsSeverity,
   parseNpmAuditAdvisories,
@@ -128,6 +129,34 @@ describe('meetsSeverity', () => {
   });
 });
 
+describe('clampSeverityCeiling', () => {
+  it('passes a floor at or below the ceiling through unchanged', () => {
+    expect(clampSeverityCeiling('high')).toBe('high');
+    expect(clampSeverityCeiling('moderate')).toBe('moderate');
+  });
+
+  // T4.3.16 review, major finding on audit-drift.mjs:51: AUDIT_MIN_SEVERITY
+  // is read from process.env, and the only thing that can set it is ci.yml's
+  // own env:, which is part of the branch's own diff. Raising the floor past
+  // `high` would drop a high-severity advisory before classification ever
+  // sees it, in either direction — this branch's own finding included, not
+  // only drift. Fails against code that passed AUDIT_MIN_SEVERITY straight
+  // through: a floor of 'critical' would have let a high-severity advisory
+  // disappear instead of being capped at 'high'.
+  it('caps a floor raised past the default ceiling at high', () => {
+    expect(clampSeverityCeiling('critical')).toBe('high');
+  });
+
+  it('raises on a floor that is not one of npm audit’s own severities, rather than silently accepting it', () => {
+    // Reproduces the review's AUDIT_MIN_SEVERITY=High (capital H) bypass:
+    // an unrecognised floor must stop the job, not be read as some rank
+    // (least of all one that empties the audit).
+    expect(() => clampSeverityCeiling('High')).toThrow(
+      /not one of npm audit's own severities/,
+    );
+  });
+});
+
 describe('parseNpmAuditAdvisories', () => {
   const report = JSON.stringify({
     auditReportVersion: 2,
@@ -186,6 +215,20 @@ describe('parseNpmAuditAdvisories', () => {
 
   it('raises a detailed error on output that is not valid JSON, rather than reading it as a clean audit', () => {
     expect(() => parseNpmAuditAdvisories('not json')).toThrow(/could not parse/);
+  });
+
+  // [major] T4.3.16 review, src/implement/audit-drift.ts:48: severityRank
+  // ranks an unrecognised string above every known severity, which is right
+  // for an advisory's severity but fails open for the floor — every real
+  // advisory then ranks below an unrecognised floor and none meet it, so
+  // 'npm audit' reports a clean pass having filtered out the only advisory in
+  // the report. Reproduces the review's 'AUDIT_MIN_SEVERITY=High' example.
+  // Fails against the unmodified code, which returned `[]` rather than
+  // throwing.
+  it('raises on a floor that is not a recognised severity, rather than reporting a clean audit', () => {
+    expect(() => parseNpmAuditAdvisories(report, { minSeverity: 'High' })).toThrow(
+      /not one of npm audit's own severities/,
+    );
   });
 
   // [blocker] finding: `npm audit --json` prints this shape and exits

@@ -56,18 +56,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          REPORT="$(npm audit --audit-level=high --json || true)"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The plain-text summary, not --json: a multi-advisory round (T4.3.14
+          # carried seven) renders the full JSON report well past GitHub's
+          # 65,536-character issue-body limit, and this step runs under
+          # set -euo pipefail, so the 422 that creating or commenting on such
+          # an issue would raise failed the step silently before this fix --
+          # exactly the "doing nothing" this backstop exists to not be. A
+          # second truncation below is a hard ceiling regardless of what the
+          # summary ever grows to.
+          REPORT="$(npm audit --audit-level=high || true)"
+          REPORT_LIMIT=20000
+          if [ "${#REPORT}" -gt "$REPORT_LIMIT" ]; then
+            REPORT="$(printf '%s' "$REPORT" | head -c "$REPORT_LIMIT")
+          ... (truncated at ${REPORT_LIMIT} characters; full report: ${RUN_URL})"
+          fi
           TITLE="Dependency drift: trunk carries a high-severity advisory"
           BODY="The scheduled trunk-only dependency audit (T4.3.16) found at least
           one advisory at or above \`high\` on \`${{ github.ref_name }}\`
-          (run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          (run: ${RUN_URL}).
 
           This is not any one branch's finding — it is the trunk's own, which is
           exactly why the per-branch \`scan\` job does not block a branch for it.
           Something still has to fix it: either this issue, by the next session
           that touches dependencies deliberately, or a task filed against it.
 
-          \`\`\`json
+          \`\`\`
           ${REPORT}
           \`\`\`"
           EXISTING="$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq '.[0].number // empty' || true)"
