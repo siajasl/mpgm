@@ -69,14 +69,30 @@ function auditJson(advisories: { id: string; pkg: string; severity?: string }[])
 }
 
 /**
- * A repo with `main` at one commit and, by default, a `feature` branch
+ * A repo with `main` at one commit (with `refs/remotes/origin/main` set to
+ * point at it, modelling the real `origin/main` a `fetch-depth: 0` checkout
+ * would have — `scripts/audit-drift.mjs`'s `TRUNK_REF` is hardcoded to this
+ * literal ref, so a fixture that never creates it would make every
+ * containment check fail to resolve) and, by default, a `feature` branch
  * checked out on top of it (optionally diverging with its own lockfile
  * commit). `checkoutFeature: false` leaves `HEAD` on `main` itself — the
  * `push: branches: [main]` shape, where `origin/main` *is* `HEAD`.
+ *
+ * `lockOnFeatureBranchFirst` reorders the two feature commits so the
+ * lockfile bump lands *before* the unrelated one — the shape a bypass
+ * attempt needs: `AUDIT_BASE_REF=HEAD~1` naming the lockfile-bump commit
+ * itself as the fork point only matters if there is an unrelated commit
+ * after it for `HEAD~1` to resolve to.
+ *
+ * `advanceTrunkAfterBranch` adds a further commit to `main` — and moves
+ * `origin/main` to it — *after* `feature` has already diverged, modelling
+ * the trunk advancing on unrelated work while this branch's PR is open.
  */
 function newRepo(options: {
   readonly lockOnFeatureBranch?: string;
+  readonly lockOnFeatureBranchFirst?: boolean;
   readonly checkoutFeature?: boolean;
+  readonly advanceTrunkAfterBranch?: boolean;
 }): string {
   const dir = mkdtempSync(join(tmpdir(), 'mpgm-audit-'));
   tempDirs.push(dir);
@@ -90,22 +106,48 @@ function newRepo(options: {
   writeFileSync(join(dir, 'package-lock.json'), '{"lockfileVersion":3}\n');
   run(['add', '--all']);
   run(['commit', '-m', 'trunk']);
+  run(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
   if (options.checkoutFeature === false) {
     return dir;
   }
   run(['checkout', '-b', 'feature']);
-  // A real `pull_request` run checks out a merge commit layered on top of
-  // both tips by default, so a feature branch's HEAD is never literally
-  // `main`'s own commit even when it has not touched the manifest — this
-  // commit (never the manifest) keeps the fixture that honest, rather than
-  // leaving `feature` sitting on exactly the commit `main` resolves to.
-  writeFileSync(join(dir, 'NOTES.md'), 'unrelated feature work\n');
-  run(['add', '--all']);
-  run(['commit', '-m', 'unrelated feature work']);
-  if (options.lockOnFeatureBranch !== undefined) {
-    writeFileSync(join(dir, 'package-lock.json'), options.lockOnFeatureBranch);
+  const commitLockBump = (): void => {
+    writeFileSync(join(dir, 'package-lock.json'), options.lockOnFeatureBranch ?? '');
     run(['add', '--all']);
     run(['commit', '-m', 'bump a dependency']);
+  };
+  const commitUnrelated = (): void => {
+    // A real `pull_request` run checks out a merge commit layered on top of
+    // both tips by default, so a feature branch's HEAD is never literally
+    // `main`'s own commit even when it has not touched the manifest — this
+    // commit (never the manifest) keeps the fixture that honest, rather than
+    // leaving `feature` sitting on exactly the commit `main` resolves to.
+    writeFileSync(join(dir, 'NOTES.md'), 'unrelated feature work\n');
+    run(['add', '--all']);
+    run(['commit', '-m', 'unrelated feature work']);
+  };
+  if (
+    options.lockOnFeatureBranch !== undefined &&
+    options.lockOnFeatureBranchFirst === true
+  ) {
+    commitLockBump();
+    commitUnrelated();
+  } else {
+    commitUnrelated();
+    if (options.lockOnFeatureBranch !== undefined) {
+      commitLockBump();
+    }
+  }
+  if (options.advanceTrunkAfterBranch === true) {
+    run(['checkout', 'main']);
+    writeFileSync(
+      join(dir, 'TRUNK-ADVANCE.md'),
+      'the trunk moved on, unrelated to feature\n',
+    );
+    run(['add', '--all']);
+    run(['commit', '-m', 'trunk advances after feature was cut']);
+    run(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    run(['checkout', 'feature']);
   }
   return dir;
 }
@@ -153,7 +195,6 @@ describe('audit-drift.mjs', () => {
 
     const result = runScript(repo, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      AUDIT_BASE_REF: 'main',
       AUDIT_STUB_CURRENT: current,
       AUDIT_STUB_TRUNK: current,
     });
@@ -184,7 +225,6 @@ describe('audit-drift.mjs', () => {
 
     const result = runScript(repo, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      AUDIT_BASE_REF: 'main',
       AUDIT_STUB_CURRENT: current,
       AUDIT_STUB_TRUNK: trunk,
     });
@@ -209,7 +249,6 @@ describe('audit-drift.mjs', () => {
 
     const result = runScript(repo, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      AUDIT_BASE_REF: 'main',
       AUDIT_STUB_CURRENT: current,
       AUDIT_STUB_TRUNK: current,
     });
@@ -228,7 +267,6 @@ describe('audit-drift.mjs', () => {
 
     const result = runScript(repo, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      AUDIT_BASE_REF: 'main',
       AUDIT_STUB_CURRENT: clean,
       AUDIT_STUB_TRUNK: clean,
     });
@@ -264,7 +302,6 @@ describe('audit-drift.mjs', () => {
 
     const result = runScript(repo, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      AUDIT_BASE_REF: 'main',
       AUDIT_STUB_CURRENT: errorReport,
       AUDIT_STUB_EXIT: '1',
     });
@@ -277,9 +314,10 @@ describe('audit-drift.mjs', () => {
   // resolves to the same commit as HEAD — every `push: branches: [main]` run
   // of ci.yml — the trunk audited itself and every advisory classified as
   // drift, exiting 0 with a high-severity advisory unblocked. Reproduced here
-  // with HEAD on `main` and `AUDIT_BASE_REF=main` (the literal shape of that
-  // run: `origin/main` resolves to `HEAD`). Fails against the code before
-  // this fix, which printed "drift (not blocking)" and exited 0.
+  // with HEAD on `main` itself and no override at all — the literal shape of
+  // that run: `TRUNK_REF` ('origin/main') resolves to `HEAD`. Fails against
+  // the code before this fix, which printed "drift (not blocking)" and
+  // exited 0.
   it('blocks on the trunk itself when the base ref resolves to HEAD, rather than auditing the trunk against itself', () => {
     const repo = newRepo({ checkoutFeature: false });
     const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
@@ -292,7 +330,6 @@ describe('audit-drift.mjs', () => {
 
     const result = runScript(repo, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      AUDIT_BASE_REF: 'main',
       AUDIT_STUB_CURRENT: current,
       AUDIT_STUB_TRUNK: current,
     });
@@ -379,7 +416,6 @@ describe('audit-drift.mjs', () => {
 
     const result = runScript(repo, {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-      AUDIT_BASE_REF: 'main',
       AUDIT_MIN_SEVERITY: 'critical',
       AUDIT_STUB_CURRENT: current,
       AUDIT_STUB_TRUNK: trunk,
@@ -388,5 +424,76 @@ describe('audit-drift.mjs', () => {
     expect(result.code).toBe(1);
     expect(result.output).toContain('blocking');
     expect(result.output).toContain('GHSA-ceiling-ceiling');
+  });
+
+  // [blocker] T4.3.16 review round 2, scripts/audit-drift.mjs:116: a plain
+  // "is the fork point an ancestor of HEAD" check (round 1's fix) is
+  // trivially satisfied by any commit on this branch's own history, not
+  // only a real trunk commit. Reproduced here exactly as review found it: a
+  // feature branch whose first commit bumps the lockfile to a vulnerable
+  // version and whose second, later commit is unrelated, with
+  // `AUDIT_BASE_REF=HEAD~1` naming that first commit as the fork point.
+  // `HEAD~1` is a proper ancestor of `HEAD` and distinct from it, so round
+  // 1's guard passes it — but it is not reachable from the real trunk
+  // (`origin/main`), which is exactly what the containment check added this
+  // round refuses. Fails against the code before this fix, which printed
+  // "drift (not blocking)" and exited 0, because the fork point it picked
+  // already carried the same advisory, making it look like the trunk's.
+  it("grants no exemption when AUDIT_BASE_REF names a commit on this branch's own history, even one that already carries the advisory", () => {
+    const repo = newRepo({
+      lockOnFeatureBranch: '{"lockfileVersion":3,"bumped":true}\n',
+      lockOnFeatureBranchFirst: true,
+    });
+    const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
+    tempDirs.push(binDir);
+    const current = join(repo, 'current.json');
+    writeFileSync(current, auditJson([{ id: 'GHSA-self-fork-aaaa', pkg: 'left-pad' }]));
+
+    const result = runScript(repo, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      AUDIT_BASE_REF: 'HEAD~1',
+      AUDIT_STUB_CURRENT: current,
+      AUDIT_STUB_TRUNK: current,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.output).not.toContain('drift (not blocking)');
+    expect(result.output).toContain('blocking');
+    expect(result.output).toContain('GHSA-self-fork-aaaa');
+  });
+
+  // [major] T4.3.16 review round 2, scripts/audit-drift.mjs:125: the
+  // ancestry test was made against live `origin/main`, which this project's
+  // own loop advances continuously — once a further, unrelated commit lands
+  // on the trunk after this branch was cut, a direct ancestor check of the
+  // (now stale) fork point fails and an inherited advisory starts blocking
+  // again. Reproduced here by advancing `main`/`origin/main` with a further
+  // commit after `feature` has already diverged and carries a shared
+  // advisory. Fails against a direct ancestor check of `TRUNK_REF` itself
+  // (round 1's shape); `git merge-base` finds the real fork point
+  // regardless of how far the trunk has since moved, so this must still
+  // pass.
+  it('still classifies a shared advisory as drift once the trunk has advanced past the commit this branch was cut from', () => {
+    const repo = newRepo({
+      advanceTrunkAfterBranch: true,
+    });
+    const binDir = stubNpm(mkdtempSync(join(tmpdir(), 'mpgm-audit-bin-')));
+    tempDirs.push(binDir);
+    const shared = auditJson([
+      { id: 'GHSA-trnk-adv1-aaaa', pkg: '@modelcontextprotocol/sdk' },
+    ]);
+    const current = join(repo, 'current.json');
+    writeFileSync(current, shared);
+
+    const result = runScript(repo, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      AUDIT_STUB_CURRENT: current,
+      AUDIT_STUB_TRUNK: current,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('drift (not blocking)');
+    expect(result.output).toContain('GHSA-trnk-adv1-aaaa');
+    expect(result.output).toContain('this branch is not its author');
   });
 });

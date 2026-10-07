@@ -132,19 +132,38 @@ the two before deciding whether to block (`classifyAudit`,
   request to tamper with), is the trunk's problem, not this branch's, and
   does not block it.
 
-The script reads its base ref and floor from `AUDIT_BASE_REF`/
-`AUDIT_MIN_SEVERITY`, and those *are* settable by `.github/workflows/ci.yml`'s
-own `env:` — part of the branch's own diff, not outside it. What stops a
-branch widening its own exemption through either one is not that they are
-unreachable (they exist so the test suite can point the script at a
-throwaway repo and a stubbed `npm`); it is that their effect is bounded
-whatever a workflow sets them to: no exemption is granted unless the
-resolved base commit is a proper ancestor of `HEAD` and distinct from it
-(refusing both `AUDIT_BASE_REF=HEAD` and the `push: branches: [main]` shape
-where `origin/main` already *is* `HEAD`), and the floor is clamped so it can
-only be lowered, never raised past `high`. Review (T4.3.16) reproduced both
-as a one-line bypass before this was added; the fixes are
-`resolveBase`/`isAncestor` and `clampSeverityCeiling` in
+The floor is read from `AUDIT_MIN_SEVERITY`, which *is* settable by
+`.github/workflows/ci.yml`'s own `env:` — part of the branch's own diff, not
+outside it. What stops a branch widening it is that `clampSeverityCeiling`
+caps the floor so it can only be lowered, never raised past `high`, whatever
+a workflow sets it to.
+
+The comparison commit is a different shape of risk, and took review two
+rounds to pin down. `scripts/audit-drift.mjs` hardcodes a constant,
+`TRUNK_REF` (`origin/main`), that is never read from the environment — no
+diff on this branch can move what commit `origin/main` resolves to on the
+real remote, however `ci.yml` is edited, which is exactly why it is safe to
+hardcode. `AUDIT_BASE_REF`, read from the environment, feeds only the
+*candidate* `resolveBase` hands to `git merge-base` to find the fork point
+with `HEAD` — it exists so the test suite can point that candidate at a
+throwaway repo's own trunk branch, since a fixture repo has no real `origin`
+remote to fetch, and no legitimate workflow sets it. The candidate grants no
+exemption by itself: `resolveBase` additionally requires the fork point it
+computes to be *contained in `TRUNK_REF`'s own history*, not merely in
+`HEAD`'s. The first round fixed only "is the fork point a proper ancestor of
+`HEAD` and distinct from it" (refusing `AUDIT_BASE_REF=HEAD` and the `push:
+branches: [main]` shape where `origin/main` already *is* `HEAD`) — review's
+second round reproduced a full bypass of that alone: `AUDIT_BASE_REF=HEAD~1`
+(any earlier commit on the branch's own history) is a proper ancestor of
+`HEAD` too, because every commit on this branch already is one. Requiring
+containment in `TRUNK_REF` instead closes it, since a branch's own commit is
+never reachable from the trunk it branched off. Deriving the fork point with
+`git merge-base` rather than a direct ancestor check of `TRUNK_REF` itself is
+also what keeps this working once the trunk has advanced past the commit
+this branch was actually cut from — this project's own loop merges to `main`
+continuously, so a branch's inherited advisory must not start blocking again
+merely because something unrelated landed on the trunk first. The fixes are
+`resolveBase`/`isContainedIn` and `clampSeverityCeiling` in
 `scripts/audit-drift.mjs`/`src/implement/audit-drift.ts`.
 
 This does not weaken SAF-5: the full tree is still audited at the same

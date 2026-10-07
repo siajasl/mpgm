@@ -39,21 +39,34 @@ import {
  * what stops a branch widening its own exemption: there is no baseline file
  * here for a diff to edit.
  *
- * `AUDIT_BASE_REF`/`AUDIT_MIN_SEVERITY` below *are* settable by
- * `.github/workflows/ci.yml`'s `env:`, and that file is part of the branch's
- * own diff — an earlier version of this comment claimed otherwise, and
- * review reproduced both as a one-line bypass (`AUDIT_BASE_REF=HEAD` audits
- * the branch against itself and calls every advisory drift;
- * `AUDIT_MIN_SEVERITY=critical` drops a high-severity advisory before
- * classification ever sees it). What actually stops a branch widening its
- * own exemption through either variable is not that they are unsettable —
- * they exist so the test suite can point this script at a throwaway repo and
- * a stub `npm` — it is that their effect is bounded regardless of what a
- * workflow sets them to: `resolveBase` below refuses any exemption unless the
- * resolved base commit is a proper ancestor of `HEAD` (never equal to it,
- * which `AUDIT_BASE_REF=HEAD` and every `push: branches: [main]` run both
- * produce), and `clampSeverityCeiling` never lets the floor rise above
- * `high`, whatever `AUDIT_MIN_SEVERITY` asks for.
+ * `AUDIT_MIN_SEVERITY` below *is* settable by `.github/workflows/ci.yml`'s
+ * `env:`, and that file is part of the branch's own diff. Raising it past
+ * `high` (`AUDIT_MIN_SEVERITY=critical`) would drop a high-severity advisory
+ * before classification ever sees it; `clampSeverityCeiling` never lets the
+ * floor rise past `high`, whatever `AUDIT_MIN_SEVERITY` asks for, so there is
+ * nothing for that one to widen.
+ *
+ * `AUDIT_BASE_REF` is a different shape of risk, and review needed two
+ * rounds to pin it down. `TRUNK_REF` below — `origin/main` — is a *constant*,
+ * never read from the environment: no diff on this branch can move what
+ * commit `origin/main` resolves to on the real remote, however
+ * `ci.yml` is edited, which is exactly why it is safe to hardcode. What
+ * `AUDIT_BASE_REF` feeds is only the *candidate* `resolveBase` hands to `git
+ * merge-base` — so the test suite can point it at a throwaway repo's own
+ * trunk branch, since a `mkdtemp` fixture has no real `origin` remote to
+ * fetch. That candidate grants no exemption by itself: `resolveBase`
+ * additionally requires the fork point it computes to be contained in
+ * `TRUNK_REF`'s own history — reachable from `origin/main`, not merely from
+ * `HEAD`. The first round fixed only "is the fork point a proper ancestor of
+ * `HEAD`", which `AUDIT_BASE_REF=HEAD~1` (any earlier commit on this same
+ * branch) still satisfied trivially, because every commit on this branch is
+ * one; review reproduced that as a full bypass. Requiring containment in
+ * `TRUNK_REF` instead closes it, because a branch's own commit is never
+ * reachable from the trunk it branched off — and deriving the fork point
+ * with `merge-base` rather than a direct ancestor check of `TRUNK_REF`
+ * itself is what keeps this working once the trunk has advanced past the
+ * commit this branch was actually cut from (second round's other major
+ * finding).
  *
  * A branch let through on drift is not the end of it (SAF-5 still has to be
  * satisfied somewhere): `.github/workflows/dependency-audit-trunk.yml` runs
@@ -66,19 +79,35 @@ import {
 // scale does not recognise, CONV-3/CONV-4) and caps the floor so a workflow
 // cannot raise it past `high` — see the module doc above.
 const MIN_SEVERITY = clampSeverityCeiling(process.env.AUDIT_MIN_SEVERITY ?? 'high');
-const BASE_REF = process.env.AUDIT_BASE_REF ?? 'origin/main';
+
+// The one ref this script treats as ground truth for "the trunk" — a
+// constant, never read from `process.env`, because the only thing able to
+// set an environment variable here is `.github/workflows/ci.yml`, itself
+// part of the branch under review's own diff. See the module doc above.
+const TRUNK_REF = 'origin/main';
+
+// The candidate `resolveBase` hands to `git merge-base` below. Unlike
+// `TRUNK_REF`, this one *is* overridable, because it grants no exemption by
+// itself — `resolveBase` still requires whatever it resolves to be
+// contained in `TRUNK_REF`'s own history. The override exists only so the
+// test suite can point it at a throwaway repo's own trunk branch; no
+// legitimate workflow sets `AUDIT_BASE_REF` at all.
+const MERGE_BASE_CANDIDATE = process.env.AUDIT_BASE_REF ?? TRUNK_REF;
 
 function git(args, options = {}) {
   return execFileSync('git', args, { encoding: 'utf8', ...options }).trim();
 }
 
-/** Whether `ancestorSha` is a real ancestor of `descendantSha` (not equal to it). */
-function isAncestor(ancestorSha, descendantSha) {
-  if (ancestorSha === descendantSha) {
-    return false;
-  }
+/**
+ * Whether `commitSha` is reachable from `ref`'s history — an ancestor of it,
+ * or the same commit (git's own `--is-ancestor` already treats the two
+ * refs resolving to the same commit as true, which is exactly what is
+ * wanted here: an ordinary PR cut right at the trunk's current tip has a
+ * fork point that *is* that tip, not merely an ancestor of it).
+ */
+function isContainedIn(commitSha, ref) {
   try {
-    execFileSync('git', ['merge-base', '--is-ancestor', ancestorSha, descendantSha], {
+    execFileSync('git', ['merge-base', '--is-ancestor', commitSha, ref], {
       stdio: 'ignore',
     });
     return true;
@@ -95,38 +124,50 @@ function isAncestor(ancestorSha, descendantSha) {
 }
 
 /**
- * Resolves `baseRef` to a commit and decides whether comparing against it can
- * grant any exemption at all (T4.3.16 review).
+ * Resolves the fork point between `candidateRef` and `HEAD`, and decides
+ * whether comparing against it can grant any exemption at all (T4.3.16
+ * review, two rounds).
+ *
+ * The fork point is derived with `git merge-base`, not a direct
+ * `rev-parse` of `candidateRef` followed by an ancestor check against
+ * `HEAD`: `merge-base` always finds the real common ancestor of the two,
+ * however far `TRUNK_REF` has advanced since this branch was cut, rather
+ * than throwing the moment a stale ref fails a direct ancestor check
+ * (second round's major finding — the trunk moves constantly in this
+ * project's own loop, and an inherited advisory must not start blocking
+ * again merely because something unrelated landed on `main` first).
  *
  * Two cases refuse eligibility even though every git call here succeeds
  * (CONV-4):
  *
- * - `baseRef` resolves to the same commit as `HEAD`. Every `push: branches:
- *   [main]` run of `ci.yml` is exactly this (`origin/main` *is* `HEAD`
- *   there), and so is `AUDIT_BASE_REF=HEAD`: auditing a commit against itself
- *   makes `git diff` empty and every advisory identical to "the trunk's",
- *   which is not a comparison, it is the trunk auditing itself. There is no
- *   other branch to blame a finding on, so this run gets no exemption.
- * - `baseRef` does not resolve to an ancestor of `HEAD` at all. A real trunk
- *   this branch descends from always is one (GitHub's default `pull_request`
- *   checkout is a merge commit with `origin/main` as a parent, so this holds
- *   for every ordinary PR run); anything else is not a trunk to compare
- *   against.
+ * - the fork point is `HEAD` itself. Every `push: branches: [main]` run of
+ *   `ci.yml` is exactly this (`origin/main` *is* `HEAD` there), and so is
+ *   `AUDIT_BASE_REF=HEAD`: auditing a commit against itself makes every
+ *   advisory look like "the trunk's", which is not a comparison, it is the
+ *   trunk auditing itself. There is no other branch to blame a finding on,
+ *   so this run gets no exemption.
+ * - the fork point is not contained in `TRUNK_REF`'s own history. First
+ *   round's blocker: `AUDIT_BASE_REF` pointing at an earlier commit on this
+ *   same branch (`HEAD~1`, say) passed a plain "is the fork point an
+ *   ancestor of `HEAD`" check trivially, because every commit on this
+ *   branch already is one — the check that mattered was never against
+ *   `HEAD`, it was against the trunk this branch is actually being
+ *   compared to, which `AUDIT_BASE_REF` cannot move.
  */
-function resolveBase(baseRef, headSha) {
-  const baseSha = git(['rev-parse', baseRef]);
+function resolveBase(candidateRef, headSha) {
+  const baseSha = git(['merge-base', candidateRef, headSha]);
   if (baseSha === headSha) {
     throw new Error(
-      `base ref '${baseRef}' resolves to HEAD itself (${headSha}) — there is ` +
+      `'${candidateRef}' resolves to HEAD itself (${headSha}) — there is ` +
         `no other branch to blame a finding on, so this run is the trunk, not a ` +
         `branch reviewed against it`,
     );
   }
-  if (!isAncestor(baseSha, headSha)) {
+  if (!isContainedIn(baseSha, TRUNK_REF)) {
     throw new Error(
-      `base ref '${baseRef}' (${baseSha}) is not an ancestor of HEAD (${headSha}) ` +
-        `— not a real trunk this branch descends from, so there is nothing to ` +
-        `compare against`,
+      `the fork point with '${candidateRef}' (${baseSha}) is not contained in ` +
+        `'${TRUNK_REF}'s own history — not a real trunk commit this branch can be ` +
+        `compared against, so there is nothing to compare`,
     );
   }
   return baseSha;
@@ -243,7 +284,7 @@ function main() {
   let trunk = [];
   try {
     const headSha = git(['rev-parse', 'HEAD']);
-    const baseSha = resolveBase(BASE_REF, headSha);
+    const baseSha = resolveBase(MERGE_BASE_CANDIDATE, headSha);
     changed = manifestChanged(baseSha);
     if (changed) {
       console.error(
@@ -256,13 +297,13 @@ function main() {
     }
   } catch (error) {
     // Fail closed (CONV-4): anything that stops this run from being eligible
-    // for an exemption at all — `baseRef` resolves to `HEAD` itself or to
-    // something that is not even its ancestor (`resolveBase`), it does not
-    // resolve, `git show` cannot find a file there, or the trunk's own audit
-    // cannot be run — is treated the same as "this branch touched the
-    // manifest": no exemption, every advisory this branch's own audit reports
-    // blocks, exactly today's behaviour. Guessing an exemption here is how a
-    // real finding would merge past this check.
+    // for an exemption at all — the fork point resolves to `HEAD` itself or
+    // is not contained in `TRUNK_REF`'s own history (`resolveBase`), the
+    // candidate ref does not resolve, `git show` cannot find a file there,
+    // or the trunk's own audit cannot be run — is treated the same as "this
+    // branch touched the manifest": no exemption, every advisory this
+    // branch's own audit reports blocks, exactly today's behaviour. Guessing
+    // an exemption here is how a real finding would merge past this check.
     console.error(
       `no drift exemption for this run: ${error.message}\n` +
         `Granting none — every advisory below blocks.`,

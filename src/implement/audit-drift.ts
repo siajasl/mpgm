@@ -234,11 +234,20 @@ export interface ClassifyAuditInput {
   readonly current: readonly Advisory[];
   /**
    * What `npm audit` reports against the trunk's resolved tree, read fresh
-   * at comparison time from `origin/main` itself (`scripts/audit-drift.mjs`),
-   * never from a file this branch's own diff could have edited. That is what
-   * stops a branch widening its own exemption: the only way to add an entry
-   * to this list is to actually be the state of the trunk, which nothing in
-   * a pull request's diff can write to.
+   * at comparison time (`scripts/audit-drift.mjs`), never from a file this
+   * branch's own diff could have edited.
+   *
+   * The commit this is read from is the fork point between `HEAD` and
+   * `origin/main` — a hardcoded constant in that script, `TRUNK_REF`, not
+   * read from `process.env` — found with `git merge-base` and then checked
+   * to be contained in `origin/main`'s own history. That containment check
+   * is what actually stops a branch widening its own exemption: review
+   * (T4.3.16) found that a plain "is it an ancestor of `HEAD`" check is not
+   * enough, because every commit on this branch already is one, so an
+   * `AUDIT_BASE_REF` pointing at an earlier commit on the same branch passed
+   * it trivially. A branch's own commit, by contrast, is never reachable
+   * from the trunk it branched off, so it can never satisfy containment —
+   * that is the property nothing in a pull request's diff can forge.
    */
   readonly trunk: readonly Advisory[];
 }
