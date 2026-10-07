@@ -54,6 +54,13 @@ export function syntheticRun(
         // reads as unmeasured, not as a session that took no time (T4.2.8).
         durationMs: null,
         apiDurationMs: null,
+        // Unlike durationMs/apiDurationMs above, null here is reserved for a
+        // pre-T4.3.15 event upcast by upcastSessionUsageV2 — it does not mean
+        // "no session ran". A synthetic session still stands in for one whose
+        // SDK result always carries a real cache count, 0 included, so this
+        // reports the same no-cache-activity zero every real session would.
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
       },
     });
 
