@@ -154,6 +154,51 @@ describe('WorktreeManager', () => {
     expect(await manager.list()).toHaveLength(1);
   });
 
+  it(
+    'says the branch existed even when the registration did not survive a ' +
+      'machine reset, unlike `reused` (T4.3.17)',
+    async () => {
+      // `reused` answers whether `acquire` found its own registration where
+      // it left it, and a machine reset under a running task answers that
+      // "no": the directory is gone, so the registration gets pruned and the
+      // checkout is re-added on whatever branch survives (below). But the
+      // branch itself — and anything an earlier invocation logged against it
+      // — is still there, which is the fact a caller resuming review state
+      // needs and `reused` alone cannot give it.
+      const repo = newRepo();
+      const manager = new WorktreeManager({ repo });
+
+      const first = await manager.acquire('crashed');
+      writeFileSync(join(first.path, 'partial.txt'), 'before the reset\n');
+      git(first.path, ['add', '--all']);
+      git(first.path, ['commit', '-m', 'work before the machine reset']);
+
+      // The reset itself: the checkout's directory is simply gone, with
+      // nothing having released it or deleted its branch.
+      rmSync(first.path, { recursive: true, force: true });
+
+      const second = await manager.acquire('crashed');
+
+      expect(second.reused).toBe(false);
+      expect(second.branchExisted).toBe(true);
+      // The branch's own commit survived the reset too, which is what
+      // `branchExisted` is standing in for here.
+      expect(git(second.path, ['log', '-1', '--format=%s'])).toBe(
+        'work before the machine reset',
+      );
+    },
+  );
+
+  it("says the branch did not exist on a task's first ever acquire (T4.3.17)", async () => {
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+
+    const worktree = await manager.acquire('brand-new');
+
+    expect(worktree.reused).toBe(false);
+    expect(worktree.branchExisted).toBe(false);
+  });
+
   it('reports uncommitted work and refuses to discard it', async () => {
     const repo = newRepo();
     const manager = new WorktreeManager({ repo });
