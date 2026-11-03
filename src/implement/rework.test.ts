@@ -1118,7 +1118,11 @@ describe('a review that never approves (NFR-1)', () => {
       await implementTask({
         ...baseOptions(repo, provider, log),
         worktrees,
-        maxReviewAttempts: 1,
+        // 2, not 1: a round is already on the log (T1-review-3, above), and
+        // since T4.3.17 that counts against the budget rather than being
+        // reset by this resuming invocation — so a budget of 1 would refuse
+        // before dispatching anything, which is a different test.
+        maxReviewAttempts: 2,
       });
 
       const authoring = provider.requests.find((request) =>
@@ -1177,7 +1181,10 @@ describe('a review that never approves (NFR-1)', () => {
       await implementTask({
         ...baseOptions(repo, provider, log),
         worktrees,
-        maxReviewAttempts: 1,
+        // 2, not 1, for the same reason as the test above: a round is
+        // already on the log, and since T4.3.17 it counts against the
+        // budget this resuming invocation gets.
+        maxReviewAttempts: 2,
       });
 
       const authoring = provider.requests.find((request) =>
@@ -3123,5 +3130,110 @@ describe('a review that never approves (NFR-1)', () => {
         log.close();
       }
     });
+  });
+
+  describe('a task re-invoked after it blocks gets no fresh budget (T4.3.17)', () => {
+    it(
+      'does not start the second invocation at round one with an unspent ' +
+        'extension and an empty declared set',
+      async () => {
+        // Invocation 1, budget of one: round 1 approves reporting CONV-1
+        // undeclared, which earns the once-per-task grace at the cap. The
+        // author declares CONV-1 in that grace round — the one thing a
+        // resumed invocation must not forget it paid for. Round 2 (the new
+        // cap the grace bought) approves again, this time reporting CONV-1
+        // (now declared, so excluded) and a fresh CONV-6 (not), and the
+        // extension is already spent — so this exhausts the budget rather
+        // than earning a second grace, and the task blocks.
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+        const approvingWith = (...conventions: string[]) =>
+          scriptedSuccess({
+            ref: head,
+            verdict: 'approve',
+            summary: 'good',
+            findings: [],
+            deviations: conventions.map((convention) => ({
+              convention,
+              where: 'the branch',
+            })),
+          });
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            approvingWith('CONV-1'),
+            // The grace round: the author declares it.
+            scriptedSuccess({
+              ...change,
+              deviations: [{ convention: 'CONV-1', why: 'the loop made them' }],
+            }),
+            approvingWith('CONV-1', 'CONV-6'),
+          ]);
+
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          // The premise: the first invocation genuinely exhausted its
+          // budget, extension included, rather than merging or refusing for
+          // some unrelated reason.
+          expect(first.status).toBe('blocked');
+          expect(first.rounds).toHaveLength(2);
+          expect(first.reason).toMatch(/held for want of a declaration/);
+          expect(first.reason).toContain('CONV-6');
+
+          // Invocation 2: the same task, the same branch, the same log — and
+          // nothing scripted at all. If the second invocation treats this as
+          // round one of a fresh three-round budget, as it did before
+          // T4.3.17, it dispatches an implementing session here and
+          // `ScriptedProvider` throws rather than this test passing on a
+          // round it never checked.
+          const secondProvider = new ScriptedProvider([]);
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          expect(second.status).toBe('blocked');
+          // Nothing dispatched: the loop recognised the budget was already
+          // spent before authoring a thing, let alone reviewing it.
+          expect(secondProvider.requests).toHaveLength(0);
+          // The round count did not restart at one, the extension is not
+          // reported as available again, and the declared set — CONV-1,
+          // paid for in invocation 1's grace round — is not forgotten.
+          expect(second.reason).toMatch(/2 round\(s\) taken against 2 allowed/);
+          expect(second.reason).toMatch(/extension already granted and spent/);
+          expect(second.reason).toMatch(/does not grant a fresh budget/);
+
+          // Only two `ChangeReviewed` events exist in the whole log: the
+          // second invocation took no round of its own to add a third.
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
   });
 });

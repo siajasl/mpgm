@@ -30,6 +30,7 @@ import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
 import { reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview } from './prior-review.js';
+import { priorReviewBudgetOf } from './review-budget.js';
 import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
 import type { ProgressReporter, SessionKind } from './progress.js';
 import type { WorktreeManager } from './worktree.js';
@@ -432,6 +433,10 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const implementerRole = options.roles.get(options.implementerRole ?? 'implementer');
   const reviewerRole = options.roles.get(options.reviewerRole ?? 'code-reviewer');
   const into = options.into ?? 'main';
+  // Hoisted above the round loop that used to be the only place this was
+  // read, so the exhausted-budget guard below (T4.3.17) can see it before
+  // dispatching anything.
+  const maxReviewAttempts = options.maxReviewAttempts ?? DEFAULT_REVIEW_ATTEMPTS;
 
   if (implementerRole.name === reviewerRole.name) {
     throw new Error(
@@ -531,6 +536,17 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   const priorReview = worktree.reused
     ? lastReviewOf(options.log.read(), task.id, worktree.base)
     : undefined;
+  // What this task's review budget actually stands at — rounds spent,
+  // conventions declared, the one-time declaration extension — read off the
+  // same log rather than assumed fresh (T4.3.17). `undefined` on a fresh
+  // worktree for the same reason `priorReview` is: nothing from an abandoned
+  // attempt's branch survives onto a new one, so nothing of its review state
+  // should either, and that is deliberately the one way this starts over —
+  // an operator who wants a clean slate removes the old worktree and branch
+  // rather than flipping a flag nobody would remember to pass.
+  const priorBudget = worktree.reused
+    ? priorReviewBudgetOf(options.log.read(), task.id, maxReviewAttempts)
+    : undefined;
   // Rounds are attached by the helper rather than by each caller: a task that
   // blocked in its second round should say so wherever it stopped, and
   // thirteen call sites each remembering to pass them is twelve chances not
@@ -576,6 +592,52 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       ...extra,
     };
   };
+
+  // A reused checkout can also be one whose review budget this task already
+  // spent in an earlier invocation — including the one-time declaration
+  // extension — before that invocation blocked or crashed. Re-invoking it is
+  // not refused outright (ORC-5): an operator who fixed what blocked it gets
+  // to resume, and `priorBudget` below picks the next round up where the log
+  // left off rather than starting over. What this refuses is the one case
+  // resuming must not paper over: nothing about the task has changed, and
+  // granting a fresh set of rounds anyway is exactly what let T4.3.16 merge
+  // on an invocation that had, on its own, already been refused once
+  // (T4.3.17). `lastRoundAllowed` is the one case this names differently
+  // rather than excuses: a checkout left behind after an actual merge
+  // (`cleanUp: false`), or one whose last round cleared review and then
+  // `mergeChange` itself refused for an unrelated reason, has no round left
+  // to spend either, but it did not get there for want of one — sending it
+  // through the round loop below would be the "unreachable" branch at the
+  // bottom of this function reached after all, over a budget that was never
+  // really the problem.
+  //
+  // Checked here, before the implementing session runs again, rather than
+  // only inside the round loop further down — a task that cannot proceed
+  // should not spend a session finding that out a second time.
+  if (priorBudget !== undefined && priorBudget.roundsSoFar >= priorBudget.attempts) {
+    return stop(
+      priorBudget.lastRoundAllowed
+        ? `${task.id}: this task's last recorded review round already cleared the ` +
+            `merge gate, and nothing left in its review budget would change that. If ` +
+            `this checkout is not on '${into}' yet, something other than review is ` +
+            `what is stopping it — check why 'mergeChange' itself refused (a dirty ` +
+            `or diverged '${into}', a real content conflict) rather than resuming ` +
+            `the review loop, which has nothing left to do here.`
+        : `${task.id}: this task's review budget was already exhausted in an earlier ` +
+            `invocation — ${String(priorBudget.roundsSoFar)} round(s) taken against ` +
+            `${String(priorBudget.attempts)} allowed` +
+            (priorBudget.extensionSpent
+              ? ' (the one-time declaration extension already granted and spent)'
+              : '') +
+            `. Resuming does not grant a fresh budget (T4.3.17); fix what actually ` +
+            `blocked it — raise the review attempts or the role's cost budget, ` +
+            `resolve what CI reported, settle an outstanding declaration with ` +
+            `\`mpgm redirect\` — before trying again. A fresh worktree for this task ` +
+            `starts it over with a clean budget of its own: remove ` +
+            `'${worktree.path}' and its branch '${worktree.branch}' first if that is ` +
+            `what is actually wanted.`,
+    );
+  }
 
   // Shared by both places a conflict between this task's branch and `into`
   // can turn up: here, before the first session ever runs, and again right
@@ -933,7 +995,6 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     }
   }
 
-  const maxReviewAttempts = options.maxReviewAttempts ?? DEFAULT_REVIEW_ATTEMPTS;
   let review: ReviewRecord | undefined;
   let repair: RepairReport | undefined;
   let decision: MergeDecision | undefined;
@@ -943,16 +1004,27 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // is a new commit and a new commit has to clear the checks again — a change
   // that fixed a finding and broke the build is not one to merge on the
   // strength of the review it just earned.
+  //
   // Deviations the author has already been sent back with, and whether the one
-  // extra round a late declaration can buy has been spent. Both live outside
-  // the loop because both are facts about the task, not about a round.
+  // extra round a late declaration can buy has been spent. Both are facts
+  // about the task, not about a round — and, since T4.3.17, that is true of
+  // where they come from too: seeded from `priorBudget` (above) on a reused
+  // checkout rather than declared fresh, so a re-invocation continues this
+  // task's review history instead of resetting it. On a fresh checkout
+  // `priorBudget` is `undefined` and both start exactly as they always have.
   // Keyed by convention id so that 'CONV-1' and 'CONV-1 (one logical change per
   // commit)' are one declaration rather than two.
-  const declaredSoFar = new Map<string, string>();
-  let extensionSpent = false;
-  let attempts = maxReviewAttempts;
+  const declaredSoFar = new Map<string, string>(priorBudget?.declared ?? []);
+  let extensionSpent = priorBudget?.extensionSpent ?? false;
+  let attempts = priorBudget?.attempts ?? maxReviewAttempts;
+  // Round numbering continues where the log left off, rather than restarting
+  // at 1 — the same round a reviewer and an operator reading the log would
+  // call it, and what keeps a final-round guard (T4.3.8's escalation check,
+  // below) seeing a round that really is the last one rather than one made to
+  // look earlier than it is.
+  const firstRound = (priorBudget?.roundsSoFar ?? 0) + 1;
 
-  for (let round = 1; round <= attempts; round += 1) {
+  for (let round = firstRound; round <= attempts; round += 1) {
     // CI before review, and repair before review: an agent asked to read a
     // change that does not build is spending an expensive session on something
     // the build already said (IMP-2).

@@ -1,0 +1,140 @@
+import type { StoredEvent } from '../event/envelope.js';
+import { conventionIdOf } from '../context/conventions.js';
+
+/**
+ * A task's review budget, read back off the event log it already wrote
+ * (T4.3.17).
+ *
+ * `implementTask` (`loop.ts`) used to initialise its round count, its
+ * declared-deviations set and its one-time declaration extension
+ * (`late-deviation.ts`) as locals at the top of the review loop, next to a
+ * comment claiming "both live outside the loop because both are facts about
+ * the task, not about a round" — true of where they lived, not of what reset
+ * them, because they lived inside the *invocation*, which starts over every
+ * time this function is called again. A task re-invoked after it blocked — a
+ * crash, an accidental kill, an operator simply running `mpgm implement`
+ * again — got a fresh three rounds every time: T4.3.16 merged only because
+ * three successive invocations each granted and exhausted one on its own, and
+ * a re-invocation made a final round's escalation guard (T4.3.8) see a round
+ * that was not final at all, because nothing it read said otherwise.
+ *
+ * None of the three needs a second store (ADR-4). `ChangeReviewed` is
+ * appended once per round, keyed by the task id, and already carries
+ * everything a round decided: whether the reviewer approved, which
+ * conventions it found broken, and — the part that matters here — the full
+ * declared set as it stood *after* that round (`declaredDeviations`), not
+ * merely what that round added to it. Replaying every such event in order
+ * answers how many rounds the task has already spent, what it has already
+ * declared, and whether the once-per-task declaration grace has already been
+ * granted — the same answers `implementTask` itself would give if it had
+ * never stopped.
+ */
+
+export interface PriorReviewBudget {
+  /** Review rounds already recorded for this task, across every invocation. */
+  readonly roundsSoFar: number;
+  /**
+   * Convention ids ever declared against this task, keyed by id and valued
+   * by the label they were first declared under — the same shape
+   * `implementTask`'s own `declaredSoFar` accumulates round by round.
+   */
+  readonly declared: ReadonlyMap<string, string>;
+  /** Whether the one-time declaration extension has already been granted. */
+  readonly extensionSpent: boolean;
+  /**
+   * How many rounds this task may take in total, the extension already
+   * folded in if it was granted.
+   */
+  readonly attempts: number;
+  /**
+   * Whether the *last* recorded round was approved with nothing left
+   * undeclared — the one shape `decideMerge` (`merge.ts`) would have allowed,
+   * given the other three refusals it can report are already excluded by
+   * construction here (see below). This is what tells a caller apart a task
+   * whose budget is genuinely exhausted from one whose last round actually
+   * cleared the gate, so that a checkout left behind after a merge (`cleanUp:
+   * false`, or a merge `mergeChange` itself went on to refuse for some
+   * reason unrelated to the review) is not reported as out of budget merely
+   * because it has no round left to spend.
+   */
+  readonly lastRoundAllowed: boolean;
+}
+
+/** `ChangeReviewed`'s payload shape, the fields this reads. */
+interface ChangeReviewedPayload {
+  readonly taskId: string;
+  readonly approved: boolean;
+  readonly declaredDeviations?: readonly string[];
+  readonly undeclaredDeviations?: readonly string[];
+}
+
+/**
+ * Replay every `ChangeReviewed` this task has ever recorded, in order, and
+ * answer where it actually stands — not where a fresh invocation would guess.
+ *
+ * `maxReviewAttempts` is this invocation's own configured bound, used as the
+ * baseline every earlier round's grant is measured against — the same bound
+ * the round that first ran would have used. This assumes every earlier
+ * invocation of this task ran under the same bound: nothing recorded on the
+ * log says whether an operator changed `--max-review-attempts` between two
+ * invocations, and nothing here tries to detect it. The scenario this exists
+ * for is a crash or a kill, not a deliberately reconfigured retry; if the
+ * bound genuinely changed, the round this answers with may disagree with what
+ * actually happened, same as it would for any fact this harness infers rather
+ * than stores.
+ *
+ * Only the refusal `decideMerge` (`merge.ts`) can report besides an
+ * undeclared deviation is excluded here by construction, not by re-deriving
+ * `decideMerge` itself: a round only reaches `ChangeReviewed` at all once CI
+ * is green and the review is of the commit the merge request names, so
+ * `checks-not-green`, `checks-are-stale` and `review-is-stale` cannot be true
+ * of a round this function is replaying, and `reviewer-not-independent` is
+ * refused once for the whole task before any round runs (`implementTask`'s
+ * own check at the top of that function). So an approved round reporting
+ * something undeclared is exactly `earnsDeclarationRound`
+ * (`late-deviation.ts`)'s condition, and the stored `undeclaredDeviations` —
+ * already computed once, at append time (`changeReviewed`, `merge.ts`) — is
+ * read back rather than recomputed.
+ */
+export function priorReviewBudgetOf(
+  events: readonly StoredEvent[],
+  taskId: string,
+  maxReviewAttempts: number,
+): PriorReviewBudget {
+  const declared = new Map<string, string>();
+  let attempts = maxReviewAttempts;
+  let extensionSpent = false;
+  let round = 0;
+  let lastRoundAllowed = false;
+
+  for (const event of events) {
+    if (event.type !== 'ChangeReviewed') {
+      continue;
+    }
+    const payload = event.payload as ChangeReviewedPayload;
+    if (payload.taskId !== taskId) {
+      continue;
+    }
+
+    round += 1;
+    for (const entry of payload.declaredDeviations ?? []) {
+      declared.set(conventionIdOf(entry) ?? entry.trim(), entry);
+    }
+
+    const undeclaredCount = (payload.undeclaredDeviations ?? []).length;
+    lastRoundAllowed = payload.approved && undeclaredCount === 0;
+
+    // The same test `implementTask`'s own loop applies, replayed rather than
+    // re-dispatched: an approved round reporting something undeclared earns a
+    // declaration round, which is a grant rather than ordinary rework only
+    // once per task, spent at the cap and never refunded.
+    const earnsDeclaration = payload.approved && undeclaredCount > 0;
+    const declarationRound = earnsDeclaration && (round < attempts || !extensionSpent);
+    if (declarationRound && round === attempts) {
+      extensionSpent = true;
+      attempts += 1;
+    }
+  }
+
+  return { roundsSoFar: round, declared, extensionSpent, attempts, lastRoundAllowed };
+}
