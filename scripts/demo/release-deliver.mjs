@@ -167,17 +167,19 @@ try {
     servedAfterRollback.text.slice(0, 80),
   );
 
-  process.stdout.write(
-    '\n6. Reassembling with a warm build cache reuses the same digest\n',
-  );
-  // This is a warm-cache observation, not a reproducibility guarantee: it
-  // shows only that `docker build` reused its own cached layers on *this*
-  // machine, which is why `assemble` is safe to retry (`effects:
-  // 'idempotent'`). A cold cache (a fresh runner, or one after a prune)
-  // would rebuild this same tree and args to a *different* digest — see
-  // `contracts/release.deliver.md` — so this step is not proof of the
-  // stronger, false claim that an unchanged tree always reproduces its
-  // digest.
+  process.stdout.write('\n6. Reassembling the same tree is safe to retry\n');
+  // What `effects: 'idempotent'` promises for `assemble` is that re-running
+  // it is harmless — never a caller-visible failure — not that an unchanged
+  // tree reproduces its digest. A warm cache reuses the cached image and its
+  // digest with it; a cold cache (a fresh runner, one after a prune, or a
+  // `docker build` that renews the image id on a cache hit) rebuilds the same
+  // tree to a *different* digest, which `contracts/release.deliver.md` and
+  // `releaseDeliverContract`'s own comment both say outright. This step used
+  // to assert the digest equality instead, and the comment above it already
+  // said that was only an observation — so the first runner whose docker
+  // behaved the second way failed this demo, and with it the `test` check on
+  // a branch that had touched none of this (T4.3.21). The digest comparison
+  // is still printed, as the observation it always was.
   const v1Again = await release.invoke('assemble', {
     repo,
     context: 'deploy/sample-service',
@@ -188,9 +190,13 @@ try {
     previous: null,
   });
   check(
-    'the same tree and build args reuse the same digest with a warm cache',
-    v1Again.digest === v1.digest,
-    `${v1.digest} vs ${v1Again.digest}`,
+    'reassembling the same tree lands the same version and changelog, not a failure',
+    v1Again.version === v1.version &&
+      v1Again.changelog === v1.changelog &&
+      v1Again.digest.startsWith('sha256:'),
+    v1Again.digest === v1.digest
+      ? `warm cache — the same digest ${v1Again.digest}`
+      : `cold cache — a new digest ${v1Again.digest} for the same version`,
   );
 } finally {
   // Best-effort teardown so a failing assertion above never leaves the
