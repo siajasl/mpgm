@@ -30,7 +30,7 @@ import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
 import { reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview } from './prior-review.js';
-import { priorReviewBudgetOf } from './review-budget.js';
+import { priorReviewBudgetOf, redirectAuthorizesContinuation } from './review-budget.js';
 import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
 import type { ProgressReporter, SessionKind } from './progress.js';
 import type { WorktreeManager } from './worktree.js';
@@ -515,6 +515,13 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // handed over carrying rather than about anything this run did. A reused
   // worktree with commits on it was left mid-task by an earlier run, and those
   // commits are the loop's for the same reason this run's rework commits are.
+  //
+  // Gated on `reused` rather than asked of git unconditionally: a *fresh*
+  // worktree is cut from the repository's current `HEAD`, which need not be
+  // `into` — counting `into..HEAD` on one then returns commits nobody in this
+  // loop made (a sibling finding, below, is a test of exactly that), so the
+  // registration's own word for whether this checkout is a continuation is
+  // the one this still trusts for `inheritedCommits` and `carried`.
   const inheritedCommits = worktree.reused
     ? ((await options.worktrees.commitsAhead(task.id, into)) ?? 0)
     : 0;
@@ -538,13 +545,26 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     : undefined;
   // What this task's review budget actually stands at — rounds spent,
   // conventions declared, the one-time declaration extension — read off the
-  // same log rather than assumed fresh (T4.3.17). `undefined` on a fresh
-  // worktree for the same reason `priorReview` is: nothing from an abandoned
-  // attempt's branch survives onto a new one, so nothing of its review state
-  // should either, and that is deliberately the one way this starts over —
-  // an operator who wants a clean slate removes the old worktree and branch
-  // rather than flipping a flag nobody would remember to pass.
-  const priorBudget = worktree.reused
+  // same log rather than assumed fresh (T4.3.17). Gated on `branchExisted`
+  // rather than on `reused` (unlike `priorReview` and `inheritedCommits`
+  // above, deliberately): `reused` answers "did `acquire` find the
+  // registration where it left it", and that comes apart from "has this
+  // task ever been dispatched" on exactly the crash this exists for.
+  // `WorktreeManager.#acquire` (`worktree.ts`), on finding a registration
+  // whose directory is gone — the usual aftermath of a machine being reset
+  // under a running task — prunes it and re-adds the checkout on the branch
+  // that survives that, reporting `reused: false` even though the branch,
+  // and its review history on the log, are still there (T4.3.17 review).
+  // `branchExisted` is true on that path too, because it answers whether the
+  // branch was there before this call — not whether the registration agreed
+  // with disk — and is the one fact `commitsAhead` cannot safely stand in
+  // for here, unlike `inheritedCommits` above: that branch can genuinely
+  // carry zero commits yet and still have a review round logged against it
+  // (a round that reported nothing worth committing is still a round).
+  // `undefined` only when the branch is genuinely new, which is the one way
+  // this starts fresh: an operator who wants a clean slate removes the old
+  // worktree and its branch, so the next acquire creates one from scratch.
+  const priorBudget = worktree.branchExisted
     ? priorReviewBudgetOf(options.log.read(), task.id, maxReviewAttempts)
     : undefined;
   // Rounds are attached by the helper rather than by each caller: a task that
@@ -552,6 +572,13 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // thirteen call sites each remembering to pass them is twelve chances not
   // to.
   const rounds: ReviewRound[] = [];
+  // Set below, inside the guard that reads it: whether an operator's redirect
+  // bought this invocation one round beyond what `priorBudget` alone would
+  // allow (T4.3.17). Declared out here, rather than only inside that guard's
+  // block, because the round loop further down needs to fold the same grant
+  // into the `attempts` it seeds from — one authorization, read once, acted
+  // on in both places rather than re-derived.
+  let continuationAuthorized = false;
   const stop = (
     reason: string,
     extra: Partial<ImplementResult> = {},
@@ -611,32 +638,57 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // bottom of this function reached after all, over a budget that was never
   // really the problem.
   //
-  // Checked here, before the implementing session runs again, rather than
-  // only inside the round loop further down — a task that cannot proceed
-  // should not spend a session finding that out a second time.
+  // `continuationAuthorized` is the one way "nothing about the task has
+  // changed" is allowed to be false: an operator who judges whatever the
+  // last round was refused over settled can say so with `mpgm redirect`
+  // before re-running, and the two at-the-cap refusals further down this
+  // function already tell an operator to do exactly that ("say so with
+  // `mpgm redirect` and re-run"). A review of this task's first attempt
+  // caught that promise dead-ending here: this guard returned before `track`
+  // ever got to read a redirect note, on the one path a resumed invocation
+  // is certain to hit first. Reading it here keeps that promise instead —
+  // one more round, never more than one per redirect, and the round that
+  // follows shows the operator's own note as the reason, the same way any
+  // other redirect does (`track`, below), so nothing new needs logging to
+  // say an operator asked for this.
   if (priorBudget !== undefined && priorBudget.roundsSoFar >= priorBudget.attempts) {
-    return stop(
-      priorBudget.lastRoundAllowed
-        ? `${task.id}: this task's last recorded review round already cleared the ` +
-            `merge gate, and nothing left in its review budget would change that. If ` +
-            `this checkout is not on '${into}' yet, something other than review is ` +
-            `what is stopping it — check why 'mergeChange' itself refused (a dirty ` +
-            `or diverged '${into}', a real content conflict) rather than resuming ` +
-            `the review loop, which has nothing left to do here.`
-        : `${task.id}: this task's review budget was already exhausted in an earlier ` +
-            `invocation — ${String(priorBudget.roundsSoFar)} round(s) taken against ` +
-            `${String(priorBudget.attempts)} allowed` +
-            (priorBudget.extensionSpent
-              ? ' (the one-time declaration extension already granted and spent)'
-              : '') +
-            `. Resuming does not grant a fresh budget (T4.3.17); fix what actually ` +
-            `blocked it — raise the review attempts or the role's cost budget, ` +
-            `resolve what CI reported, settle an outstanding declaration with ` +
-            `\`mpgm redirect\` — before trying again. A fresh worktree for this task ` +
-            `starts it over with a clean budget of its own: remove ` +
-            `'${worktree.path}' and its branch '${worktree.branch}' first if that is ` +
-            `what is actually wanted.`,
-    );
+    continuationAuthorized =
+      !priorBudget.lastRoundAllowed &&
+      redirectAuthorizesContinuation(
+        options.log.read(),
+        runId,
+        task.id,
+        priorBudget.lastRoundSeq,
+      );
+    // Checked here, before the implementing session runs again, rather than
+    // only inside the round loop further down — a task that cannot proceed
+    // should not spend a session finding that out a second time.
+    if (!continuationAuthorized) {
+      return stop(
+        priorBudget.lastRoundAllowed
+          ? `${task.id}: this task's last recorded review round already cleared the ` +
+              `merge gate, and nothing left in its review budget would change that. If ` +
+              `this checkout is not on '${into}' yet, something other than review is ` +
+              `what is stopping it — check why 'mergeChange' itself refused (a dirty ` +
+              `or diverged '${into}', a real content conflict) rather than resuming ` +
+              `the review loop, which has nothing left to do here.`
+          : `${task.id}: this task's review budget was already exhausted in an earlier ` +
+              `invocation — ${String(priorBudget.roundsSoFar)} round(s) taken against ` +
+              `${String(priorBudget.attempts)} allowed` +
+              (priorBudget.extensionSpent
+                ? ' (the one-time declaration extension already granted and spent)'
+                : '') +
+              `. Resuming does not grant a fresh budget on its own (T4.3.17). This guard ` +
+              `reads only this task's logged review rounds, so fixing CI or raising a ` +
+              `role's cost budget does not change its answer — neither is what stopped ` +
+              `it. The lever that does: an operator who judges the outstanding finding ` +
+              `settled runs \`mpgm redirect ${task.id} --run ${runId} --note '<why>'\` ` +
+              `and re-runs, and this guard reads that redirect back and grants exactly ` +
+              `one more round. A fresh worktree for this task starts it over with a ` +
+              `clean budget of its own instead: remove '${worktree.path}' and its ` +
+              `branch '${worktree.branch}' first if that is what is actually wanted.`,
+      );
+    }
   }
 
   // Shared by both places a conflict between this task's branch and `into`
@@ -1016,7 +1068,13 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // commit)' are one declaration rather than two.
   const declaredSoFar = new Map<string, string>(priorBudget?.declared ?? []);
   let extensionSpent = priorBudget?.extensionSpent ?? false;
-  let attempts = priorBudget?.attempts ?? maxReviewAttempts;
+  // `+ 1` when the guard above read an operator's redirect after the budget
+  // was otherwise exhausted (`continuationAuthorized`): one round, on top of
+  // whatever `priorBudget` already carried, not a reset of it — the
+  // extension above stays spent if it was, and the round numbering below
+  // still continues rather than restarting.
+  let attempts =
+    (priorBudget?.attempts ?? maxReviewAttempts) + (continuationAuthorized ? 1 : 0);
   // Round numbering continues where the log left off, rather than restarting
   // at 1 — the same round a reviewer and an operator reading the log would
   // call it, and what keeps a final-round guard (T4.3.8's escalation check,

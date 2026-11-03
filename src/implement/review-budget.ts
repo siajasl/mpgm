@@ -58,6 +58,13 @@ export interface PriorReviewBudget {
    * because it has no round left to spend.
    */
   readonly lastRoundAllowed: boolean;
+  /**
+   * The log sequence number of the last recorded round, so a caller can tell
+   * an operator redirect recorded *after* the budget was exhausted apart from
+   * one left over from while it was still running (T4.3.17). `undefined`
+   * exactly when `roundsSoFar` is `0`, since there is no round to be after.
+   */
+  readonly lastRoundSeq: number | undefined;
 }
 
 /** `ChangeReviewed`'s payload shape, the fields this reads. */
@@ -106,6 +113,7 @@ export function priorReviewBudgetOf(
   let extensionSpent = false;
   let round = 0;
   let lastRoundAllowed = false;
+  let lastRoundSeq: number | undefined;
 
   for (const event of events) {
     if (event.type !== 'ChangeReviewed') {
@@ -117,6 +125,7 @@ export function priorReviewBudgetOf(
     }
 
     round += 1;
+    lastRoundSeq = event.seq;
     for (const entry of payload.declaredDeviations ?? []) {
       declared.set(conventionIdOf(entry) ?? entry.trim(), entry);
     }
@@ -136,5 +145,63 @@ export function priorReviewBudgetOf(
     }
   }
 
-  return { roundsSoFar: round, declared, extensionSpent, attempts, lastRoundAllowed };
+  return {
+    roundsSoFar: round,
+    declared,
+    extensionSpent,
+    attempts,
+    lastRoundAllowed,
+    lastRoundSeq,
+  };
+}
+
+/** `OperatorIntervened`'s payload shape, the fields this reads. */
+interface OperatorIntervenedPayload {
+  readonly action: string;
+  readonly taskId?: string;
+}
+
+/**
+ * Whether an operator redirected this task after its budget's last recorded
+ * round, authorising exactly one more (T4.3.17).
+ *
+ * A task whose review budget is exhausted is not permanently unstartable
+ * (ORC-5): an operator who judges the outstanding finding settled can say so
+ * with `mpgm redirect <task> --note <why> --run <runId>` and re-run, and the
+ * pre-dispatch refusal in `implementTask` (`loop.ts`) reads this back before
+ * refusing again, rather than promising a lever (`mpgm redirect`) that a
+ * refusal before any dispatch could never actually reach — the regression a
+ * review of this task caught: the guard returned before `track` ever read a
+ * redirect note, so the two existing at-the-cap messages that tell an
+ * operator to redirect and re-run (`loop.ts`, the "held for want of a
+ * declaration" and "still refuses the change" refusals) dead-ended on a
+ * resumed invocation that reached this guard first.
+ *
+ * Scoped to the redirect's own `runId`, the same scope `OperatorIntervened`
+ * itself is folded under (`reduce.ts`) — a redirect is an instruction to a
+ * run, not to a task across every run that might ever dispatch it. `afterSeq`
+ * is `PriorReviewBudget.lastRoundSeq`; `undefined` there means no round has
+ * run yet, so nothing can have been redirected "after" it and this answers
+ * `false` without scanning.
+ */
+export function redirectAuthorizesContinuation(
+  events: readonly StoredEvent[],
+  runId: string,
+  taskId: string,
+  afterSeq: number | undefined,
+): boolean {
+  if (afterSeq === undefined) {
+    return false;
+  }
+  return events.some((event) => {
+    if (
+      event.type !== 'OperatorIntervened' ||
+      event.runId !== runId ||
+      event.seq <= afterSeq
+    ) {
+      return false;
+    }
+    const payload = event.payload as OperatorIntervenedPayload;
+    return payload.action === 'redirect' && payload.taskId === taskId;
+  });
 }

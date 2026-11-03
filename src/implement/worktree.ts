@@ -99,6 +99,23 @@ export interface Worktree {
    * to re-read the diff — get told.
    */
   readonly reused: boolean;
+  /**
+   * True when this task's branch already existed before this `acquire` call,
+   * whether or not the checkout handed back is the same directory as last
+   * time (T4.3.17).
+   *
+   * `reused` answers whether `acquire` found its own registration where it
+   * left it; this answers whether the task has ever been dispatched at all,
+   * and the two come apart on exactly the crash a caller needs to tell apart
+   * from a genuine restart: a registration whose directory is gone — the
+   * usual aftermath of a machine being reset under a running task — is
+   * pruned and the checkout is re-added on the branch that survives that
+   * (below), which is `reused: false` even though the branch, and everything
+   * recorded against it on the event log, is still there. `false` only when
+   * the branch is created fresh in this same call, which is the one case
+   * nothing from an earlier attempt could have survived onto.
+   */
+  readonly branchExisted: boolean;
 }
 
 /** One entry of `git worktree list`. */
@@ -304,6 +321,7 @@ export class WorktreeManager {
         path: existing.path,
         base: await this.#git(['rev-parse', 'HEAD'], existing.path),
         reused: true,
+        branchExisted: true,
       };
     }
     if (existing !== undefined) {
@@ -331,7 +349,7 @@ export class WorktreeManager {
         : ['worktree', 'add', '-b', branch, path, base],
     );
 
-    return { taskId, branch, path, base, reused: false };
+    return { taskId, branch, path, base, reused: false, branchExisted: branchExists };
   }
 
   /**
