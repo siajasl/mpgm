@@ -2446,6 +2446,84 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['TST-1', 'OBS-1'],
             },
+            {
+              id: 'T4.3.21',
+              title:
+                'A verification demo breaks on runner drift and the next ' +
+                'branch to run is the one that goes red for it',
+              completionCriteria: [
+                'A check in a milestone verification demo that fails for a ' +
+                  'reason no branch introduced is attributed to something ' +
+                  'other than the branch that happened to run next, or the ' +
+                  'demos say why they need no such attribution. This is the ' +
+                  'same class SAF-5 and T4.3.16 settled for dependency ' +
+                  'advisories -- the merge check answers for what a change ' +
+                  'introduces, a standing check over the trunk answers for ' +
+                  'what it inherits -- and demo checks have the merge limb ' +
+                  'with nothing on the other side.',
+                'Measured on this session, not supposed. demo:release step 6 ' +
+                  'asserted that re-assembling an unchanged tree reproduces ' +
+                  'its digest, which docker build does not promise. The ' +
+                  "assertion's own comment said so, and so do " +
+                  'contracts/release.deliver.md and releaseDeliverContract. ' +
+                  "main's CI last ran green on 2026-10-07; nothing pushed to " +
+                  'main for 27 days; the first branch to run CI after that ' +
+                  'was a lockfile-only dependency fix (#177), and it went ' +
+                  'red on the test kind for a demo it did not touch. The ' +
+                  'repair landed as #178. The cost was not the fix but the ' +
+                  'diagnosis: a red test on a branch is indistinguishable ' +
+                  'from a real regression until someone reads the log.',
+                'The trunk side is the gap, and the fix is not to run less. ' +
+                  'ci.yml fires on push to main and on pull_request, so a ' +
+                  'trunk whose last push was 27 days ago is a trunk nothing ' +
+                  'has verified for 27 days, while the environment the demos ' +
+                  'run against (ubuntu-latest, its docker, its daemon ' +
+                  'behaviour) moves weekly. T4.3.16 built exactly this ' +
+                  'backstop for one leg: a scheduled trunk-only audit that ' +
+                  'raises a tracked work item (dependency-audit-trunk.yml), ' +
+                  'which fired unattended for four weeks and filed issue ' +
+                  '#176. Nothing equivalent watches whether the demos still ' +
+                  'pass on an untouched trunk.',
+                'The change picks between a scheduled trunk run of the ' +
+                  'verification demos that raises a tracked work item the ' +
+                  'way T4.3.16 does, having the loop distinguish a check ' +
+                  'that also fails on the merge base from one the branch ' +
+                  'introduced, and declaring that demo checks need no ' +
+                  'attribution because a demo must hold on any runner at any ' +
+                  'time. It says which and prices the ones it refused. The ' +
+                  'third is a real position and the cheapest, but it is a ' +
+                  'claim about every existing demo, so a change that takes ' +
+                  'it says what makes that true rather than asserting it.',
+                'It must not make a red check cheaper to ignore. A demo ' +
+                  'failure that is drift still has to be answered by ' +
+                  'something -- the trunk job, a filed task, a human reading ' +
+                  'a failed run -- and a change that merely exempts the ' +
+                  'branch and logs the rest has moved the defect, not fixed ' +
+                  'it, which is the hole T4.3.18 already names on the ' +
+                  'dependency leg. Absence is not success (IMP-2): a demo ' +
+                  'that is skipped, quarantined or made conditional on the ' +
+                  'runner reports nothing, and a verification that silently ' +
+                  'skipped itself is worse than none.',
+                'The second, narrower leg is why nobody caught it: three ' +
+                  'places in the repository stated the guarantee correctly ' +
+                  'and the assertion contradicted all three, one of them the ' +
+                  'comment directly above it. Nothing cross-checks what a ' +
+                  'demo asserts against the contract it verifies, and this ' +
+                  'defect was found by a branch going red rather than by a ' +
+                  'reader. The change says whether that is in scope and, if ' +
+                  'not, what would have caught it.',
+                'The test drives a verification demo whose failure the ' +
+                  'branch did not cause -- the merge base fails the same ' +
+                  'check -- and asserts the outcome the change states: ' +
+                  'either the branch is not the thing blamed for it, or the ' +
+                  'failure is raised against the trunk as well. It fails ' +
+                  'against today, where the branch alone goes red and the ' +
+                  'trunk is never asked. A test that only asserts a demo ' +
+                  'passes on a clean tree is the test this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['TST-1', 'IMP-2', 'MNT-1'],
+            },
           ],
         },
       ],
