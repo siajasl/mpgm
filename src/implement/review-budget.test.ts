@@ -187,4 +187,40 @@ describe('redirectAuthorizesContinuation', () => {
     const events = [intervened({ action: 'pause' }, { seq: 9 })];
     expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(false);
   });
+
+  function dispatched(seq: number, taskId = 'T1', runId = 'r'): StoredEvent {
+    return {
+      seq,
+      ts: new Date().toISOString(),
+      runId,
+      type: 'TaskDispatched',
+      schemaVersion: 1,
+      payload: { taskId, role: 'implementer', model: 'claude' },
+    };
+  }
+
+  it(
+    'does not re-authorize once the granted round has dispatched, even if ' +
+      'it never reached a review (T4.3.17)',
+    () => {
+      const redirect = intervened({ action: 'redirect', taskId: 'T1' }, { seq: 9 });
+      // The redirect at seq 9 authorizes the round that dispatches at seq
+      // 10 — but that round blocks (CI, a kill, a conflict) before ever
+      // appending `ChangeReviewed`, so `afterSeq` (still 5, the old
+      // exhausted round) has not moved. Without consuming on the dispatch
+      // itself, this same redirect would authorize indefinitely.
+      const events = [redirect, dispatched(10)];
+      expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(false);
+    },
+  );
+
+  it(
+    'still authorizes when the dispatch it is consumed against belongs to ' +
+      'a different task or run (T4.3.17)',
+    () => {
+      const redirect = intervened({ action: 'redirect', taskId: 'T1' }, { seq: 9 });
+      const events = [redirect, dispatched(10, 'T2'), dispatched(11, 'T1', 'other-run')];
+      expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(true);
+    },
+  );
 });

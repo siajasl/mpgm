@@ -709,7 +709,16 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // caught that promise dead-ending here: this guard returned before `track`
   // ever got to read a redirect note, on the one path a resumed invocation
   // is certain to hit first. Reading it here keeps that promise instead —
-  // one more round, never more than one per redirect, and the round that
+  // one more round, never more than one per redirect. `redirectAuthorizesContinuation`
+  // (`review-budget.ts`) is what makes "one" hold rather than merely saying
+  // it: it consumes the redirect against the next `TaskDispatched` this task
+  // records, not against the next `ChangeReviewed`, because a granted round
+  // can block before ever reaching review — without that, the same redirect
+  // would re-authorize on every later invocation, a paid session each time.
+  // And the declaration grace below (`declarationRound`) is withheld from
+  // this specific round regardless of whether it would otherwise have
+  // earned one, so one redirect cannot buy two rounds by having its single
+  // granted round also trip the once-per-task extension. The round that
   // follows shows the operator's own note as the reason, the same way any
   // other redirect does (`track`, below), so nothing new needs logging to
   // say an operator asked for this.
@@ -1394,7 +1403,27 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // that addition is once per task: without it a reviewer reporting a fresh
     // deviation every round extends the budget forever, which is the
     // elasticity the grace is deliberately not.
-    const declarationRound = wantsDeclaration && (round < attempts || !extensionSpent);
+    //
+    // `!continuationAuthorized` is what keeps the redirect lever at one round
+    // per redirect, the promise the refusal message below and the guard above
+    // both make (T4.3.17 review): without it, the one round an operator's
+    // redirect bought could itself earn the once-per-task grace for the first
+    // time, handing out a *second* round — the grace round — on the strength
+    // of one redirect. `continuationAuthorized` is only ever true for the
+    // single round a redirect authorizes (the pre-loop guard sets it once,
+    // before this loop starts, and only when the budget was already
+    // exhausted — see its own comment), so this never withholds the grace
+    // from an ordinary round that reaches the cap on its own.
+    const declarationRound =
+      wantsDeclaration &&
+      !continuationAuthorized &&
+      (round < attempts || !extensionSpent);
+    // What the refusal below says when a declaration is wanted but not
+    // granted: a redirect-bought round is withheld from the grace, not one
+    // that already spent it, and conflating the two would send an operator
+    // to redirect again for a grace this task may never have used at all
+    // (CONV-3).
+    const graceWithheldByRedirect = wantsDeclaration && continuationAuthorized;
     if (declarationRound) {
       if (round === attempts) {
         extensionSpent = true;
@@ -1445,10 +1474,16 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
           ? `the review approved this change and it is held for want of a ` +
               `declaration: it reports the change departing from ` +
               `${undeclared.join('; ')}, which the author's result does not ` +
-              `declare, and the one declaration round this task is granted was ` +
-              `already spent. No reviewer refused it. Declaring means the ` +
-              `\`deviations\` field of the result; an operator who judges the ` +
-              `departure acceptable can say so with \`mpgm redirect\` and re-run.`
+              `declare, and ` +
+              (graceWithheldByRedirect
+                ? `this round was the one an operator's redirect already bought — ` +
+                  `that redirect does not also buy the once-per-task declaration ` +
+                  `grace on top of it (T4.3.17: one redirect, one round). `
+                : `the one declaration round this task is granted was already ` +
+                  `spent. `) +
+              `No reviewer refused it. Declaring means the \`deviations\` field ` +
+              `of the result; an operator who judges the departure acceptable ` +
+              `can say so with \`mpgm redirect\` and re-run.`
           : `the review still refuses the change after ${String(attempts)} attempt(s): ` +
               decision.reasons.join('; '),
         { ref: repair.ref, review, repair },

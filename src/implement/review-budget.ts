@@ -194,9 +194,44 @@ interface OperatorIntervenedPayload {
   readonly taskId?: string;
 }
 
+/** `TaskDispatched`'s payload shape, the field this reads. */
+interface TaskDispatchedPayload {
+  readonly taskId: string;
+}
+
+/**
+ * The log sequence number of the most recent `TaskDispatched` this run
+ * recorded under `taskId` itself — never under a review's own suffixed id
+ * (`${taskId}-review[-n]`), which is a different session entirely — or
+ * `undefined` if none has.
+ *
+ * What a redirect's authorization is consumed against (below): a dispatch,
+ * not a completed round, because a granted round can block before it ever
+ * reaches `ChangeReviewed` (CI not green, the session itself blocked, a
+ * conflict refused), and the redirect that authorized it must not still read
+ * as fresh on the invocation after that.
+ */
+function lastTaskDispatchedSeq(
+  events: readonly StoredEvent[],
+  runId: string,
+  taskId: string,
+): number | undefined {
+  let last: number | undefined;
+  for (const event of events) {
+    if (
+      event.type === 'TaskDispatched' &&
+      event.runId === runId &&
+      (event.payload as TaskDispatchedPayload).taskId === taskId
+    ) {
+      last = event.seq;
+    }
+  }
+  return last;
+}
+
 /**
  * Whether an operator redirected this task after its budget's last recorded
- * round, authorising exactly one more (T4.3.17).
+ * activity, authorising exactly one more round (T4.3.17).
  *
  * A task whose review budget is exhausted is not permanently unstartable
  * (ORC-5): an operator who judges the outstanding finding settled can say so
@@ -212,10 +247,21 @@ interface OperatorIntervenedPayload {
  *
  * Scoped to the redirect's own `runId`, the same scope `OperatorIntervened`
  * itself is folded under (`reduce.ts`) — a redirect is an instruction to a
- * run, not to a task across every run that might ever dispatch it. `afterSeq`
- * is `PriorReviewBudget.lastRoundSeq`; `undefined` there means no round has
- * run yet, so nothing can have been redirected "after" it and this answers
- * `false` without scanning.
+ * run, not to a task across every run that might ever dispatch it.
+ *
+ * "After its budget's last recorded activity" is `afterSeq` —
+ * `PriorReviewBudget.lastRoundSeq`, the last completed round — joined with
+ * {@link lastTaskDispatchedSeq}, the later of the two. The join is what makes
+ * the authorization genuinely single-use: without it, a redirect that
+ * granted a round which then blocked before completing (`ChangeReviewed`
+ * never appended) would still read as "after" `lastRoundSeq` on every later
+ * re-invocation, handing out the same one grant again each time — a paid
+ * session per invocation, from one redirect, forever (the review finding
+ * this closes). A dispatch under the task's own id always happens the moment
+ * the granted round actually starts, whatever becomes of it afterwards, so
+ * consuming the grant there bounds it to the one round it was for. `undefined`
+ * when neither has happened, since nothing can be "after" what has not
+ * occurred.
  */
 export function redirectAuthorizesContinuation(
   events: readonly StoredEvent[],
@@ -223,14 +269,21 @@ export function redirectAuthorizesContinuation(
   taskId: string,
   afterSeq: number | undefined,
 ): boolean {
-  if (afterSeq === undefined) {
+  const dispatchSeq = lastTaskDispatchedSeq(events, runId, taskId);
+  const boundary =
+    afterSeq === undefined
+      ? dispatchSeq
+      : dispatchSeq === undefined
+        ? afterSeq
+        : Math.max(afterSeq, dispatchSeq);
+  if (boundary === undefined) {
     return false;
   }
   return events.some((event) => {
     if (
       event.type !== 'OperatorIntervened' ||
       event.runId !== runId ||
-      event.seq <= afterSeq
+      event.seq <= boundary
     ) {
       return false;
     }

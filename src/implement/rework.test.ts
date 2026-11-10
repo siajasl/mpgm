@@ -3587,5 +3587,115 @@ describe('a review that never approves (NFR-1)', () => {
         }
       },
     );
+
+    it(
+      'does not let the one redirect-granted round also earn the once-per-' +
+        'task declaration grace (T4.3.17)',
+      async () => {
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          // Invocation 1, budget of one: a plain rejection exhausts the
+          // budget without ever earning the grace, so `extensionSpent` is
+          // still false going into the redirect.
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'request-changes',
+              summary: 'not yet',
+              findings: [
+                {
+                  file: 'README.md',
+                  line: 1,
+                  concern: 'the ledger is wrong',
+                  remedy: 'correct it',
+                  severity: 'blocker' as const,
+                },
+              ],
+              deviations: [],
+            }),
+          ]);
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(first.status).toBe('blocked');
+          expect(first.reason).toMatch(/still refuses the change/);
+
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the finding no longer applies',
+            },
+          });
+
+          // Invocation 2: the redirect buys one round. That round approves
+          // while reporting CONV-1 as undeclared for the first time ever on
+          // this task — the shape that would ordinarily earn the once-per-
+          // task grace at the cap. If this round could also earn it, the
+          // loop would dispatch a third session declaring CONV-1, which
+          // this script does not provide for, and `ScriptedProvider` would
+          // throw rather than this test passing on a round it never
+          // checked.
+          const secondProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'approve',
+              summary: 'good',
+              findings: [],
+              deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+            }),
+          ]);
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          expect(second.status).toBe('blocked');
+          expect(secondProvider.requests).toHaveLength(2);
+          expect(second.rounds).toHaveLength(1);
+          expect(second.rounds?.[0]?.round).toBe(2);
+          // Held for want of a declaration, not refused outright — the
+          // reviewer approved it — but not granted a further round either:
+          // the message says the redirect's one round does not also buy the
+          // grace, rather than claiming an extension was already spent that
+          // this task, in fact, never used.
+          expect(second.reason).toMatch(/held for want of a declaration/);
+          expect(second.reason).toContain('CONV-1');
+          expect(second.reason).toMatch(/does not also buy the once-per-task/);
+          expect(second.reason).not.toMatch(/already spent/);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
   });
 });
