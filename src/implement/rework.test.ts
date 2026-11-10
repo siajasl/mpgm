@@ -1321,6 +1321,199 @@ describe('a review that never approves (NFR-1)', () => {
     },
   );
 
+  it(
+    'carries a declaration whose round reviewed a commit still an ' +
+      'ancestor of the branch tip, not only one it names exactly (T4.3.17)',
+    async () => {
+      // Every test of the declared-set carry up to this one logs a round
+      // whose `ref` equals the branch tip at replay time, which answers
+      // through `reachableDeclarationRefs`'s equality shortcut and never
+      // calls `WorktreeManager.mergeBase` at all — the normal case for every
+      // round but the last of a real task, where the branch has moved on
+      // since. This puts a real commit between the declaring round's `ref`
+      // and the tip, so only the ancestry branch can answer it.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      const roundOneRef = git(worktree.path, ['rev-parse', 'HEAD']);
+      writeFileSync(join(worktree.path, 'round-two.txt'), 'round two\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round two, left uncommitted by review']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: roundOneRef,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['round-two.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'round-two.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          // The reviewer reports both conventions as present in the branch.
+          // If CONV-1 carried from round one, only CONV-6 is left undeclared.
+          deviations: [
+            { convention: 'CONV-1', where: 'round-one.txt' },
+            { convention: 'CONV-6', where: 'round-two.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'does not carry a declaration whose round reviewed a commit the ' +
+      'branch no longer contains, once it has been reset past it (T4.3.17)',
+    async () => {
+      const repo = newRepo();
+      const trunk = git(repo, ['rev-parse', 'HEAD']);
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      const roundOneRef = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      // The branch is reset past the declaring round's commit, the same
+      // way an operator resetting and rebuilding a branch from scratch
+      // would: `roundOneRef` is no longer reachable from the new tip.
+      git(worktree.path, ['reset', '--hard', trunk]);
+      writeFileSync(join(worktree.path, 'rewritten.txt'), 'a different round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'a rewritten round one']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: roundOneRef,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['rewritten.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'rewritten.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          deviations: [
+            { convention: 'CONV-1', where: 'rewritten.txt' },
+            { convention: 'CONV-6', where: 'rewritten.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        // CONV-1 is reported undeclared again: the round that declared it
+        // reviewed work this branch no longer carries.
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-1', 'CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
   it('records the block in the log, whatever gave up', async () => {
     // Two different paths, because the block used to be recorded only where a
     // budget ran out. Every other way the loop gives up left the fold saying
