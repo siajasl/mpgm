@@ -250,4 +250,32 @@ describe('redirectAuthorizesContinuation', () => {
       expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(true);
     },
   );
+
+  it(
+    'does not re-authorize once the granted round dispatched a trunk ' +
+      'catch-up conflict resolver, which runs under a session-only suffix ' +
+      'rather than the bare task id (T4.3.17)',
+    () => {
+      const redirect = intervened({ action: 'redirect', taskId: 'T1' }, { seq: 9 });
+      // `catchUpAndResolve` dispatches its conflict resolver under
+      // `${taskId}-catchup`, not `taskId` itself, and can refuse or block
+      // before the round ever dispatches under the bare id — the leak a
+      // review of this task found: without matching the suffix, this same
+      // redirect would keep reading as fresh on every later invocation.
+      const events = [redirect, dispatched(10, 'T1-catchup')];
+      expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(false);
+    },
+  );
+
+  it(
+    'does not treat an unrelated task whose id merely starts with the ' +
+      'same prefix as a dispatch of this one (T4.3.17)',
+    () => {
+      const redirect = intervened({ action: 'redirect', taskId: 'T1' }, { seq: 9 });
+      // 'T10' starts with 'T1' but not with 'T1-', so it must not consume a
+      // redirect that names 'T1'.
+      const events = [redirect, dispatched(10, 'T10')];
+      expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(true);
+    },
+  );
 });

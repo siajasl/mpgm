@@ -223,15 +223,26 @@ interface TaskDispatchedPayload {
 
 /**
  * The log sequence number of the most recent `TaskDispatched` this run
- * recorded under `taskId` itself — never under a review's own suffixed id
- * (`${taskId}-review[-n]`), which is a different session entirely — or
- * `undefined` if none has.
+ * recorded under `taskId` itself *or* under one of its session-only
+ * suffixes — `${taskId}-catchup`, `${taskId}-catchup-2`,
+ * `${taskId}-review[-n]` — or `undefined` if none has.
  *
  * What a redirect's authorization is consumed against (below): a dispatch,
  * not a completed round, because a granted round can block before it ever
  * reaches `ChangeReviewed` (CI not green, the session itself blocked, a
  * conflict refused), and the redirect that authorized it must not still read
  * as fresh on the invocation after that.
+ *
+ * The suffixed ids matter here for exactly the same reason: the trunk
+ * catch-up `implementTask` runs before the round loop (`catchUpAndResolve`,
+ * `loop.ts`) dispatches its conflict resolver under `${taskId}-catchup`, not
+ * under `taskId` itself, and can itself refuse or block without ever
+ * reaching a dispatch under the bare id. Counting only the bare id left that
+ * path able to re-authorize the same old redirect on every later
+ * invocation — a paid resolver session each time, from one redirect,
+ * forever (the leak a review of this task found). Matched by prefix plus a
+ * literal hyphen, not by substring, so `taskId` `'T1'` does not also match a
+ * dispatch for the unrelated task `'T10'`.
  */
 function lastTaskDispatchedSeq(
   events: readonly StoredEvent[],
@@ -240,11 +251,11 @@ function lastTaskDispatchedSeq(
 ): number | undefined {
   let last: number | undefined;
   for (const event of events) {
-    if (
-      event.type === 'TaskDispatched' &&
-      event.runId === runId &&
-      (event.payload as TaskDispatchedPayload).taskId === taskId
-    ) {
+    if (event.type !== 'TaskDispatched' || event.runId !== runId) {
+      continue;
+    }
+    const dispatchedId = (event.payload as TaskDispatchedPayload).taskId;
+    if (dispatchedId === taskId || dispatchedId.startsWith(`${taskId}-`)) {
       last = event.seq;
     }
   }
@@ -279,11 +290,14 @@ function lastTaskDispatchedSeq(
  * never appended) would still read as "after" `lastRoundSeq` on every later
  * re-invocation, handing out the same one grant again each time — a paid
  * session per invocation, from one redirect, forever (the review finding
- * this closes). A dispatch under the task's own id always happens the moment
- * the granted round actually starts, whatever becomes of it afterwards, so
- * consuming the grant there bounds it to the one round it was for. `undefined`
- * when neither has happened, since nothing can be "after" what has not
- * occurred.
+ * this closes). A dispatch under the task's own id, or one of its
+ * session-only suffixes (`lastTaskDispatchedSeq` above — the trunk catch-up
+ * this guard runs ahead of the round loop dispatches its conflict resolver
+ * under `${taskId}-catchup`, not under `taskId` itself), always happens the
+ * moment the granted round actually starts, whatever becomes of it
+ * afterwards, so consuming the grant there bounds it to the one round it was
+ * for. `undefined` when neither has happened, since nothing can be "after"
+ * what has not occurred.
  */
 export function redirectAuthorizesContinuation(
   events: readonly StoredEvent[],
