@@ -3469,5 +3469,123 @@ describe('a review that never approves (NFR-1)', () => {
         }
       },
     );
+
+    it(
+      'grants exactly one further round to a redirect logged after the ' +
+        'budget was exhausted, and refuses a later re-invocation with no ' +
+        'new redirect (T4.3.17)',
+      async () => {
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+        const refusing = (concern: string) =>
+          scriptedSuccess({
+            ref: head,
+            verdict: 'request-changes' as const,
+            summary: 'not yet',
+            findings: [
+              {
+                file: 'README.md',
+                line: 1,
+                concern,
+                remedy: 'fix it',
+                severity: 'major' as const,
+              },
+            ],
+            deviations: [],
+          });
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          // Invocation 1, budget of one: a plain rejection earns no grace,
+          // so the task's one round is also its last.
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('first finding'),
+          ]);
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(first.status).toBe('blocked');
+          expect(first.rounds).toHaveLength(1);
+          expect(first.reason).toMatch(/still refuses the change/);
+
+          // Invocation 2, with no redirect logged yet: refused before
+          // dispatch, same as a plain re-invocation.
+          const noRedirectYet = await implementTask({
+            ...baseOptions(repo, new ScriptedProvider([]), log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(noRedirectYet.status).toBe('blocked');
+          expect(noRedirectYet.reason).toMatch(/does not grant a fresh budget/);
+
+          // An operator judges the finding settled and redirects the task.
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the finding no longer applies',
+            },
+          });
+
+          // Invocation 3: the redirect authorises exactly one further
+          // round, numbered 2 rather than restarting at 1. It is scripted
+          // as another plain rejection, so it exhausts the (unchanged)
+          // budget again rather than merging — the shape the next
+          // invocation's refusal is checked against.
+          const thirdProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('second finding'),
+          ]);
+          const third = await implementTask({
+            ...baseOptions(repo, thirdProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(third.status).toBe('blocked');
+          expect(thirdProvider.requests).toHaveLength(2);
+          expect(third.rounds).toHaveLength(1);
+          expect(third.rounds?.[0]?.round).toBe(2);
+          expect(third.reason).toMatch(/still refuses the change/);
+
+          // Invocation 4: the same redirect does not authorise a second
+          // continuation. Nothing is dispatched.
+          const fourthProvider = new ScriptedProvider([]);
+          const fourth = await implementTask({
+            ...baseOptions(repo, fourthProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(fourth.status).toBe('blocked');
+          expect(fourthProvider.requests).toHaveLength(0);
+          expect(fourth.reason).toMatch(/does not grant a fresh budget/);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
   });
 });
