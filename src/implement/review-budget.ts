@@ -110,18 +110,40 @@ interface ChangeReviewedPayload {
  * actually happened, same as it would for any fact this harness infers rather
  * than stores.
  *
- * Only the refusal `decideMerge` (`merge.ts`) can report besides an
- * undeclared deviation is excluded here by construction, not by re-deriving
- * `decideMerge` itself: a round only reaches `ChangeReviewed` at all once CI
- * is green and the review is of the commit the merge request names, so
- * `checks-not-green`, `checks-are-stale` and `review-is-stale` cannot be true
- * of a round this function is replaying, and `reviewer-not-independent` is
- * refused once for the whole task before any round runs (`implementTask`'s
- * own check at the top of that function). So an approved round reporting
- * something undeclared is exactly `earnsDeclarationRound`
- * (`late-deviation.ts`)'s condition, and the stored `undeclaredDeviations` —
- * already computed once, at append time (`changeReviewed`, `merge.ts`) — is
- * read back rather than recomputed.
+ * An approved round reporting something undeclared is read as exactly
+ * `earnsDeclarationRound` (`late-deviation.ts`)'s condition, and the stored
+ * `undeclaredDeviations` — already computed once, at append time
+ * (`changeReviewed`, `merge.ts`) — is read back rather than recomputed.
+ *
+ * `reviewer-not-independent` is excluded here by construction, not by
+ * re-deriving `decideMerge`: it is refused once for the whole task before
+ * any round runs (`implementTask`'s own check at the top of that function),
+ * so it can never be the refusal a logged round's `decideMerge` call made.
+ *
+ * The other three refusals `decideMerge` can report besides an undeclared
+ * deviation are *not* excluded by construction, an earlier version of this
+ * doc claimed otherwise. `ChangeReviewed` is appended once CI is green for
+ * that round (`checks-not-green` cannot be the refusal), but it is appended
+ * *before* `decideMerge` runs (`implementTask`, `loop.ts`) and `review.ref`
+ * is `reconcileRef(parsed.data.ref, tip)`, which leaves a ref naming some
+ * other commit exactly as the reviewer wrote it when it does not name the
+ * tip — so a round can be logged as approved, with nothing left undeclared,
+ * and still have been refused `review-is-stale` (or, if CI's own verdict
+ * named a different ref than this round's tip, `checks-are-stale`) by the
+ * very `decideMerge` call this round's own `ChangeReviewed` preceded. Such a
+ * round is not reworkable (`isReworkable`, `rework.ts`), so the loop stops
+ * right there without ever granting a grace or moving `lastRoundAllowed` —
+ * but this replay has no way to tell that round apart from one `decideMerge`
+ * actually allowed, from the stored payload alone. It is read as if it had
+ * been allowed: `lastRoundAllowed` can answer `true` for a round the loop
+ * itself stopped on, and if that round also reported an undeclared
+ * deviation, `earnsDeclarationRound`'s condition below can grant a
+ * declaration round — or spend the one-time extension — that the loop never
+ * granted. An exact fix needs the tip `decideMerge` compared against at that
+ * historical moment, which nothing on the log stores (`tip` is read fresh
+ * from git each round, never itself logged) and this module has no second
+ * store to keep it in (ADR-4); CONV-3 is better served by stating the gap
+ * than by pretending to close it with a heuristic this cannot verify.
  *
  * `isDeclarationReachable` decides, for a round's own `ref`, whether that
  * commit is still an ancestor of (or equal to) the branch this invocation is

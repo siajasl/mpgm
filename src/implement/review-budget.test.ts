@@ -139,6 +139,33 @@ describe('priorReviewBudgetOf', () => {
       expect(budget.declared.size).toBe(0);
     },
   );
+
+  it(
+    'pins a documented gap: a round decideMerge would have refused as ' +
+      'review-is-stale is replayed as allowed (T4.3.17)',
+    () => {
+      // `ChangeReviewed` is appended before `decideMerge` runs, so a round
+      // can be logged exactly like this — approved, nothing left
+      // undeclared — and still have been the round `isReworkable` sent back
+      // for naming a commit that was not the tip. Nothing in the stored
+      // payload distinguishes it from a round that genuinely cleared the
+      // gate, which is the gap the doc above now states rather than hides.
+      const events = [
+        changeReviewed({
+          taskId: 'T1',
+          ref: 'stale-ref-not-the-tip',
+          approved: true,
+          declaredDeviations: [],
+          undeclaredDeviations: [],
+        }),
+      ];
+      const budget = priorReviewBudgetOf(events, 'r', 'T1', 1, ALWAYS_REACHABLE);
+      // What the gap actually produces: this reads as a round the gate
+      // allowed, though `decideMerge` itself refused it `review-is-stale`
+      // and the loop stopped there without granting anything.
+      expect(budget.lastRoundAllowed).toBe(true);
+    },
+  );
 });
 
 describe('redirectAuthorizesContinuation', () => {
