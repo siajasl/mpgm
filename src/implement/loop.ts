@@ -422,6 +422,56 @@ function implementerPrecedingRoundCostUsd(
 }
 
 /**
+ * Which of a task's logged review refs, in this run, are still reachable
+ * from `tip` — an ancestor of it or equal to it — so `priorReviewBudgetOf`
+ * can tell a declaration whose round reviewed work still on the branch from
+ * one whose round reviewed work this run has since rewritten (T4.3.17).
+ *
+ * Resolved once, up front, rather than lazily inside the replay:
+ * `priorReviewBudgetOf` is a pure function over the log, and answering "is
+ * this commit still on the branch" means asking git something a pure replay
+ * cannot — the question this hands to `WorktreeManager.mergeBase`, the same
+ * primitive `catchUp`'s own conflict handling already relies on.
+ *
+ * A ref `mergeBase` cannot resolve — not a real commit, or no longer known
+ * to this checkout — answers unreachable rather than throwing (CONV-4): a
+ * declaration this cannot verify is not carried, the same as one it
+ * positively found missing.
+ */
+async function reachableDeclarationRefs(
+  worktrees: WorktreeManager,
+  taskId: string,
+  tip: string,
+  events: readonly StoredEvent[],
+  runId: string,
+): Promise<(ref: string) => boolean> {
+  const refs = new Set<string>();
+  for (const event of events) {
+    if (event.type !== 'ChangeReviewed' || event.runId !== runId) {
+      continue;
+    }
+    const payload = event.payload as { taskId: string; ref?: string };
+    if (payload.taskId === taskId && payload.ref !== undefined) {
+      refs.add(payload.ref);
+    }
+  }
+  const normalisedTip = tip.trim().toLowerCase();
+  const reachable = new Set<string>();
+  for (const ref of refs) {
+    const normalised = ref.trim().toLowerCase();
+    if (normalised === normalisedTip) {
+      reachable.add(ref);
+      continue;
+    }
+    const base = await worktrees.mergeBase(taskId, ref, tip);
+    if (base?.trim().toLowerCase() === normalised) {
+      reachable.add(ref);
+    }
+  }
+  return (ref: string) => reachable.has(ref);
+}
+
+/**
  * Run one plan task end to end.
  *
  * Returns rather than throws for every outcome an operator can act on — a
@@ -565,7 +615,19 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // this starts fresh: an operator who wants a clean slate removes the old
   // worktree and its branch, so the next acquire creates one from scratch.
   const priorBudget = worktree.branchExisted
-    ? priorReviewBudgetOf(options.log.read(), task.id, maxReviewAttempts)
+    ? priorReviewBudgetOf(
+        options.log.read(),
+        runId,
+        task.id,
+        maxReviewAttempts,
+        await reachableDeclarationRefs(
+          options.worktrees,
+          task.id,
+          worktree.base,
+          options.log.read(),
+          runId,
+        ),
+      )
     : undefined;
   // Rounds are attached by the helper rather than by each caller: a task that
   // blocked in its second round should say so wherever it stopped, and
@@ -1252,9 +1314,15 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // author that would rather fix the departure than stand behind it fixes it,
     // after which nothing reports it and nothing is carried.
     //
-    // Within the run, deliberately. A declaration made in an abandoned earlier
-    // run is about work this one may have rewritten, which is the same reason
-    // `lastReviewOf` refuses to carry a review whose commit has moved.
+    // Within the run, and only while the round's own commit is still on the
+    // branch, deliberately (T4.3.17). `priorBudget.declared` above is
+    // already scoped both ways — to this `runId` and to a round whose `ref`
+    // `reachableDeclarationRefs` found to still be an ancestor of (or equal
+    // to) this branch's tip — so what this loop folds in round by round only
+    // adds to a seed that has already excluded a declaration made in an
+    // abandoned earlier run, or against a commit this run has since
+    // rewritten; it is the same reason `lastReviewOf` refuses to carry a
+    // review whose commit has moved.
     for (const entry of latest.deviations) {
       declaredSoFar.set(
         conventionIdOf(entry.convention) ?? entry.convention.trim(),

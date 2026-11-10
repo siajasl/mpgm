@@ -28,6 +28,25 @@ import { conventionIdOf } from '../context/conventions.js';
  * declared, and whether the once-per-task declaration grace has already been
  * granted — the same answers `implementTask` itself would give if it had
  * never stopped.
+ *
+ * Scoped twice over, deliberately, because "re-invocation" means a specific
+ * thing (T4.3.17 review): the same run picking the same task back up, not
+ * every run that ever dispatched it. First, by `runId` — a `ChangeReviewed`
+ * from a different run is about a different attempt, possibly on a branch an
+ * operator has since reset and rebuilt from scratch, and carrying its rounds
+ * in would make a deliberately restarted task look like a continuation of
+ * one. Second, per declaration, by whether the commit its round reviewed is
+ * still reachable from the branch tip the caller hands in — an ancestor of it
+ * or equal to it, the same ancestry `lastReviewOf` (`prior-review.ts`) checks
+ * before carrying a review's findings forward, generalised from equality
+ * (lastReviewOf only ever carries the *last* round, which should name the
+ * tip exactly) to ancestry (this carries every round, most of which name a
+ * commit the tip has since grown past rather than one it still equals). A
+ * declaration whose commit the branch no longer contains is about work this
+ * run may have rewritten; carrying it forward would let a convention
+ * declared against discarded code satisfy `decideMerge`'s undeclared-
+ * deviation refusal for code nobody in this invocation ever declared
+ * anything about.
  */
 
 export interface PriorReviewBudget {
@@ -70,6 +89,7 @@ export interface PriorReviewBudget {
 /** `ChangeReviewed`'s payload shape, the fields this reads. */
 interface ChangeReviewedPayload {
   readonly taskId: string;
+  readonly ref: string;
   readonly approved: boolean;
   readonly declaredDeviations?: readonly string[];
   readonly undeclaredDeviations?: readonly string[];
@@ -102,11 +122,22 @@ interface ChangeReviewedPayload {
  * (`late-deviation.ts`)'s condition, and the stored `undeclaredDeviations` —
  * already computed once, at append time (`changeReviewed`, `merge.ts`) — is
  * read back rather than recomputed.
+ *
+ * `isDeclarationReachable` decides, for a round's own `ref`, whether that
+ * commit is still an ancestor of (or equal to) the branch this invocation is
+ * resuming onto — the caller's job, not this function's, since answering it
+ * means asking git something a pure replay of the log cannot (`WorktreeManager
+ * .mergeBase`). A round that fails it still counts toward `roundsSoFar`,
+ * `attempts` and `extensionSpent`: the session ran and the budget it spent is
+ * real regardless of what later happened to its commit. Only what it
+ * declared is at risk, for the reason above the type.
  */
 export function priorReviewBudgetOf(
   events: readonly StoredEvent[],
+  runId: string,
   taskId: string,
   maxReviewAttempts: number,
+  isDeclarationReachable: (ref: string) => boolean,
 ): PriorReviewBudget {
   const declared = new Map<string, string>();
   let attempts = maxReviewAttempts;
@@ -116,7 +147,7 @@ export function priorReviewBudgetOf(
   let lastRoundSeq: number | undefined;
 
   for (const event of events) {
-    if (event.type !== 'ChangeReviewed') {
+    if (event.type !== 'ChangeReviewed' || event.runId !== runId) {
       continue;
     }
     const payload = event.payload as ChangeReviewedPayload;
@@ -126,8 +157,10 @@ export function priorReviewBudgetOf(
 
     round += 1;
     lastRoundSeq = event.seq;
-    for (const entry of payload.declaredDeviations ?? []) {
-      declared.set(conventionIdOf(entry) ?? entry.trim(), entry);
+    if (isDeclarationReachable(payload.ref)) {
+      for (const entry of payload.declaredDeviations ?? []) {
+        declared.set(conventionIdOf(entry) ?? entry.trim(), entry);
+      }
     }
 
     const undeclaredCount = (payload.undeclaredDeviations ?? []).length;
