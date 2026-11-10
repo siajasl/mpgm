@@ -588,32 +588,39 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     commits: inheritedCommits,
     uncommitted: await options.worktrees.isDirty(task.id),
   };
-  // A reused checkout's `base` is its branch tip, so this is the commit the
-  // last run left — and the only one a previous review can still be about.
-  const priorReview = worktree.reused
+  // `worktree.base` is the branch's own tip whenever `branchExisted`, not
+  // only when `reused` (T4.3.17 review; `WorktreeManager.#acquire`,
+  // `worktree.ts`) — so this is the commit the last run left, and the only
+  // one a previous review can still be about, on the crash-resume path too.
+  //
+  // Gated on `branchExisted` rather than on `reused`, the same reason
+  // `priorBudget` below is (and `priorReview` used not to be, until a review
+  // of this task caught the asymmetry): `reused` answers "did `acquire` find
+  // the registration where it left it", and that comes apart from "has this
+  // task ever been dispatched" on exactly the crash this exists for.
+  // `WorktreeManager.#acquire`, on finding a registration whose directory is
+  // gone — the usual aftermath of a machine being reset under a running
+  // task — prunes it and re-adds the checkout on the branch that survives
+  // that, reporting `reused: false` even though the branch, and its review
+  // history on the log, are still there. Gating this on `reused` meant the
+  // one path this field exists for got a resumed round with no "What the
+  // last review found" section at all — worse than a fresh invocation ever
+  // got, and the opposite of what ORC-5's "resume loses nothing" asks.
+  const priorReview = worktree.branchExisted
     ? lastReviewOf(options.log.read(), task.id, worktree.base)
     : undefined;
   // What this task's review budget actually stands at — rounds spent,
   // conventions declared, the one-time declaration extension — read off the
   // same log rather than assumed fresh (T4.3.17). Gated on `branchExisted`
-  // rather than on `reused` (unlike `priorReview` and `inheritedCommits`
-  // above, deliberately): `reused` answers "did `acquire` find the
-  // registration where it left it", and that comes apart from "has this
-  // task ever been dispatched" on exactly the crash this exists for.
-  // `WorktreeManager.#acquire` (`worktree.ts`), on finding a registration
-  // whose directory is gone — the usual aftermath of a machine being reset
-  // under a running task — prunes it and re-adds the checkout on the branch
-  // that survives that, reporting `reused: false` even though the branch,
-  // and its review history on the log, are still there (T4.3.17 review).
-  // `branchExisted` is true on that path too, because it answers whether the
-  // branch was there before this call — not whether the registration agreed
-  // with disk — and is the one fact `commitsAhead` cannot safely stand in
-  // for here, unlike `inheritedCommits` above: that branch can genuinely
-  // carry zero commits yet and still have a review round logged against it
-  // (a round that reported nothing worth committing is still a round).
-  // `undefined` only when the branch is genuinely new, which is the one way
-  // this starts fresh: an operator who wants a clean slate removes the old
-  // worktree and its branch, so the next acquire creates one from scratch.
+  // for the same reason `priorReview` above now is — unlike `inheritedCommits`
+  // above, which stays on `reused` deliberately: `branchExisted` is the one
+  // fact `commitsAhead` cannot safely stand in for here, since that branch
+  // can genuinely carry zero commits yet and still have a review round
+  // logged against it (a round that reported nothing worth committing is
+  // still a round). `undefined` only when the branch is genuinely new, which
+  // is the one way this starts fresh: an operator who wants a clean slate
+  // removes the old worktree and its branch, so the next acquire creates one
+  // from scratch.
   const priorBudget = worktree.branchExisted
     ? priorReviewBudgetOf(
         options.log.read(),

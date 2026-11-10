@@ -339,9 +339,21 @@ export class WorktreeManager {
       );
     }
 
-    const base = await this.#git(['rev-parse', this.#baseRef]);
     const branchExists =
       (await this.#git(['branch', '--list', branch, '--format=%(refname:short)'])) !== '';
+    // The branch's own tip when it survived whatever dropped the
+    // registration above, not `#baseRef`'s (T4.3.17 review): a caller asking
+    // what this checkout holds — `lastReviewOf`, `priorReviewBudgetOf` — is
+    // asking about the branch it was just handed back on, and `#baseRef` is
+    // only the right answer when there is no branch yet and one is about to
+    // be cut from it. Before this, `base` was always `#baseRef`'s commit
+    // regardless, so a checkout re-added on a surviving branch after a crash
+    // reported a `base` that named the trunk, not the work the branch
+    // actually carried — silently failing every ancestry or equality check a
+    // caller ran against it.
+    const base = branchExists
+      ? await this.#git(['rev-parse', branch])
+      : await this.#git(['rev-parse', this.#baseRef]);
 
     await this.#git(
       branchExists

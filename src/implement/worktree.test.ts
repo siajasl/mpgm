@@ -186,6 +186,14 @@ describe('WorktreeManager', () => {
       expect(git(second.path, ['log', '-1', '--format=%s'])).toBe(
         'work before the machine reset',
       );
+      // `base` is what a caller resuming review state compares its own
+      // records against (`lastReviewOf`, `priorReviewBudgetOf`). It must
+      // name the branch's own tip here, not the trunk commit the branch was
+      // first cut from — the branch carried real work past that point, and
+      // a `base` naming the trunk would make every such comparison silently
+      // fail on this exact path.
+      expect(second.base).toBe(git(second.path, ['rev-parse', 'HEAD']));
+      expect(second.base).not.toBe(git(repo, ['rev-parse', 'HEAD']));
     },
   );
 

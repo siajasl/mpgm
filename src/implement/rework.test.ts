@@ -1250,6 +1250,77 @@ describe('a review that never approves (NFR-1)', () => {
     }
   });
 
+  it(
+    'carries the last review into a checkout re-added after a crash, not ' +
+      'only a reused one (T4.3.17)',
+    async () => {
+      // `reused` is false on this exact path: the registration's directory
+      // is gone, `acquire` prunes it and re-adds the checkout on the branch
+      // that survived. Before T4.3.17's review, `priorReview` was gated on
+      // `reused` alone, so a resumed round here got no "What the last
+      // review found" section at all -- worse than a fresh invocation ever
+      // got.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'left.txt'), 'from before the crash\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'what the crashed run committed']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: tip,
+          approved: false,
+          summary: 'the ledger was wrong before the crash',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: [],
+          undeclaredDeviations: [],
+        },
+      });
+
+      // The crash itself: the checkout's directory is gone, but nothing
+      // released it or deleted its branch.
+      rmSync(worktree.path, { recursive: true, force: true });
+
+      const provider = refusingProvider(tip);
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          // A round is already on the log (T1-review, above), so this
+          // resuming invocation needs a budget past it.
+          maxReviewAttempts: 2,
+        });
+
+        const authoring = provider.requests.find((request) =>
+          request.prompt.includes('Implement T1'),
+        );
+        expect(authoring?.prompt).toContain('What the last review found');
+        expect(authoring?.prompt).toContain('the ledger was wrong before the crash');
+      } finally {
+        log.close();
+      }
+    },
+  );
+
   it('records the block in the log, whatever gave up', async () => {
     // Two different paths, because the block used to be recorded only where a
     // budget ran out. Every other way the loop gives up left the fold saying
