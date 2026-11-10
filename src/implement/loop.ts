@@ -1151,8 +1151,27 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // whatever `priorBudget` already carried, not a reset of it — the
   // extension above stays spent if it was, and the round numbering below
   // still continues rather than restarting.
-  let attempts =
-    (priorBudget?.attempts ?? maxReviewAttempts) + (continuationAuthorized ? 1 : 0);
+  //
+  // The base that `+ 1` is added to is `roundsSoFar`, not `priorBudget
+  // .attempts`, once a redirect is what authorized this round — a review of
+  // this task caught the two coming apart on a *second* redirect, after the
+  // first one's granted round had already completed: `attempts` was still
+  // whatever the cap was before that round ran (it only ever grows from the
+  // once-per-task declaration extension, which this round withholds, below),
+  // while `roundsSoFar` had already moved past it, so `firstRound`
+  // (`roundsSoFar + 1`) exceeded the newly computed `attempts` and the round
+  // loop below never ran at all — a second redirect that paid for a session
+  // and produced no round, the `// Unreachable` branch at the bottom of this
+  // function reached after all. `Math.max` keeps this correct whichever of
+  // the two is actually larger, which is `attempts` on an ordinary first
+  // redirect (no round has run since the cap) and `roundsSoFar` on a second
+  // one (a round has).
+  let attempts = continuationAuthorized
+    ? Math.max(
+        priorBudget?.attempts ?? maxReviewAttempts,
+        priorBudget?.roundsSoFar ?? 0,
+      ) + 1
+    : (priorBudget?.attempts ?? maxReviewAttempts);
   // Round numbering continues where the log left off, rather than restarting
   // at 1 — the same round a reviewer and an operator reading the log would
   // call it, and what keeps a final-round guard (T4.3.8's escalation check,

@@ -3768,5 +3768,136 @@ describe('a review that never approves (NFR-1)', () => {
         }
       },
     );
+
+    it(
+      'grants a further round to a second redirect logged after the ' +
+        "first redirect's round already completed, rather than producing " +
+        'no decision (T4.3.17)',
+      async () => {
+        // A review of this task found `attempts` computed from
+        // `priorBudget.attempts` even when `continuationAuthorized`, which
+        // is only right the *first* time a redirect is used — by the
+        // second, `roundsSoFar` has already moved past `attempts` (the
+        // first redirect's round completed and was logged), so `firstRound`
+        // exceeded the newly computed `attempts` and the round loop never
+        // ran at all: a paid session dispatched by `catchUpAndResolve`/the
+        // implementer, then the `// Unreachable` branch reached after all.
+        // This drives exactly that sequence and asserts a real round 3
+        // rather than "the review loop produced no decision".
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+        const refusing = (concern: string) =>
+          scriptedSuccess({
+            ref: head,
+            verdict: 'request-changes' as const,
+            summary: 'not yet',
+            findings: [
+              {
+                file: 'README.md',
+                line: 1,
+                concern,
+                remedy: 'fix it',
+                severity: 'major' as const,
+              },
+            ],
+            deviations: [],
+          });
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          // Invocation 1, budget of one: a plain rejection exhausts it.
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('first finding'),
+          ]);
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(first.status).toBe('blocked');
+          expect(first.reason).toMatch(/still refuses the change/);
+
+          // First redirect.
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the first finding no longer applies',
+            },
+          });
+
+          // Invocation 2: the first redirect buys round 2, which also ends
+          // in a plain rejection and is logged.
+          const secondProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('second finding'),
+          ]);
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(second.status).toBe('blocked');
+          expect(second.rounds?.[0]?.round).toBe(2);
+          const afterSecond = log
+            .read()
+            .filter((event) => event.type === 'ChangeReviewed');
+          expect(afterSecond).toHaveLength(2);
+
+          // Second redirect, logged after round 2 completed.
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the second finding no longer applies either',
+            },
+          });
+
+          // Invocation 3: the second redirect must authorize exactly one
+          // further round, numbered 3 — not "the review loop produced no
+          // decision", and not a session dispatched for nothing.
+          const thirdProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('third finding'),
+          ]);
+          const third = await implementTask({
+            ...baseOptions(repo, thirdProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(third.status).toBe('blocked');
+          expect(thirdProvider.requests).toHaveLength(2);
+          expect(third.rounds).toHaveLength(1);
+          expect(third.rounds?.[0]?.round).toBe(3);
+          expect(third.reason).toMatch(/still refuses the change/);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(3);
+        } finally {
+          log.close();
+        }
+      },
+    );
   });
 });
