@@ -2524,6 +2524,87 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['TST-1', 'IMP-2', 'MNT-1'],
             },
+            {
+              id: 'T4.3.22',
+              title:
+                'A task whose last allowed round cleared review but did not ' +
+                'merge can never be resumed',
+              completionCriteria: [
+                'A task whose final allowed review round approved with ' +
+                  'nothing undeclared, but which did not merge, can be ' +
+                  'carried to a merge by re-running it once whatever stopped ' +
+                  'the merge is fixed, or the loop says what will carry it ' +
+                  'and that thing works. Today it cannot. T4.3.17 seeds the ' +
+                  'review budget from the log, and its guard in ' +
+                  'src/implement/loop.ts refuses any invocation whose ' +
+                  'budget is spent unless an operator redirect authorizes ' +
+                  'one more round, but continuationAuthorized is gated on ' +
+                  '!priorBudget.lastRoundAllowed. So a task whose last ' +
+                  'allowed round cleared review is refused on every later ' +
+                  'invocation: a redirect cannot reopen it, and fixing the ' +
+                  'merge-side cause -- a dirty or diverged trunk, a failed ' +
+                  'fetch, a real content conflict -- and re-running refuses ' +
+                  'again, forever. The refusal message names mpgm ' +
+                  'record-merge, which only fits a change an operator has ' +
+                  'already merged by hand; for one nobody has merged there ' +
+                  'is no lever at all.',
+                'Found by the reviewer of T4.3.17 itself, in both of its ' +
+                  'approving rounds, not supposed. Its first approving ' +
+                  'review inverted both halves of the lastRoundAllowed ' +
+                  'branch (the gate and the message selector) and all 83 ' +
+                  'tests in rework.test.ts and review-budget.test.ts still ' +
+                  'passed: lastRoundAllowed is asserted only as a field of ' +
+                  'priorReviewBudgetOf, and nothing drives implementTask ' +
+                  'into the state where the guard picks that arm.',
+                'The misclassification makes it worse, and the change must ' +
+                  'account for it rather than inherit it. review-budget.ts ' +
+                  'documents that a round decideMerge refused as ' +
+                  'review-is-stale is appended to the log as approved with ' +
+                  'nothing undeclared, and the replay cannot tell it from a ' +
+                  'round decideMerge actually allowed, because the tip it ' +
+                  'compared against is never logged. So a stale-ref round ' +
+                  "that happens to be a task's last allowed round reads as " +
+                  'lastRoundAllowed, and the resumed invocation tells the ' +
+                  'operator review has nothing left to do when review is ' +
+                  'exactly what is missing -- and refuses the redirect that ' +
+                  'would have bought it.',
+                'The change picks between letting a re-run whose last round ' +
+                  'cleared review retry the merge alone -- re-reading checks ' +
+                  'and the gate against the current tip, with no new review ' +
+                  'session -- letting an operator redirect reopen such a ' +
+                  'task for one round the way it reopens an exhausted one, ' +
+                  'and logging what decideMerge decided per round so the ' +
+                  'replay stops guessing. It says which and prices the ones ' +
+                  'it refused. The first is cheapest, but it must merge only ' +
+                  'what a reviewer approved: if the branch tip is not the ' +
+                  'commit the approving round reviewed (namesCommit, not ' +
+                  'string equality), it is not a merge retry. The third ' +
+                  'closes the stale-ref gap at its source but adds an event ' +
+                  'or field, which is a schema change and says so.',
+                'It must not weaken T4.3.17. A spent review budget still ' +
+                  'refuses a new review round without a redirect, one ' +
+                  'redirect still buys exactly one round, the declaration ' +
+                  'grace is still withheld from a redirect-granted round, ' +
+                  'and nothing here becomes a way to merge a change no ' +
+                  'reviewer approved at the commit being merged. Absence is ' +
+                  'not success (IMP-2): a retried merge re-reads the ' +
+                  'required checks rather than reusing the verdict the ' +
+                  'earlier round saw.',
+                'The tests drive implementTask through the loop, not the ' +
+                  'budget function. One: a task whose last allowed round ' +
+                  'approved and whose merge was refused for a merge-side ' +
+                  'cause is re-run after that cause is cleared, and reaches ' +
+                  'the outcome the change states -- merged, or reopened by a ' +
+                  'redirect -- where today it is refused. Two: the same ' +
+                  'state with the branch tip moved past the approved commit ' +
+                  'does not merge. Each fails if the lastRoundAllowed gate ' +
+                  'or its message selector is inverted, which today breaks ' +
+                  'nothing. A test that only asserts the refusal message ' +
+                  'names record-merge is the test this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['ORC-5', 'IMP-3', 'IMP-2'],
+            },
           ],
         },
       ],
