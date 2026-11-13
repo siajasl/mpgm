@@ -313,6 +313,14 @@ export const designSchema = z
   }, 'design element ids must be unique across the whole design');
 
 /**
+ * The parsed shape of {@link designSchema}, named for the same reason every
+ * other schema in this file gets one: `scripts/demo/probe-sdk.mjs` needs it
+ * to type the fixture it parses `designSchema` against in place of a live
+ * call (T4.3.20, `src/agent/probe.ts`).
+ */
+export type Design = z.infer<typeof designSchema>;
+
+/**
  * Every id the design declares, in the order they appear.
  *
  * Downstream artifacts cite these, so they are the design's public surface
