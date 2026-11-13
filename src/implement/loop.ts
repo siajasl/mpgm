@@ -28,7 +28,7 @@ import {
 } from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
-import { reconcileRef } from './commit-ref.js';
+import { namesCommit, reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview } from './prior-review.js';
 import { priorReviewBudgetOf, redirectAuthorizesContinuation } from './review-budget.js';
 import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
@@ -455,16 +455,14 @@ async function reachableDeclarationRefs(
       refs.add(payload.ref);
     }
   }
-  const normalisedTip = tip.trim().toLowerCase();
   const reachable = new Set<string>();
   for (const ref of refs) {
-    const normalised = ref.trim().toLowerCase();
-    if (normalised === normalisedTip) {
+    if (namesCommit(ref, tip)) {
       reachable.add(ref);
       continue;
     }
     const base = await worktrees.mergeBase(taskId, ref, tip);
-    if (base?.trim().toLowerCase() === normalised) {
+    if (base !== undefined && namesCommit(ref, base)) {
       reachable.add(ref);
     }
   }

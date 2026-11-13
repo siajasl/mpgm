@@ -1514,6 +1514,196 @@ describe('a review that never approves (NFR-1)', () => {
     },
   );
 
+  it(
+    'carries a declaration whose round named the branch tip by a 7-character ' +
+      'abbreviation, not only a full ref (T4.3.17)',
+    async () => {
+      // `reachableDeclarationRefs`' equality shortcut used to compare
+      // `ref.trim().toLowerCase()` against the tip's own string, so an
+      // abbreviated ref could never equal a 40-character tip even when it
+      // named the very same commit. 26 of this project's own 195
+      // `ChangeReviewed` events store a 7-character ref, which is what
+      // `namesCommit` exists to recognise as still naming the tip.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      // The branch has not moved since round one, so the tip this
+      // invocation reads at `acquire` time is exactly the commit round one
+      // reviewed — reported here in its 7-character abbreviation.
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+      const abbreviated = tip.slice(0, 7);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: abbreviated,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['round-one.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'round-one.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          // If CONV-1 carried from the abbreviated round-one ref, only
+          // CONV-6 is left undeclared.
+          deviations: [
+            { convention: 'CONV-1', where: 'round-one.txt' },
+            { convention: 'CONV-6', where: 'round-one.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'carries a declaration whose round named an ancestor of the branch tip ' +
+      'by a 7-character abbreviation, not only a full ref (T4.3.17)',
+    async () => {
+      // Same gap as the equality-shortcut case above, on the
+      // `WorktreeManager.mergeBase` branch instead: `mergeBase` always
+      // answers a full 40-character object name, so comparing it against an
+      // abbreviated ref with raw string equality never matches even when the
+      // abbreviation names that very ancestor.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      const roundOneRef = git(worktree.path, ['rev-parse', 'HEAD']);
+      const abbreviated = roundOneRef.slice(0, 7);
+      writeFileSync(join(worktree.path, 'round-two.txt'), 'round two\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round two, left uncommitted by review']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: abbreviated,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['round-two.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'round-two.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          deviations: [
+            { convention: 'CONV-1', where: 'round-one.txt' },
+            { convention: 'CONV-6', where: 'round-two.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
   it('records the block in the log, whatever gave up', async () => {
     // Two different paths, because the block used to be recorded only where a
     // budget ran out. Every other way the loop gives up left the fold saying
