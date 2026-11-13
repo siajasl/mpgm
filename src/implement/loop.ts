@@ -747,7 +747,9 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
               `this checkout is not on '${into}' yet, something other than review is ` +
               `what is stopping it — check why 'mergeChange' itself refused (a dirty ` +
               `or diverged '${into}', a real content conflict) rather than resuming ` +
-              `the review loop, which has nothing left to do here.`
+              `the review loop, which has nothing left to do here. If an operator has ` +
+              `since merged this by hand, record that with 'mpgm record-merge ${task.id} ` +
+              `--commit <sha> --by <who>' instead of re-running.`
           : `${task.id}: this task's review budget was already exhausted in an earlier ` +
               `invocation — ${String(priorBudget.roundsSoFar)} round(s) taken against ` +
               `${String(priorBudget.attempts)} allowed` +
