@@ -88,7 +88,13 @@ export interface Worktree {
   readonly branch: string;
   /** Absolute path to the isolated checkout. */
   readonly path: string;
-  /** The commit the branch started from. */
+  /**
+   * The branch's own tip (`rev-parse <branch>`) when the branch already
+   * existed before this `acquire` call, and the base ref's commit — what the
+   * branch was created from — when `acquire` created it in this call
+   * (T4.3.17). The two loop callers that read this depend on the first
+   * meaning: a resumed task needs its own history, not where it forked from.
+   */
   readonly base: string;
   /**
    * True when the checkout was already there and has been handed back as-is.
