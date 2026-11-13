@@ -88,7 +88,13 @@ export interface Worktree {
   readonly branch: string;
   /** Absolute path to the isolated checkout. */
   readonly path: string;
-  /** The commit the branch started from. */
+  /**
+   * The branch's own tip (`rev-parse <branch>`) when the branch already
+   * existed before this `acquire` call, and the base ref's commit — what the
+   * branch was created from — when `acquire` created it in this call
+   * (T4.3.17). The two loop callers that read this depend on the first
+   * meaning: a resumed task needs its own history, not where it forked from.
+   */
   readonly base: string;
   /**
    * True when the checkout was already there and has been handed back as-is.
@@ -99,6 +105,23 @@ export interface Worktree {
    * to re-read the diff — get told.
    */
   readonly reused: boolean;
+  /**
+   * True when this task's branch already existed before this `acquire` call,
+   * whether or not the checkout handed back is the same directory as last
+   * time (T4.3.17).
+   *
+   * `reused` answers whether `acquire` found its own registration where it
+   * left it; this answers whether the task has ever been dispatched at all,
+   * and the two come apart on exactly the crash a caller needs to tell apart
+   * from a genuine restart: a registration whose directory is gone — the
+   * usual aftermath of a machine being reset under a running task — is
+   * pruned and the checkout is re-added on the branch that survives that
+   * (below), which is `reused: false` even though the branch, and everything
+   * recorded against it on the event log, is still there. `false` only when
+   * the branch is created fresh in this same call, which is the one case
+   * nothing from an earlier attempt could have survived onto.
+   */
+  readonly branchExisted: boolean;
 }
 
 /** One entry of `git worktree list`. */
@@ -304,6 +327,7 @@ export class WorktreeManager {
         path: existing.path,
         base: await this.#git(['rev-parse', 'HEAD'], existing.path),
         reused: true,
+        branchExisted: true,
       };
     }
     if (existing !== undefined) {
@@ -321,9 +345,21 @@ export class WorktreeManager {
       );
     }
 
-    const base = await this.#git(['rev-parse', this.#baseRef]);
     const branchExists =
       (await this.#git(['branch', '--list', branch, '--format=%(refname:short)'])) !== '';
+    // The branch's own tip when it survived whatever dropped the
+    // registration above, not `#baseRef`'s (T4.3.17 review): a caller asking
+    // what this checkout holds — `lastReviewOf`, `priorReviewBudgetOf` — is
+    // asking about the branch it was just handed back on, and `#baseRef` is
+    // only the right answer when there is no branch yet and one is about to
+    // be cut from it. Before this, `base` was always `#baseRef`'s commit
+    // regardless, so a checkout re-added on a surviving branch after a crash
+    // reported a `base` that named the trunk, not the work the branch
+    // actually carried — silently failing every ancestry or equality check a
+    // caller ran against it.
+    const base = branchExists
+      ? await this.#git(['rev-parse', branch])
+      : await this.#git(['rev-parse', this.#baseRef]);
 
     await this.#git(
       branchExists
@@ -331,7 +367,7 @@ export class WorktreeManager {
         : ['worktree', 'add', '-b', branch, path, base],
     );
 
-    return { taskId, branch, path, base, reused: false };
+    return { taskId, branch, path, base, reused: false, branchExisted: branchExists };
   }
 
   /**

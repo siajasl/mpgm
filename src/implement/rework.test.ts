@@ -1118,7 +1118,11 @@ describe('a review that never approves (NFR-1)', () => {
       await implementTask({
         ...baseOptions(repo, provider, log),
         worktrees,
-        maxReviewAttempts: 1,
+        // 2, not 1: a round is already on the log (T1-review-3, above), and
+        // since T4.3.17 that counts against the budget rather than being
+        // reset by this resuming invocation — so a budget of 1 would refuse
+        // before dispatching anything, which is a different test.
+        maxReviewAttempts: 2,
       });
 
       const authoring = provider.requests.find((request) =>
@@ -1177,7 +1181,10 @@ describe('a review that never approves (NFR-1)', () => {
       await implementTask({
         ...baseOptions(repo, provider, log),
         worktrees,
-        maxReviewAttempts: 1,
+        // 2, not 1, for the same reason as the test above: a round is
+        // already on the log, and since T4.3.17 it counts against the
+        // budget this resuming invocation gets.
+        maxReviewAttempts: 2,
       });
 
       const authoring = provider.requests.find((request) =>
@@ -1242,6 +1249,460 @@ describe('a review that never approves (NFR-1)', () => {
       log.close();
     }
   });
+
+  it(
+    'carries the last review into a checkout re-added after a crash, not ' +
+      'only a reused one (T4.3.17)',
+    async () => {
+      // `reused` is false on this exact path: the registration's directory
+      // is gone, `acquire` prunes it and re-adds the checkout on the branch
+      // that survived. Before T4.3.17's review, `priorReview` was gated on
+      // `reused` alone, so a resumed round here got no "What the last
+      // review found" section at all -- worse than a fresh invocation ever
+      // got.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'left.txt'), 'from before the crash\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'what the crashed run committed']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: tip,
+          approved: false,
+          summary: 'the ledger was wrong before the crash',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: [],
+          undeclaredDeviations: [],
+        },
+      });
+
+      // The crash itself: the checkout's directory is gone, but nothing
+      // released it or deleted its branch.
+      rmSync(worktree.path, { recursive: true, force: true });
+
+      const provider = refusingProvider(tip);
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          // A round is already on the log (T1-review, above), so this
+          // resuming invocation needs a budget past it.
+          maxReviewAttempts: 2,
+        });
+
+        const authoring = provider.requests.find((request) =>
+          request.prompt.includes('Implement T1'),
+        );
+        expect(authoring?.prompt).toContain('What the last review found');
+        expect(authoring?.prompt).toContain('the ledger was wrong before the crash');
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'carries a declaration whose round reviewed a commit still an ' +
+      'ancestor of the branch tip, not only one it names exactly (T4.3.17)',
+    async () => {
+      // Every test of the declared-set carry up to this one logs a round
+      // whose `ref` equals the branch tip at replay time, which answers
+      // through `reachableDeclarationRefs`'s equality shortcut and never
+      // calls `WorktreeManager.mergeBase` at all — the normal case for every
+      // round but the last of a real task, where the branch has moved on
+      // since. This puts a real commit between the declaring round's `ref`
+      // and the tip, so only the ancestry branch can answer it.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      const roundOneRef = git(worktree.path, ['rev-parse', 'HEAD']);
+      writeFileSync(join(worktree.path, 'round-two.txt'), 'round two\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round two, left uncommitted by review']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: roundOneRef,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['round-two.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'round-two.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          // The reviewer reports both conventions as present in the branch.
+          // If CONV-1 carried from round one, only CONV-6 is left undeclared.
+          deviations: [
+            { convention: 'CONV-1', where: 'round-one.txt' },
+            { convention: 'CONV-6', where: 'round-two.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'does not carry a declaration whose round reviewed a commit the ' +
+      'branch no longer contains, once it has been reset past it (T4.3.17)',
+    async () => {
+      const repo = newRepo();
+      const trunk = git(repo, ['rev-parse', 'HEAD']);
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      const roundOneRef = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      // The branch is reset past the declaring round's commit, the same
+      // way an operator resetting and rebuilding a branch from scratch
+      // would: `roundOneRef` is no longer reachable from the new tip.
+      git(worktree.path, ['reset', '--hard', trunk]);
+      writeFileSync(join(worktree.path, 'rewritten.txt'), 'a different round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'a rewritten round one']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: roundOneRef,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['rewritten.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'rewritten.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          deviations: [
+            { convention: 'CONV-1', where: 'rewritten.txt' },
+            { convention: 'CONV-6', where: 'rewritten.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        // CONV-1 is reported undeclared again: the round that declared it
+        // reviewed work this branch no longer carries.
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-1', 'CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'carries a declaration whose round named the branch tip by a 7-character ' +
+      'abbreviation, not only a full ref (T4.3.17)',
+    async () => {
+      // `reachableDeclarationRefs`' equality shortcut used to compare
+      // `ref.trim().toLowerCase()` against the tip's own string, so an
+      // abbreviated ref could never equal a 40-character tip even when it
+      // named the very same commit. 26 of this project's own 195
+      // `ChangeReviewed` events store a 7-character ref, which is what
+      // `namesCommit` exists to recognise as still naming the tip.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      // The branch has not moved since round one, so the tip this
+      // invocation reads at `acquire` time is exactly the commit round one
+      // reviewed — reported here in its 7-character abbreviation.
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+      const abbreviated = tip.slice(0, 7);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: abbreviated,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['round-one.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'round-one.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          // If CONV-1 carried from the abbreviated round-one ref, only
+          // CONV-6 is left undeclared.
+          deviations: [
+            { convention: 'CONV-1', where: 'round-one.txt' },
+            { convention: 'CONV-6', where: 'round-one.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'carries a declaration whose round named an ancestor of the branch tip ' +
+      'by a 7-character abbreviation, not only a full ref (T4.3.17)',
+    async () => {
+      // Same gap as the equality-shortcut case above, on the
+      // `WorktreeManager.mergeBase` branch instead: `mergeBase` always
+      // answers a full 40-character object name, so comparing it against an
+      // abbreviated ref with raw string equality never matches even when the
+      // abbreviation names that very ancestor.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'round-one.txt'), 'round one\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round one']);
+      const roundOneRef = git(worktree.path, ['rev-parse', 'HEAD']);
+      const abbreviated = roundOneRef.slice(0, 7);
+      writeFileSync(join(worktree.path, 'round-two.txt'), 'round two\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'round two, left uncommitted by review']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'TaskDispatched',
+        payload: { taskId: 'T1', role: 'implementer', model: 'claude-sonnet-5' },
+      });
+      log.append({
+        runId: 'r',
+        type: 'ChangeReviewed',
+        payload: {
+          taskId: 'T1',
+          reviewTaskId: 'T1-review',
+          reviewerRole: 'code-reviewer',
+          ref: abbreviated,
+          approved: false,
+          summary: 'round one asked for changes and the author declared CONV-1',
+          findings: 1,
+          deviations: [],
+          declaredDeviations: ['CONV-1'],
+          undeclaredDeviations: [],
+        },
+      });
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['round-two.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'request-changes',
+          summary: 'still not right',
+          findings: [
+            { file: 'round-two.txt', concern: 'no', remedy: 'yes', severity: 'blocker' },
+          ],
+          deviations: [
+            { convention: 'CONV-1', where: 'round-one.txt' },
+            { convention: 'CONV-6', where: 'round-two.txt' },
+          ],
+        }),
+      ]);
+
+      try {
+        await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 2,
+        });
+
+        const reviewed = log
+          .read()
+          .filter((event) => event.type === 'ChangeReviewed')
+          .at(-1);
+        expect(
+          (reviewed?.payload as { undeclaredDeviations: string[] }).undeclaredDeviations,
+        ).toStrictEqual(['CONV-6']);
+      } finally {
+        log.close();
+      }
+    },
+  );
 
   it('records the block in the log, whatever gave up', async () => {
     // Two different paths, because the block used to be recorded only where a
@@ -3123,5 +3584,703 @@ describe('a review that never approves (NFR-1)', () => {
         log.close();
       }
     });
+  });
+
+  describe('a task re-invoked after it blocks gets no fresh budget (T4.3.17)', () => {
+    it(
+      'does not start the second invocation at round one with an unspent ' +
+        'extension and an empty declared set',
+      async () => {
+        // Invocation 1, budget of one: round 1 approves reporting CONV-1
+        // undeclared, which earns the once-per-task grace at the cap. The
+        // author declares CONV-1 in that grace round — the one thing a
+        // resumed invocation must not forget it paid for. Round 2 (the new
+        // cap the grace bought) approves again, this time reporting CONV-1
+        // (now declared, so excluded) and a fresh CONV-6 (not), and the
+        // extension is already spent — so this exhausts the budget rather
+        // than earning a second grace, and the task blocks.
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+        const approvingWith = (...conventions: string[]) =>
+          scriptedSuccess({
+            ref: head,
+            verdict: 'approve',
+            summary: 'good',
+            findings: [],
+            deviations: conventions.map((convention) => ({
+              convention,
+              where: 'the branch',
+            })),
+          });
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            approvingWith('CONV-1'),
+            // The grace round: the author declares it.
+            scriptedSuccess({
+              ...change,
+              deviations: [{ convention: 'CONV-1', why: 'the loop made them' }],
+            }),
+            approvingWith('CONV-1', 'CONV-6'),
+          ]);
+
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          // The premise: the first invocation genuinely exhausted its
+          // budget, extension included, rather than merging or refusing for
+          // some unrelated reason.
+          expect(first.status).toBe('blocked');
+          expect(first.rounds).toHaveLength(2);
+          expect(first.reason).toMatch(/held for want of a declaration/);
+          expect(first.reason).toContain('CONV-6');
+
+          // Invocation 2: the same task, the same branch, the same log — and
+          // nothing scripted at all. If the second invocation treats this as
+          // round one of a fresh three-round budget, as it did before
+          // T4.3.17, it dispatches an implementing session here and
+          // `ScriptedProvider` throws rather than this test passing on a
+          // round it never checked.
+          const secondProvider = new ScriptedProvider([]);
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          expect(second.status).toBe('blocked');
+          // Nothing dispatched: the loop recognised the budget was already
+          // spent before authoring a thing, let alone reviewing it.
+          expect(secondProvider.requests).toHaveLength(0);
+          // The round count did not restart at one, the extension is not
+          // reported as available again, and the declared set — CONV-1,
+          // paid for in invocation 1's grace round — is not forgotten.
+          expect(second.reason).toMatch(/2 round\(s\) taken against 2 allowed/);
+          expect(second.reason).toMatch(/extension already granted and spent/);
+          expect(second.reason).toMatch(/does not grant a fresh budget/);
+
+          // Only two `ChangeReviewed` events exist in the whole log: the
+          // second invocation took no round of its own to add a third.
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
+
+    it(
+      "carries a prior invocation's declaration into the resumed round, so " +
+        'the gate does not ask for it again (T4.3.17)',
+      async () => {
+        // Invocation 1, budget of one: round 1 is a plain rejection (a
+        // blocker finding), not an approval, so it earns no grace — but the
+        // author declares CONV-1 in that same round, and the reviewer
+        // reports it too. That declaration is the one thing a resumed round
+        // must not have to pay for twice.
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess({
+              ...change,
+              deviations: [{ convention: 'CONV-1', why: 'the loop made them' }],
+            }),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'request-changes',
+              summary: 'not yet',
+              findings: [
+                {
+                  file: 'README.md',
+                  line: 1,
+                  concern: 'the ledger is wrong',
+                  remedy: 'correct it',
+                  severity: 'blocker' as const,
+                },
+              ],
+              deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+            }),
+          ]);
+
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          // The premise: invocation 1 blocked on the review itself refusing
+          // the change, not on the budget running out — one round of one
+          // was spent, and CONV-1 is on the log as declared.
+          expect(first.status).toBe('blocked');
+          expect(first.rounds).toHaveLength(1);
+          expect(first.reason).toMatch(/still refuses the change/);
+
+          // Invocation 2, a budget of two: its one round should be numbered
+          // 2, and its author declares nothing new. If the gate still
+          // asks for CONV-1 — because `declaredSoFar` started empty rather
+          // than carrying what invocation 1 already paid for — the reviewer
+          // reporting CONV-1 again earns a fresh declaration round that
+          // this script does not provide for, and `ScriptedProvider` throws
+          // rather than this test passing on a round it never checked.
+          const secondProvider = new ScriptedProvider([
+            scriptedSuccess({ ...change, deviations: [] }),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'approve',
+              summary: 'good',
+              findings: [],
+              deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+            }),
+          ]);
+
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 2,
+          });
+
+          // Merges only because CONV-1 was already declared: nothing in
+          // invocation 2's own script declares it, so an empty seed would
+          // have reported it undeclared and refused the merge instead.
+          expect(second.status).toBe('merged');
+          expect(secondProvider.requests).toHaveLength(2);
+          expect(second.rounds).toHaveLength(1);
+          expect(second.rounds?.[0]?.round).toBe(2);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
+
+    it(
+      'denies a second grace round the log says was already spent, even ' +
+        'when a fresh invocation would have granted one (T4.3.17)',
+      async () => {
+        // Invocation 1, budget of one: round 1 approves while reporting
+        // CONV-1 undeclared, which earns the once-per-task grace at the cap
+        // — `extensionSpent` becomes true and `attempts` becomes two,
+        // purely as this invocation's own local state. It never spends
+        // round 2 itself: CI for round 2 reports nothing covering any
+        // required check at all, which `repairUntilGreen` treats as
+        // unrepairable without dispatching a session, so invocation 1 ends
+        // having logged exactly one `ChangeReviewed` — the one the grace was
+        // computed from.
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+
+        let checksCalls = 0;
+        const checks = (ref: string) => {
+          checksCalls += 1;
+          return Promise.resolve(
+            checksCalls === 1
+              ? mergeVerdict({ ref, runs: GREEN })
+              : mergeVerdict({ ref, runs: [] }),
+          );
+        };
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess({ ...change, deviations: [] }),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'approve',
+              summary: 'good',
+              findings: [],
+              deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+            }),
+            // The grace round the approval above just earned: the author
+            // declares CONV-1 rather than changing anything. This still
+            // runs inside round 1's own iteration — the loop dispatches it
+            // immediately rather than waiting for a second one — so CI's
+            // next read (below) is for round 2's review, not round 1's.
+            scriptedSuccess({
+              ...change,
+              deviations: [{ convention: 'CONV-1', why: 'the loop made them' }],
+            }),
+          ]);
+
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+            checks,
+          });
+
+          // The premise: invocation 1 blocked on CI for round 2, with the
+          // grace already granted and exactly one round on the log.
+          expect(first.status).toBe('blocked');
+          expect(first.rounds).toHaveLength(1);
+          expect(first.reason).toMatch(/CI did not go green/);
+          const firstReviewed = log
+            .read()
+            .filter((event) => event.type === 'ChangeReviewed');
+          expect(firstReviewed).toHaveLength(1);
+
+          // Invocation 2, the same budget of one: replaying that one round
+          // correctly recovers `extensionSpent: true` and `attempts: 2`, so
+          // its own round 2 — the grace round, where the author declares
+          // CONV-1 — is this task's *last* round, not a fresh grace round's
+          // first. If `extensionSpent` had reset to `false`, as it did
+          // before T4.3.17, this round would look identical to a fresh
+          // round 1 reporting a never-seen deviation: the loop would grant
+          // a second grace rather than deny one already spent, and the
+          // rework round that grant buys is not in this script —
+          // `ScriptedProvider` throws rather than this test passing on a
+          // round it never checked.
+          const secondProvider = new ScriptedProvider([
+            scriptedSuccess({
+              ...change,
+              deviations: [{ convention: 'CONV-1', why: 'the loop made them' }],
+            }),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'approve',
+              summary: 'good',
+              findings: [],
+              deviations: [
+                { convention: 'CONV-1', where: 'the branch' },
+                { convention: 'CONV-6', where: 'the branch' },
+              ],
+            }),
+          ]);
+
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          expect(second.status).toBe('blocked');
+          expect(secondProvider.requests).toHaveLength(2);
+          expect(second.reason).toMatch(/held for want of a declaration/);
+          expect(second.reason).toContain('CONV-6');
+          expect(second.reason).toMatch(/already spent/);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
+
+    it(
+      'grants exactly one further round to a redirect logged after the ' +
+        'budget was exhausted, and refuses a later re-invocation with no ' +
+        'new redirect (T4.3.17)',
+      async () => {
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+        const refusing = (concern: string) =>
+          scriptedSuccess({
+            ref: head,
+            verdict: 'request-changes' as const,
+            summary: 'not yet',
+            findings: [
+              {
+                file: 'README.md',
+                line: 1,
+                concern,
+                remedy: 'fix it',
+                severity: 'major' as const,
+              },
+            ],
+            deviations: [],
+          });
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          // Invocation 1, budget of one: a plain rejection earns no grace,
+          // so the task's one round is also its last.
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('first finding'),
+          ]);
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(first.status).toBe('blocked');
+          expect(first.rounds).toHaveLength(1);
+          expect(first.reason).toMatch(/still refuses the change/);
+
+          // Invocation 2, with no redirect logged yet: refused before
+          // dispatch, same as a plain re-invocation.
+          const noRedirectYet = await implementTask({
+            ...baseOptions(repo, new ScriptedProvider([]), log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(noRedirectYet.status).toBe('blocked');
+          expect(noRedirectYet.reason).toMatch(/does not grant a fresh budget/);
+
+          // An operator judges the finding settled and redirects the task.
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the finding no longer applies',
+            },
+          });
+
+          // Invocation 3: the redirect authorises exactly one further
+          // round, numbered 2 rather than restarting at 1. It is scripted
+          // as another plain rejection, so it exhausts the (unchanged)
+          // budget again rather than merging — the shape the next
+          // invocation's refusal is checked against.
+          const thirdProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('second finding'),
+          ]);
+          const third = await implementTask({
+            ...baseOptions(repo, thirdProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(third.status).toBe('blocked');
+          expect(thirdProvider.requests).toHaveLength(2);
+          expect(third.rounds).toHaveLength(1);
+          expect(third.rounds?.[0]?.round).toBe(2);
+          expect(third.reason).toMatch(/still refuses the change/);
+
+          // Invocation 4: the same redirect does not authorise a second
+          // continuation. Nothing is dispatched.
+          const fourthProvider = new ScriptedProvider([]);
+          const fourth = await implementTask({
+            ...baseOptions(repo, fourthProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(fourth.status).toBe('blocked');
+          expect(fourthProvider.requests).toHaveLength(0);
+          expect(fourth.reason).toMatch(/does not grant a fresh budget/);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
+
+    it(
+      'does not let the one redirect-granted round also earn the once-per-' +
+        'task declaration grace (T4.3.17)',
+      async () => {
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          // Invocation 1, budget of one: a plain rejection exhausts the
+          // budget without ever earning the grace, so `extensionSpent` is
+          // still false going into the redirect.
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'request-changes',
+              summary: 'not yet',
+              findings: [
+                {
+                  file: 'README.md',
+                  line: 1,
+                  concern: 'the ledger is wrong',
+                  remedy: 'correct it',
+                  severity: 'blocker' as const,
+                },
+              ],
+              deviations: [],
+            }),
+          ]);
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(first.status).toBe('blocked');
+          expect(first.reason).toMatch(/still refuses the change/);
+
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the finding no longer applies',
+            },
+          });
+
+          // Invocation 2: the redirect buys one round. That round approves
+          // while reporting CONV-1 as undeclared for the first time ever on
+          // this task — the shape that would ordinarily earn the once-per-
+          // task grace at the cap. If this round could also earn it, the
+          // loop would dispatch a third session declaring CONV-1, which
+          // this script does not provide for, and `ScriptedProvider` would
+          // throw rather than this test passing on a round it never
+          // checked.
+          const secondProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            scriptedSuccess({
+              ref: head,
+              verdict: 'approve',
+              summary: 'good',
+              findings: [],
+              deviations: [{ convention: 'CONV-1', where: 'the branch' }],
+            }),
+          ]);
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+
+          expect(second.status).toBe('blocked');
+          expect(secondProvider.requests).toHaveLength(2);
+          expect(second.rounds).toHaveLength(1);
+          expect(second.rounds?.[0]?.round).toBe(2);
+          // Held for want of a declaration, not refused outright — the
+          // reviewer approved it — but not granted a further round either:
+          // the message says the redirect's one round does not also buy the
+          // grace, rather than claiming an extension was already spent that
+          // this task, in fact, never used.
+          expect(second.reason).toMatch(/held for want of a declaration/);
+          expect(second.reason).toContain('CONV-1');
+          expect(second.reason).toMatch(/does not also buy the once-per-task/);
+          expect(second.reason).not.toMatch(/already spent/);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(2);
+        } finally {
+          log.close();
+        }
+      },
+    );
+
+    it(
+      'grants a further round to a second redirect logged after the ' +
+        "first redirect's round already completed, rather than producing " +
+        'no decision (T4.3.17)',
+      async () => {
+        // A review of this task found `attempts` computed from
+        // `priorBudget.attempts` even when `continuationAuthorized`, which
+        // is only right the *first* time a redirect is used — by the
+        // second, `roundsSoFar` has already moved past `attempts` (the
+        // first redirect's round completed and was logged), so `firstRound`
+        // exceeded the newly computed `attempts` and the round loop never
+        // ran at all: a paid session dispatched by `catchUpAndResolve`/the
+        // implementer, then the `// Unreachable` branch reached after all.
+        // This drives exactly that sequence and asserts a real round 3
+        // rather than "the review loop produced no decision".
+        const repo = newRepo();
+        const worktrees = new WorktreeManager({ repo });
+        const head = git(repo, ['rev-parse', 'HEAD']);
+        const change = {
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        };
+        const refusing = (concern: string) =>
+          scriptedSuccess({
+            ref: head,
+            verdict: 'request-changes' as const,
+            summary: 'not yet',
+            findings: [
+              {
+                file: 'README.md',
+                line: 1,
+                concern,
+                remedy: 'fix it',
+                severity: 'major' as const,
+              },
+            ],
+            deviations: [],
+          });
+
+        const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+
+        try {
+          // Invocation 1, budget of one: a plain rejection exhausts it.
+          const firstProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('first finding'),
+          ]);
+          const first = await implementTask({
+            ...baseOptions(repo, firstProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(first.status).toBe('blocked');
+          expect(first.reason).toMatch(/still refuses the change/);
+
+          // First redirect.
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the first finding no longer applies',
+            },
+          });
+
+          // Invocation 2: the first redirect buys round 2, which also ends
+          // in a plain rejection and is logged.
+          const secondProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('second finding'),
+          ]);
+          const second = await implementTask({
+            ...baseOptions(repo, secondProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(second.status).toBe('blocked');
+          expect(second.rounds?.[0]?.round).toBe(2);
+          const afterSecond = log
+            .read()
+            .filter((event) => event.type === 'ChangeReviewed');
+          expect(afterSecond).toHaveLength(2);
+
+          // Second redirect, logged after round 2 completed.
+          log.append({
+            runId: 'r',
+            type: 'OperatorIntervened',
+            payload: {
+              action: 'redirect',
+              taskId: 'T1',
+              detail: 'the second finding no longer applies either',
+            },
+          });
+
+          // Invocation 3: the second redirect must authorize exactly one
+          // further round, numbered 3 — not "the review loop produced no
+          // decision", and not a session dispatched for nothing.
+          const thirdProvider = new ScriptedProvider([
+            scriptedSuccess(change),
+            refusing('third finding'),
+          ]);
+          const third = await implementTask({
+            ...baseOptions(repo, thirdProvider, log),
+            worktrees,
+            maxReviewAttempts: 1,
+          });
+          expect(third.status).toBe('blocked');
+          expect(thirdProvider.requests).toHaveLength(2);
+          expect(third.rounds).toHaveLength(1);
+          expect(third.rounds?.[0]?.round).toBe(3);
+          expect(third.reason).toMatch(/still refuses the change/);
+
+          const reviewed = log.read().filter((event) => event.type === 'ChangeReviewed');
+          expect(reviewed).toHaveLength(3);
+        } finally {
+          log.close();
+        }
+      },
+    );
   });
 });
