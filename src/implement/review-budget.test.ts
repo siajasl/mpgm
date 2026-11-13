@@ -166,6 +166,43 @@ describe('priorReviewBudgetOf', () => {
       expect(budget.lastRoundAllowed).toBe(true);
     },
   );
+
+  it(
+    'answers lastRoundSeq as this run’s last matching round, not the first ' +
+      'and not one from another task or another run (T4.3.17)',
+    () => {
+      // Distinct, deliberately out-of-order-looking seqs so that returning
+      // the first match, the count of matches, or a stray other task's or
+      // other run's round would all produce a different, wrong number than
+      // the real boundary at seq 40.
+      const events = [
+        changeReviewed({ taskId: 'T1', approved: false }, { seq: 10 }),
+        // A later round for an unrelated task must not move the answer.
+        changeReviewed({ taskId: 'T2', approved: false }, { seq: 20 }),
+        changeReviewed({ taskId: 'T1', approved: false }, { seq: 30 }),
+        // A later round for the same task but a different run must not
+        // move it either — this is the scoping `priorReviewBudgetOf`'s own
+        // doc calls out, re-asserted here on the field the redirect named.
+        changeReviewed(
+          { taskId: 'T1', approved: false },
+          { seq: 35, runId: 'abandoned-run' },
+        ),
+        changeReviewed(
+          { taskId: 'T1', approved: true, undeclaredDeviations: [] },
+          { seq: 40 },
+        ),
+      ];
+      const budget = priorReviewBudgetOf(events, 'r', 'T1', 3, ALWAYS_REACHABLE);
+      expect(budget.roundsSoFar).toBe(3);
+      expect(budget.lastRoundSeq).toBe(40);
+    },
+  );
+
+  it('answers lastRoundSeq as undefined when the task has no round yet', () => {
+    const budget = priorReviewBudgetOf([], 'r', 'T1', 1, ALWAYS_REACHABLE);
+    expect(budget.roundsSoFar).toBe(0);
+    expect(budget.lastRoundSeq).toBeUndefined();
+  });
 });
 
 describe('redirectAuthorizesContinuation', () => {
