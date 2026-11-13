@@ -9,27 +9,29 @@
  * Exists because the SDK-facing failures found during M1.2 and M1.3 were each
  * diagnosed by running a whole milestone demo. This costs a few cents and a
  * few seconds instead.
+ *
+ * `design` is the one schema this does not round-trip live (T4.3.20): DSG-2's
+ * refine demands a complete design (every cross-cutting concern it names,
+ * plus a component, interface, data-model entry, technology choice and ADR),
+ * and a prompt detailed enough to guarantee a minimal session supplies all of
+ * that is most of a design brief — the full generation this probe exists to
+ * avoid paying for. `defaultProbeExclusions()` names it and parses a fixture
+ * against the schema instead, so the exclusion still proves the schema's
+ * content path rather than proving nothing about it. The branching logic
+ * itself lives in `src/agent/probe.ts`, where it is covered by an offline
+ * test with `ScriptedProvider` standing in for the live call.
  */
 import {
   ClaudeAgentProvider,
+  defaultProbeExclusions,
+  probeOutputSchemas,
   projectOutputSchemas,
-  RolePolicy,
   parseRole,
 } from '../../dist/index.js';
 
-const failures = [];
-
-function check(label, condition, detail = '') {
-  process.stdout.write(
-    `  ${condition ? 'ok  ' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}\n`,
-  );
-  if (!condition) {
-    failures.push(label);
-  }
-}
-
 const registry = projectOutputSchemas();
 const provider = new ClaudeAgentProvider();
+const exclusions = defaultProbeExclusions();
 
 const role = parseRole(
   'probe.md',
@@ -49,46 +51,32 @@ const role = parseRole(
 
 process.stdout.write('\nSchema acceptance\n');
 
-for (const id of registry.ids) {
-  let jsonSchema;
-  try {
-    jsonSchema = registry.jsonSchema(id);
-  } catch (error) {
-    check(`${id}: convertible to a tool schema`, false, String(error));
-    continue;
-  }
+const outcomes = await probeOutputSchemas({
+  registry,
+  provider,
+  role,
+  exclusions,
+});
 
-  const gated = [];
-  const policy = new RolePolicy(role, { root: process.cwd() });
+for (const outcome of outcomes) {
+  const label =
+    outcome.status === 'ok' ? 'ok  ' : outcome.status === 'excluded' ? 'skip' : 'FAIL';
+  const verb =
+    outcome.status === 'excluded'
+      ? 'known exclusion, covered by fixture instead of a live call'
+      : outcome.status === 'ok'
+        ? 'accepted and returned schema-valid output'
+        : 'did not return schema-valid output';
+  process.stdout.write(`  ${label}  ${outcome.id}: ${verb} — ${outcome.detail}\n`);
+}
 
-  const result = await provider.run({
-    model: 'claude-sonnet-5',
-    systemPrompt: 'You are a probe. Return the smallest valid result.',
-    prompt:
-      'Return a minimal result satisfying the schema. Invent placeholder values; ' +
-      'this is a connectivity check, not a real task.',
-    allowedTools: ['Read'],
-    maxTurns: 2,
-    maxBudgetUsd: 0.2,
-    outputJsonSchema: jsonSchema,
-    canUseTool: (tool, input) => {
-      gated.push(tool);
-      return Promise.resolve(policy.decide(tool, input));
-    },
-  });
+const failures = outcomes.filter((outcome) => outcome.status === 'fail');
+const excluded = outcomes.filter((outcome) => outcome.status === 'excluded');
 
-  if (result.termination !== 'completed') {
-    check(`${id}: session completed`, false, result.errorMessage);
-    continue;
-  }
-
-  const parsed = registry.get(id).safeParse(result.structuredOutput);
-  check(
-    `${id}: accepted and returned schema-valid output`,
-    parsed.success,
-    parsed.success
-      ? `$${result.usage.costUsd.toFixed(4)}`
-      : parsed.error.issues.map((issue) => issue.message).join('; '),
+if (excluded.length > 0) {
+  process.stdout.write(
+    `\n${String(excluded.length)} schema(s) excluded from the live round-trip (named above), ` +
+      'checked by fixture instead.\n',
   );
 }
 
