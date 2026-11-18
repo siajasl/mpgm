@@ -2605,6 +2605,85 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['ORC-5', 'IMP-3', 'IMP-2'],
             },
+            {
+              id: 'T4.3.23',
+              title:
+                'Cache token counts reach status --metrics and no other ' +
+                'surface, so the dashboard and the status headline still ' +
+                'report the partial figure',
+              completionCriteria: [
+                'Every surface that reports a token figure at a scope OBS-2 ' +
+                  'names -- run, phase, role -- reports cache-read and ' +
+                  'cache-creation tokens beside it, or says at that surface, ' +
+                  'in code a reader will hit, that it deliberately does not ' +
+                  'and why. T4.3.15 made `mpgm status --metrics` do this and ' +
+                  'stopped there. Its fourth review approved the change and ' +
+                  'named the surfaces it left behind; this files them. None ' +
+                  'changes what is recorded or what is billed -- costUsd is ' +
+                  'untouched and stays the only spend figure -- only what ' +
+                  'each surface shows.',
+                'The dashboard disagrees with the CLI about the same ' +
+                  'bucket. src/dashboard/render.ts renders tokens as ' +
+                  'inputTokens + outputTokens in metricRow, for exactly the ' +
+                  'run, phase and role scopes, and again in the run total ' +
+                  'line, though AggregateMetric already carries both cache ' +
+                  'fields. The out-of-scope note T4.3.15 added sits on ' +
+                  'taskRow and argues only the per-task granularity gap, so ' +
+                  'it does not cover these rows. An operator comparing the ' +
+                  'HTML dashboard with status --metrics reads two different ' +
+                  'stories about one bucket.',
+                'The headline mpgm status, without --metrics, still prints ' +
+                  'one tokens figure per run as input + output ' +
+                  '(src/cli/commands.ts, the run summary line) -- the shape ' +
+                  "T4.3.15's own statement named as the defect, and the first " +
+                  "number an operator sees (tokens 12095579 on this project's " +
+                  "log). Unlike the dashboard's task table, nothing says this " +
+                  'is a decision, so the next reader cannot tell it from an ' +
+                  'oversight.',
+                'The annotation form only passes the demo because of the ' +
+                  'fixture. status --metrics renders a partly measured bucket ' +
+                  'as `cache-read 4200 (1 sessions unrecorded)`: always ' +
+                  'plural, and nested inside the `tokens N (cache-read ... ' +
+                  'cache-creation ...)` group, so a mixed bucket reads with ' +
+                  'parentheses inside parentheses on the very line an ' +
+                  "operator reads to judge e3e91a8's revert condition. " +
+                  'scripts/demo/cli-e2e.mjs pins `cache-read \\S+ ' +
+                  '{2}cache-creation \\S+`, which matches only the unannotated ' +
+                  'form; the demo holds today because src/demo/workload.ts ' +
+                  'writes 0 for both fields, so a fixture that ever carried a ' +
+                  'null cache field would fail the demo on formatting rather ' +
+                  'than substance. Pluralise on the count, use a form that ' +
+                  'does not nest, and widen the pinned shape so it is not ' +
+                  'fixture-dependent -- without loosening it to `.*`, which ' +
+                  "T4.3.15's first review found and removed.",
+                'Narrower and optional, and the change says whether it ' +
+                  'takes it: one Usage type (src/state/kernel-state.ts) ' +
+                  'carries two opposite meanings for null -- from addUsage, ' +
+                  'at least one session in the fold was unrecorded; from ' +
+                  "runProjection's byTaskUsage, no session recorded it, with " +
+                  'a non-null value possibly a partial sum. d36bd24 documents ' +
+                  'this where a reader will hit it, and the operator directed ' +
+                  'the aggregation itself, which this task must not change; ' +
+                  'the concern is that the type does not encode which ' +
+                  'discipline a value holds. If the change leaves it, it says ' +
+                  "so; if it splits the type, no fold's behaviour moves.",
+                'It must not weaken what T4.3.15 holds: null still means ' +
+                  'unrecorded, never zero; the AGT-4 budget bound still ' +
+                  'excludes cache tokens and its two tests still fail if they ' +
+                  'are folded in; no figure is derived from token counts as ' +
+                  'if it were cost. The tests render each named surface over ' +
+                  'a run whose sessions mix recorded and unrecorded cache ' +
+                  'fields and assert the cache figures and the unrecorded ' +
+                  'count appear in the stated form -- or that the surface ' +
+                  'names its omission -- and the cli-e2e check passes over a ' +
+                  'fixture carrying a null cache field. They fail against ' +
+                  'today, where the dashboard rows show input + output alone ' +
+                  'and the demo regex rejects the annotated form; a test over ' +
+                  'a fixture of zeros is the test this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['OBS-2', 'NFR-2'],
+            },
           ],
         },
       ],
