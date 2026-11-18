@@ -267,6 +267,13 @@ export { BudgetLedger, runWithWallClock } from './agent/budget.js';
 export { OutputSchemaRegistry } from './agent/output-registry.js';
 export { ScriptedProvider, scriptedSuccess } from './agent/scripted-provider.js';
 export { ClaudeAgentProvider } from './agent/claude-provider.js';
+export type { ProbeExclusion, ProbeOptions, ProbeOutcome } from './agent/probe.js';
+export {
+  defaultProbeExclusions,
+  designProbeExclusionReason,
+  designProbeFixture,
+  probeOutputSchemas,
+} from './agent/probe.js';
 export type { RolePolicyOptions } from './policy/role-policy.js';
 export { RolePolicy } from './policy/role-policy.js';
 export type {
