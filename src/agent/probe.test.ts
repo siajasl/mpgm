@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { toySummarySchema } from '../demo/schemas.js';
 import { loadRoleFile } from '../role/loader.js';
 import { designSchema, requiredConcerns } from '../schemas.js';
@@ -74,6 +75,7 @@ describe('probeOutputSchemas (T4.3.20)', () => {
       {
         id: 'toy',
         status: 'fail',
+        stage: 'session',
         detail:
           'Failed to authenticate: OAuth session expired and could not be refreshed',
       },
@@ -94,6 +96,7 @@ describe('probeOutputSchemas (T4.3.20)', () => {
 
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]?.status).toBe('fail');
+    expect(outcomes[0]?.stage).toBe('output-validation');
     expect(outcomes[0]?.detail).toContain('DSG-2');
   });
 
@@ -138,8 +141,49 @@ describe('probeOutputSchemas (T4.3.20)', () => {
 
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]?.status).toBe('fail');
+    expect(outcomes[0]?.stage).toBe('exclusion-fixture');
     expect(outcomes[0]?.detail).toContain('known exclusion');
     expect(provider.requests).toHaveLength(0);
+  });
+
+  it('reports a schema-conversion failure distinctly from a validation failure', async () => {
+    // A schema that is not an object at its top level never reaches a live
+    // call at all; `stage` must say so rather than reusing the label for
+    // "the session ran and came back invalid" (the mislabel this fixes).
+    const registry = new OutputSchemaRegistry({ 'not-an-object': z.array(z.string()) });
+    const provider = new ScriptedProvider([]);
+
+    const outcomes = await probeOutputSchemas({ registry, provider, role });
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]?.status).toBe('fail');
+    expect(outcomes[0]?.stage).toBe('schema-conversion');
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it('fails loudly when an exclusion names an id the registry does not have', async () => {
+    // An exclusion key that no longer matches a registered schema id (e.g.
+    // after a rename) must not be silently dropped — that would re-open the
+    // live round-trip for the schema it was meant to cover with nothing in
+    // the output saying so (CONV-4).
+    const registry = new OutputSchemaRegistry({ toy: toySummarySchema });
+    const provider = new ScriptedProvider([scriptedSuccess(validToyOutput)]);
+
+    const outcomes = await probeOutputSchemas({
+      registry,
+      provider,
+      role,
+      exclusions: { 'renamed-design': { reason: 'stale key', fixture: {} } },
+    });
+
+    const stale = outcomes.find((outcome) => outcome.id === 'renamed-design');
+    expect(stale?.status).toBe('fail');
+    expect(stale?.stage).toBe('unregistered-exclusion');
+    expect(stale?.detail).toContain('renamed-design');
+    // 'toy' still gets its live call — a stale exclusion key fails loudly
+    // without disturbing the ids that are still registered.
+    const toy = outcomes.find((outcome) => outcome.id === 'toy');
+    expect(toy?.status).toBe('ok');
   });
 
   it("covers every cross-cutting concern DSG-2 names, so the fixture doesn't drift from it", () => {

@@ -15,11 +15,26 @@ import type { AgentSessionProvider } from './session.js';
  * returns and sets the exit code.
  */
 
+/**
+ * Where a `fail` outcome came from, so the script can label the cause
+ * instead of guessing: a schema that will not convert to a JSON Schema at
+ * all is not the same failure as a live session that never completed, which
+ * is not the same failure as output that came back schema-invalid. Absent
+ * for `ok` and `excluded`, where the status already says what happened.
+ */
+export type ProbeFailStage =
+  | 'schema-conversion'
+  | 'session'
+  | 'output-validation'
+  | 'exclusion-fixture'
+  | 'unregistered-exclusion';
+
 /** One schema's probe result. */
 export interface ProbeOutcome {
   readonly id: string;
   readonly status: 'ok' | 'excluded' | 'fail';
   readonly detail: string;
+  readonly stage?: ProbeFailStage;
 }
 
 /**
@@ -98,10 +113,19 @@ export const designProbeFixture: Design = {
  * {@link requiredConcerns}, plus at least one component, interface,
  * data-model entry, technology choice and ADR. A prompt detailed enough to
  * guarantee a minimal session supplies all of that is most of a design
- * brief — the full generation this probe exists to avoid paying for. Checked
- * instead by parsing {@link designProbeFixture} against the schema directly
- * (see {@link probeOutputSchemas}), so the exclusion still proves the
- * schema's content path is reachable rather than proving nothing about it.
+ * brief — the full generation this probe exists to avoid paying for.
+ *
+ * Parsing {@link designProbeFixture} against the schema (see
+ * {@link probeOutputSchemas}) proves nothing a live call would have: the
+ * conversion to a JSON Schema this probe still runs for `design`, and the
+ * fixture's shape, are both already asserted offline (`src/schemas.test.ts`,
+ * `src/agent/probe.test.ts`). The two things only a live call shows — the
+ * CLI accepting `designSchema`'s derived JSON Schema as a structured-output
+ * tool schema, and a session actually returning design-schema-valid
+ * output — are covered instead by `npm run demo:design` (T2.1.3), a real
+ * session already listed in CLAUDE.md. Excluding `design` here does not
+ * leave that leg uncovered; it moves the cost of covering it to the demo
+ * that was already paying it.
  */
 export const designProbeExclusionReason =
   "DSG-2's refine requires every cross-cutting concern it names " +
@@ -110,7 +134,9 @@ export const designProbeExclusionReason =
   'has no reason to supply all of that, and a prompt detailed enough to ' +
   'guarantee it is most of a design brief — the full generation this probe ' +
   'exists to avoid paying for. Checked instead by parsing a fixture against ' +
-  'the schema directly, with no live call spent on it.';
+  'the schema directly, with no live call spent on it; the live leg (the CLI ' +
+  "accepting the schema, a session returning schema-valid output) is demo:design's " +
+  'job, not a gap this leaves open.';
 
 /** The exclusions `npm run probe:sdk` applies by default. */
 export function defaultProbeExclusions(): Record<string, ProbeExclusion> {
@@ -126,13 +152,38 @@ export function defaultProbeExclusions(): Record<string, ProbeExclusion> {
 export async function probeOutputSchemas(options: ProbeOptions): Promise<ProbeOutcome[]> {
   const { registry, provider, role, exclusions = {} } = options;
   const outcomes: ProbeOutcome[] = [];
+  const registeredIds = new Set(registry.ids);
+
+  // An exclusion keyed by an id the registry no longer has (e.g. a schema
+  // renamed without updating `defaultProbeExclusions`) must not be silently
+  // dropped — that would re-open the live round-trip for a schema the
+  // exclusion was meant to cover, with nothing in the output saying so
+  // (CONV-4: fail closed rather than pass on ambiguity).
+  for (const excludedId of Object.keys(exclusions)) {
+    if (!registeredIds.has(excludedId)) {
+      outcomes.push({
+        id: excludedId,
+        status: 'fail',
+        stage: 'unregistered-exclusion',
+        detail:
+          `exclusion names '${excludedId}', which is not a registered output schema id ` +
+          `(registered: ${registry.ids.join(', ')}) — the schema it was meant to exclude ` +
+          'may have been renamed; update the exclusion key',
+      });
+    }
+  }
 
   for (const id of registry.ids) {
     let jsonSchema: Record<string, unknown>;
     try {
       jsonSchema = registry.jsonSchema(id);
     } catch (error) {
-      outcomes.push({ id, status: 'fail', detail: String(error) });
+      outcomes.push({
+        id,
+        status: 'fail',
+        stage: 'schema-conversion',
+        detail: String(error),
+      });
       continue;
     }
 
@@ -145,6 +196,7 @@ export async function probeOutputSchemas(options: ProbeOptions): Promise<ProbeOu
           : {
               id,
               status: 'fail',
+              stage: 'exclusion-fixture',
               detail:
                 'fixture for a known exclusion no longer satisfies the schema: ' +
                 parsed.error.issues.map((issue) => issue.message).join('; '),
@@ -168,7 +220,12 @@ export async function probeOutputSchemas(options: ProbeOptions): Promise<ProbeOu
     });
 
     if (result.termination !== 'completed') {
-      outcomes.push({ id, status: 'fail', detail: result.errorMessage });
+      outcomes.push({
+        id,
+        status: 'fail',
+        stage: 'session',
+        detail: result.errorMessage,
+      });
       continue;
     }
 
@@ -179,6 +236,7 @@ export async function probeOutputSchemas(options: ProbeOptions): Promise<ProbeOu
         : {
             id,
             status: 'fail',
+            stage: 'output-validation',
             detail: parsed.error.issues.map((issue) => issue.message).join('; '),
           },
     );

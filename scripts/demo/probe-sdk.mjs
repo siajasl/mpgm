@@ -16,10 +16,15 @@
  * and a prompt detailed enough to guarantee a minimal session supplies all of
  * that is most of a design brief — the full generation this probe exists to
  * avoid paying for. `defaultProbeExclusions()` names it and parses a fixture
- * against the schema instead, so the exclusion still proves the schema's
- * content path rather than proving nothing about it. The branching logic
- * itself lives in `src/agent/probe.ts`, where it is covered by an offline
- * test with `ScriptedProvider` standing in for the live call.
+ * against the schema instead, with no live call spent on it. That parse
+ * proves nothing a live call would have — the JSON Schema conversion it
+ * still runs and the fixture's shape are both already asserted offline
+ * (`src/schemas.test.ts`, `src/agent/probe.test.ts`) — so the live leg (the
+ * CLI accepting the derived schema, a session returning schema-valid
+ * output) is covered by `npm run demo:design` (T2.1.3) instead, not left
+ * uncovered. The branching logic itself lives in `src/agent/probe.ts`, where
+ * it is covered by an offline test with `ScriptedProvider` standing in for
+ * the live call.
  */
 import {
   ClaudeAgentProvider,
@@ -58,6 +63,14 @@ const outcomes = await probeOutputSchemas({
   exclusions,
 });
 
+const failVerbs = {
+  'schema-conversion': 'could not be converted to a tool schema',
+  session: 'session did not complete',
+  'output-validation': 'did not return schema-valid output',
+  'exclusion-fixture': 'fixture for this known exclusion no longer satisfies the schema',
+  'unregistered-exclusion': 'exclusion names a schema id that is no longer registered',
+};
+
 for (const outcome of outcomes) {
   const label =
     outcome.status === 'ok' ? 'ok  ' : outcome.status === 'excluded' ? 'skip' : 'FAIL';
@@ -66,7 +79,7 @@ for (const outcome of outcomes) {
       ? 'known exclusion, covered by fixture instead of a live call'
       : outcome.status === 'ok'
         ? 'accepted and returned schema-valid output'
-        : 'did not return schema-valid output';
+        : (failVerbs[outcome.stage] ?? 'failed');
   process.stdout.write(`  ${label}  ${outcome.id}: ${verb} — ${outcome.detail}\n`);
 }
 
