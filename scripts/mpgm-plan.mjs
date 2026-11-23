@@ -2846,6 +2846,76 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['ORC-2', 'MNT-4'],
             },
+            {
+              id: 'T4.3.26',
+              title:
+                'The loop asks CI about whatever ref the implementing ' +
+                'session wrote, so a ref in prose blocks the task as if CI ' +
+                'were down',
+              completionCriteria: [
+                'The commit the loop asks CI about, and every commit it ' +
+                  'acts on for a change, is one it read from the worktree, ' +
+                  'not one a session claims; or a claim that does not name ' +
+                  "the worktree's tip blocks with a reason that says exactly " +
+                  "that. Today the implementing session's `ref` is used as " +
+                  'written. `changeSchema` (src/schemas.ts) accepts any ' +
+                  'non-empty string, and src/implement/loop.ts passes ' +
+                  '`change.data.ref` -- and after a repair, `fixed.data.ref` ' +
+                  '-- through `latest.ref` into `repairUntilGreen`, whose ' +
+                  "`checks(ref)` asks GitHub's check-runs API about it. The " +
+                  'tip the merge request eventually uses ' +
+                  '(`options.worktrees.head`) is read only after that, and ' +
+                  "the reviewer's ref is reconciled against it " +
+                  "(`reconcileRef`), but the implementer's never is.",
+                "Measured on this project's run, not supposed. On " +
+                  "2026-11-23 T4.3.22's implementing session reported `ref` " +
+                  'as `5925262 (branch mpgm/T4.3.22) -- "Let a task retry the ' +
+                  'merge alone once its last allowed round cleared review"`. ' +
+                  'The commit was pushed, its pull request (#186) opened and ' +
+                  'its CI ran; the loop asked `gh api ' +
+                  'repos/siajasl/mpgm/commits/<that whole ' +
+                  'string>/check-runs`, was told `No commit found for SHA` ' +
+                  '(HTTP 422) six times, and blocked with `CI could not be ' +
+                  'reached` -- the wrong cause, sending the operator to look ' +
+                  "at CI when CI was fine. No earlier ref on this project's " +
+                  'log contains a space, so this is the first instance, but ' +
+                  'nothing stops the next: the field is free text a model ' +
+                  "fills in, and it was a model's own phrasing that broke it.",
+                "The change picks between taking the change's ref from the " +
+                  "worktree's tip and treating the session's `ref` as a claim " +
+                  "to compare against it, reconciling the session's ref " +
+                  "against the tip the way the reviewer's is (`reconcileRef`, " +
+                  'src/implement/commit-ref.ts), and tightening ' +
+                  '`changeSchema` so `ref` must be a hex object name -- it ' +
+                  'says which and prices the ones it refused. The schema ' +
+                  'alone is not enough: a well-formed sha that names some ' +
+                  "other commit passes it, and the reviewer's path already " +
+                  'shows why the loop must not trust a ref it can check. ' +
+                  'Whichever it picks, a claim that names a commit the branch ' +
+                  'is not on blocks, and says the session reported a ref that ' +
+                  'is not the branch tip, naming both -- it does not quietly ' +
+                  'substitute the tip, because a session that describes a ' +
+                  'different commit than the one it left is evidence the ' +
+                  "review must not lose (the same reasoning `reconcileRef`'s " +
+                  'doc gives).',
+                'It must not weaken the CI oracle or the merge gate: ' +
+                  'absence is not success (IMP-2), so a ref that cannot be ' +
+                  'placed still blocks, only with a reason that names the ' +
+                  'cause; the error that does mean CI is unreachable still ' +
+                  'reads that way and still retries; and the merge still ' +
+                  'lands only on a commit CI and the reviewer both answered ' +
+                  'for. The tests drive the loop with an implementing session ' +
+                  'that reports its ref with surrounding prose, and with one ' +
+                  'that reports a well-formed sha of another commit, and ' +
+                  'assert the outcome the change states for each; they fail ' +
+                  'against today, where the first reaches the CI provider ' +
+                  'with the prose and blocks as unreachable. A test whose ' +
+                  'session reports a bare sha is the test this has always ' +
+                  'passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-2', 'IMP-1'],
+            },
           ],
         },
       ],
