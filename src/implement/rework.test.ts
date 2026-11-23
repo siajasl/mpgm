@@ -4424,6 +4424,41 @@ describe('a review that never approves (NFR-1)', () => {
       }
     });
 
+    it('does not retry the merge once an operator has killed the run', async () => {
+      const { repo, worktrees, log, trunkHead } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // Recorded before the resuming invocation, which is the one shape
+        // the rest of the loop's control reads cannot catch: this path
+        // dispatches no session at all, so `track` — where a pause or a
+        // kill normally stops a task — never runs (T4.2.4, HIL-3).
+        log.append({
+          runId: 'r',
+          type: 'OperatorIntervened',
+          payload: { action: 'kill', detail: 'stop everything' },
+        });
+
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(second.reason).toContain('killed');
+        // The trunk is exactly where it was: without the control read the
+        // retry merges and pushes on an invocation an operator had already
+        // told to stop.
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+      } finally {
+        log.close();
+      }
+    });
+
     it('does not merge once the branch has moved past the commit the approving round reviewed', async () => {
       const { repo, worktrees, log, trunkHead } = await reviewedAndRefusedByTheTrunk();
 

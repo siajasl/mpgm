@@ -764,6 +764,23 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       );
     }
 
+    // The same read `controlBeforeMerge` makes at the end of this function,
+    // for the same reason and at the same distance from the same
+    // irreversible act (T4.2.4, HIL-3). This path reaches `mergeChange`
+    // without passing `track` at all — it dispatches no session, so the one
+    // place the loop normally notices a pause or a kill never runs — which
+    // left an operator who killed the run and then re-ran the task merging
+    // and pushing to the trunk anyway, on an invocation whose whole purpose
+    // was to merge. Read immediately before the merge rather than on entry
+    // so a kill landing while `options.checks` was in flight is caught too.
+    const controlBeforeRetry = runControl(fold(options.log.read()), runId);
+    if (controlBeforeRetry !== 'running') {
+      return stop(`the run was ${controlBeforeRetry} by an operator`, {
+        ref: tip,
+        review,
+      });
+    }
+
     const retried = await mergeChange({
       runId,
       repo: options.repo,
