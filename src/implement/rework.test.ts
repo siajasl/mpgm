@@ -4371,9 +4371,9 @@ describe('a review that never approves (NFR-1)', () => {
       expect(first.reason).toContain('dirty');
       expect(first.review?.approved).toBe(true);
       expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
-      expect(
-        log.read().filter((event) => event.type === 'ChangeReviewed'),
-      ).toHaveLength(1);
+      expect(log.read().filter((event) => event.type === 'ChangeReviewed')).toHaveLength(
+        1,
+      );
 
       rmSync(join(repo, 'stray.txt'));
       return { repo, worktrees, log, tip, trunkHead };
@@ -4593,7 +4593,7 @@ describe('a review that never approves (NFR-1)', () => {
         // somebody else made.
         expect(second.reason).toContain('already contained');
         expect(second.reason).toContain(tip);
-        expect(second.reason).toContain(`mpgm record-merge ${'T1'}`);
+        expect(second.reason).toContain('mpgm record-merge T1');
         expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
           0,
         );
@@ -4601,6 +4601,48 @@ describe('a review that never approves (NFR-1)', () => {
         // already-merged branch was made on top of the unrelated commit.
         expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
         expect(git(repo, ['rev-parse', 'HEAD^1'])).toBe(trunkAfterHandMerge);
+      } finally {
+        log.close();
+      }
+    });
+
+    it('re-reads the checks on the retry rather than reusing the verdict the round saw', async () => {
+      const { repo, worktrees, log, tip, trunkHead } =
+        await reviewedAndRefusedByTheTrunk();
+
+      try {
+        const before = log.read().filter((event) => event.type === 'ChecksReported');
+
+        // The approving round saw green. CI for this same commit is red by
+        // the time the merge is retried — a scan finding published after the
+        // round, a check re-run. Absence of a fresh read is not success
+        // (IMP-2): this is the one path that merges with no review session
+        // at all, so its CI gate is the one that has to be real.
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+          checks: (ref: string) => Promise.resolve(mergeVerdict({ ref, runs: RED })),
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(second.reason).toContain('scan');
+        expect(provider.requests).toHaveLength(0);
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+
+        // The read happened and is on the log, for the commit being merged.
+        const after = log.read().filter((event) => event.type === 'ChecksReported');
+        expect(after).toHaveLength(before.length + 1);
+        const latest = after[after.length - 1]?.payload as {
+          ref: string;
+          mergeable: boolean;
+        };
+        expect(latest.ref).toBe(tip);
+        expect(latest.mergeable).toBe(false);
       } finally {
         log.close();
       }
@@ -4662,6 +4704,9 @@ describe('a review that never approves (NFR-1)', () => {
         expect(second.status).toBe('blocked');
         expect(provider.requests).toHaveLength(0);
         expect(second.reason).toMatch(/T4\.3\.22/);
+        // Says which of the three ways a last-allowed round can fail to be
+        // retryable this is, not merely that one of them did (CONV-3).
+        expect(second.reason).toContain('no longer on the exact commit');
         // Nothing merged: the trunk is exactly where it started.
         expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
         expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(

@@ -709,6 +709,20 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // strength of an old approval is exactly the silent introduction IMP-4
   // exists to refuse, so this is only ever reached when the tip has not
   // moved at all.
+  //
+  // The option refused, and its price: logging what `decideMerge` actually
+  // decided per round — the tip it compared against, and the verdict — would
+  // close the stale-ref misclassification `review-budget.ts` documents at its
+  // source, rather than routing around it as this does. It costs a field on
+  // `ChangeReviewed` or an event of its own, which under CONV-7 means a
+  // registered version bump and an upcaster carrying every payload already
+  // written forward, and it would still not merge anything on its own. This
+  // gets the same safety for nothing: a round `decideMerge` refused as stale
+  // logged a `ref` that is not the tip, so `lastReviewOf` returns nothing
+  // for it and no retry happens, and a round refused `checks-are-stale` is
+  // re-decided here against a verdict read fresh for the tip. The schema
+  // change is worth making when something other than this guard needs to
+  // know what the gate decided; it is not worth making for this guard.
   const retryMergeOnly = async (approved: PriorReview): Promise<ImplementResult> => {
     const tip = worktree.base;
 
@@ -940,6 +954,25 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       return await retryMergeOnly(priorReview);
     }
 
+    // Which of the three ways a last round that reads as allowed can still
+    // fail `retryEligible` above actually happened. They want different
+    // things done about them — a moved branch wants a look at what moved it,
+    // a refusing review wants the finding answered, an undeclared convention
+    // wants a declaration — and one message covering all three would name
+    // none of them (CONV-3).
+    const noRetryBecause =
+      priorReview === undefined
+        ? `the branch '${worktree.branch}' is no longer on the exact commit that ` +
+          `round reviewed (its tip is now ${worktree.base}), so what would merge is ` +
+          `content nobody reviewed`
+        : !priorReview.approved
+          ? `the review naming that commit (${priorReview.ref}) did not approve it: ` +
+            priorReview.summary
+          : `the review naming that commit (${priorReview.ref}) approved it and ` +
+            `reported ${String(priorReview.undeclared.length)} convention(s) this ` +
+            `change never declared (${priorReview.undeclared.join(', ')}), which ` +
+            `IMP-4 refuses whatever the approval said`;
+
     // Checked here, before the implementing session runs again, rather than
     // only inside the round loop further down — a task that cannot proceed
     // should not spend a session finding that out a second time.
@@ -947,14 +980,12 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       return stop(
         priorBudget.lastRoundAllowed
           ? `${task.id}: this task's last recorded review round reads as approved ` +
-              `with nothing undeclared, but the branch '${worktree.branch}' is no ` +
-              `longer on the exact commit that round reviewed, so there is no merge ` +
-              `this guard may retry on its own (T4.3.22) — content nobody reviewed ` +
-              `is what would merge otherwise. An operator who judges the branch as ` +
-              `it now stands fit to merge can say so with \`mpgm redirect ${task.id} ` +
-              `--run ${runId} --note '<why>'\` and re-run, which grants exactly one ` +
-              `more round; a fresh worktree for this task starts it over with a ` +
-              `clean budget of its own instead.`
+              `with nothing undeclared, but ${noRetryBecause} — so there is no merge ` +
+              `this guard may retry on its own (T4.3.22). An operator who judges the ` +
+              `branch as it now stands fit to merge can say so with \`mpgm redirect ` +
+              `${task.id} --run ${runId} --note '<why>'\` and re-run, which grants ` +
+              `exactly one more round; a fresh worktree for this task starts it over ` +
+              `with a clean budget of its own instead.`
           : `${task.id}: this task's review budget was already exhausted in an earlier ` +
               `invocation — ${String(priorBudget.roundsSoFar)} round(s) taken against ` +
               `${String(priorBudget.attempts)} allowed` +
