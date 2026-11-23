@@ -2916,6 +2916,78 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['IMP-2', 'IMP-1'],
             },
+            {
+              id: 'T4.3.27',
+              title:
+                "An operator redirect's note never expires, so a note meant " +
+                'for one session steers every later session of the task, ' +
+                'reviewers included',
+              completionCriteria: [
+                "An operator's redirect note reaches the sessions the " +
+                  'operator meant it for and no others, or the loop says, in ' +
+                  'what every later session and the operator can see, which ' +
+                  'note is still in force and since when. Today a note is ' +
+                  'forever. The fold in src/state/reduce.ts keeps the latest ' +
+                  '`OperatorIntervened` redirect detail per task in ' +
+                  '`run.redirects[taskId]` and never clears it, and `track` ' +
+                  'in src/implement/loop.ts appends it under `## An operator ' +
+                  'redirected this task` to the prompt of every session ' +
+                  'dispatched under that task -- implementing, repair, review ' +
+                  'and rework alike -- for the rest of the run. T4.3.17 ' +
+                  'bounded what a redirect *buys* to one round ' +
+                  '(`redirectAuthorizesContinuation`, consumed against the ' +
+                  'next `TaskDispatched`); nothing bounds what its note ' +
+                  '*says*, or to whom.',
+                "Measured on this project's run, not supposed. On " +
+                  '2026-11-23 the operator redirected T4.3.22 after a block ' +
+                  "that was not the implementer's fault (T4.3.26): the note " +
+                  'told the next implementing session to keep its commit, ' +
+                  'make no other change and only re-report its ref as a bare ' +
+                  'sha. That session did, and the review then rejected the ' +
+                  'commit with a blocker and two majors. The rework round ' +
+                  'that followed read the same note -- "make no other change" ' +
+                  '-- and made none: three shell calls, $0.14, no commit. ' +
+                  'Review 2 re-reviewed the unchanged commit for $3.23 and ' +
+                  'rejected it again, and the final round was only saved by a ' +
+                  'second, superseding redirect written by hand. The note was ' +
+                  "also in both reviewers' prompts, where an instruction " +
+                  'addressed to an implementer has no business being. One ' +
+                  'note, written for one session, cost a round and a review ' +
+                  'and moved the task onto its last round.',
+                'The change picks between consuming a note with the session ' +
+                  'that first reads it (as T4.3.17 consumes the round), ' +
+                  'scoping a note to a session kind or to the next N ' +
+                  'dispatches the operator names when redirecting, and ' +
+                  'keeping notes standing but showing each later session the ' +
+                  "note's age and the dispatches that have already read it, " +
+                  'with a way to withdraw it -- it says which and prices the ' +
+                  'ones it refused. Consuming on first read is simplest and ' +
+                  'matches the round it buys, but loses a note an operator ' +
+                  'meant as standing guidance for the rest of the task; a ' +
+                  'scope is more to type at the command line and more to get ' +
+                  'wrong. Whichever it picks, a reviewer must not be shown an ' +
+                  'instruction addressed to the implementer as if it bound ' +
+                  'the review, and `mpgm redirect` says what lifetime the ' +
+                  'note it records will have.',
+                'It must not weaken what redirects already do: a redirect ' +
+                  'still reaches the very next session whatever its kind, ' +
+                  "which is the property `track`'s comment says the operator " +
+                  'relies on (T4.2.4, HIL-3); one redirect still buys exactly ' +
+                  'one continuation round (T4.3.17); the note stays on the ' +
+                  'log as an `OperatorIntervened` event, append-only, so who ' +
+                  'said what and when is still reconstructable (OBS-1). The ' +
+                  'tests record a redirect, dispatch the next session and ' +
+                  'then two more for the same task, and assert which of them ' +
+                  'see the note -- per the lifetime the change states -- and ' +
+                  'that a review session is never shown an ' +
+                  'implementer-addressed note as binding; they fail against ' +
+                  'today, where all three see it unchanged. A test that only ' +
+                  'asserts the next session sees the note is the test this ' +
+                  'has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['HIL-3', 'IMP-3'],
+            },
           ],
         },
       ],
