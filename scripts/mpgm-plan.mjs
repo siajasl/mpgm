@@ -2771,6 +2771,81 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['TST-1', 'OBS-1'],
             },
+            {
+              id: 'T4.3.25',
+              title:
+                'Nothing rebuilds dist/ after the loop merges, so the next ' +
+                'invocation runs the code the merge replaced',
+              completionCriteria: [
+                'The code `mpgm implement` runs is the code on the trunk it ' +
+                  'reads its plan from, or the command says it is not before ' +
+                  'it spends a session. Today nothing connects the two. ' +
+                  'bin/mpgm.mjs imports `../dist/index.js`; `dist/` is ' +
+                  'written only by `npm run build` (and by ' +
+                  '`check`/`check:fast`, which build first); `mergeChange` ' +
+                  '(src/implement/merge.ts) fetches, merges and pushes the ' +
+                  'trunk but never builds; and nothing compares what `dist/` ' +
+                  'was built from with what HEAD now is. So once the loop ' +
+                  'merges a change to the loop, the next invocation in the ' +
+                  'same checkout runs the loop the merge replaced, and says ' +
+                  'nothing. The same holds for every script that loads ' +
+                  '`dist/` -- scripts/plan-artifact.mjs, which generates the ' +
+                  'gated Plan artifact, scripts/audit-drift.mjs, ' +
+                  'scripts/gen-scope-requirements.mjs and ' +
+                  'scripts/demo/probe-sdk.mjs.',
+                'Measured, not supposed. On 2026-11-23, five days after ' +
+                  'T4.3.20 merged as 8338e58, `npm run probe:sdk` died with ' +
+                  "`SyntaxError: The requested module '../../dist/index.js' " +
+                  'does not provide an export named ' +
+                  "'defaultProbeExclusions'`, because `dist/` predated the " +
+                  'merge, and `mpgm implement T4.3.22` was about to run from ' +
+                  'the same `dist/`. That case was loud only because an ' +
+                  'export had been added. Where a merge changes behaviour ' +
+                  'without changing exports, the old behaviour runs silently: ' +
+                  'had nobody built after T4.3.17 merged, the next blocked ' +
+                  "task would have been re-invoked with T4.3.17's defect -- a " +
+                  'fresh review budget -- still in force. That is the sharper ' +
+                  'cost in a self-hosting harness whose tasks change the ' +
+                  'loop: the first real check that a merged loop fix works is ' +
+                  'the next run, and the next run is the old loop.',
+                'The change picks between having the loop build after it ' +
+                  'merges, having every entry point that loads `dist/` refuse ' +
+                  'or warn when what `dist/` was built from is not what the ' +
+                  'checkout now holds, and running from source so there is no ' +
+                  'build to go stale -- it says which and prices the ones it ' +
+                  'refused. The first keeps the operator out of it but ' +
+                  'couples merge to build: a build that fails after a merge ' +
+                  'has landed needs an answer, and rebuilding under the ' +
+                  'process that is running from `dist/` needs one too. The ' +
+                  'second is cheapest and also catches a checkout someone ' +
+                  'pulled by hand, but only reports; a refusal must name `npm ' +
+                  'run build` as the fix (CONV-3). The third collides with ' +
+                  'what CLAUDE.md records -- Node strips types but will not ' +
+                  'resolve a `.js` specifier to a `.ts` file, which is why ' +
+                  'fixtures run against `dist/` -- and says what it does ' +
+                  'about that.',
+                'It must fail closed. Whatever records what `dist/` was ' +
+                  'built from, a missing or unreadable record means stale, ' +
+                  'not fresh -- absence is not success (IMP-2) -- and a check ' +
+                  'that cannot run must not wave the command through. It must ' +
+                  'not slow every invocation by rebuilding unconditionally ' +
+                  'without saying what that costs, and it must not disturb ' +
+                  'CI, where build precedes test precisely so the subprocess ' +
+                  'fixtures run against a `dist/` built from the commit under ' +
+                  'test.',
+                'The test builds, then moves the checkout to a commit whose ' +
+                  'source differs, then invokes an entry point that loads ' +
+                  '`dist/`, and asserts the outcome the change states -- ' +
+                  'rebuilt before running, or refused with the fix named. A ' +
+                  'second case removes the build record and asserts it is ' +
+                  'treated as stale. They fail against today, where the entry ' +
+                  'point runs the old build and reports nothing; a test that ' +
+                  'only asserts `npm run build` produces `dist/` is the test ' +
+                  'this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['ORC-2', 'MNT-4'],
+            },
           ],
         },
       ],
