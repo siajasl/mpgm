@@ -4424,6 +4424,144 @@ describe('a review that never approves (NFR-1)', () => {
       }
     });
 
+    it('gives an operator redirect a review round rather than a silent merge retry', async () => {
+      const { repo, worktrees, log, tip } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // The lever both refusals promise. Recorded after the last round,
+        // which is what `redirectAuthorizesContinuation` measures it against.
+        log.append({
+          runId: 'r',
+          type: 'OperatorIntervened',
+          payload: {
+            action: 'redirect',
+            detail: 'look at the error path again before this lands',
+            taskId: 'T1',
+          },
+        });
+
+        const provider = new ScriptedProvider([
+          scriptedSuccess({
+            ref: tip,
+            summary: 'looked again',
+            files: ['feature.txt'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+          scriptedSuccess({
+            ref: tip,
+            verdict: 'approve',
+            summary: 'still good',
+            findings: [],
+            deviations: [],
+          }),
+        ]);
+
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        // A round ran: the operator asked for one, and a merge retry that
+        // dispatched nothing would leave `requests` empty. Exactly one —
+        // one redirect buys one round, not a fresh budget (T4.3.17).
+        expect(reviewSessionsOf(provider)).toHaveLength(1);
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(2);
+        // The operator's own note reached the sessions it bought.
+        expect(provider.requests[0]?.prompt).toContain('look at the error path again');
+        expect(second.status).toBe('merged');
+      } finally {
+        log.close();
+      }
+    });
+
+    it('grants a redirect its round even where the branch has moved past the reviewed commit', async () => {
+      const { repo, worktrees, log } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // The state the case above this refuses outright: a tip nobody has
+        // reviewed, so there is no merge to retry. Without the redirect this
+        // invocation is blocked (see 'does not merge once the branch has
+        // moved past...'); with it, the operator gets the round.
+        const moved = await worktrees.acquire('T1');
+        writeFileSync(join(moved.path, 'extra.txt'), 'nobody reviewed this\n');
+        git(moved.path, ['add', '--all']);
+        git(moved.path, ['commit', '-m', 'unreviewed follow-up']);
+        const movedTip = git(moved.path, ['rev-parse', 'HEAD']);
+
+        log.append({
+          runId: 'r',
+          type: 'OperatorIntervened',
+          payload: {
+            action: 'redirect',
+            detail: 'the follow-up commit is mine; review the branch as it stands',
+            taskId: 'T1',
+          },
+        });
+
+        const granted = new ScriptedProvider([
+          scriptedSuccess({
+            ref: movedTip,
+            summary: 'the branch as it stands',
+            files: ['extra.txt'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+          scriptedSuccess({
+            ref: movedTip,
+            verdict: 'request-changes',
+            summary: 'not yet',
+            findings: [
+              {
+                file: 'extra.txt',
+                concern: 'says nothing',
+                remedy: 'say something',
+                severity: 'blocker',
+              },
+            ],
+            deviations: [],
+          }),
+        ]);
+
+        const second = await implementTask({
+          ...baseOptions(repo, granted, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(reviewSessionsOf(granted)).toHaveLength(1);
+        expect(second.status).toBe('blocked');
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(2);
+
+        // And one redirect is one round: re-running again, with no new
+        // redirect, is refused rather than granted a second.
+        const after = new ScriptedProvider([]);
+        const third = await implementTask({
+          ...baseOptions(repo, after, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(third.status).toBe('blocked');
+        expect(after.requests).toHaveLength(0);
+        expect(third.reason).toContain('review budget');
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(2);
+      } finally {
+        log.close();
+      }
+    });
+
     it('does not merge a branch the trunk already contains a second time', async () => {
       const { repo, worktrees, log, tip } = await reviewedAndRefusedByTheTrunk();
 
