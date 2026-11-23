@@ -979,6 +979,15 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // a refusing review wants the finding answered, an undeclared convention
     // wants a declaration — and one message covering all three would name
     // none of them (CONV-3).
+    //
+    // Only the first arm is reachable from a single run's log. The other two
+    // need `lastReviewOf` — which reads every run's reviews of this task —
+    // to return a review that disagrees with `priorBudget.lastRoundAllowed`,
+    // which reads only this run's: true only when another run has reviewed
+    // the same tip since. They are kept because that interleaving is legal
+    // (a task re-run under a new run id), not because a single run can
+    // reach them, and no test here builds such a log (T4.3.22, third
+    // review).
     const noRetryBecause =
       priorReview === undefined
         ? `the branch '${worktree.branch}' is no longer on the exact commit that ` +
