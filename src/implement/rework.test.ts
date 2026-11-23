@@ -4424,6 +4424,50 @@ describe('a review that never approves (NFR-1)', () => {
       }
     });
 
+    it('does not merge a branch the trunk already contains a second time', async () => {
+      const { repo, worktrees, log, tip } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // The hand merge the old refusal message told an operator to make,
+        // or a crash between a merge that landed and the release after it.
+        // Either way the branch is in the trunk and nothing recorded it.
+        git(repo, ['merge', '--no-ff', '--no-edit', '-m', 'merged by hand', 'mpgm/T1']);
+        const trunkAfterHandMerge = git(repo, ['rev-parse', 'HEAD']);
+        // A later commit on the trunk, so that a retry that merged anyway
+        // would record a `ChangeMerged` naming a commit that is not this
+        // task's merge — the way the second record goes wrong, not merely
+        // that there is one.
+        writeFileSync(join(repo, 'unrelated.txt'), 'another task landed\n');
+        git(repo, ['add', '--all']);
+        git(repo, ['commit', '-m', 'an unrelated task']);
+        const trunkHead = git(repo, ['rev-parse', 'HEAD']);
+
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('blocked');
+        // Named well enough to act on without reading the loop (CONV-3):
+        // which branch, which commit, and the verb that records a merge
+        // somebody else made.
+        expect(second.reason).toContain('already contained');
+        expect(second.reason).toContain(tip);
+        expect(second.reason).toContain(`mpgm record-merge ${'T1'}`);
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+        // The trunk is untouched, and in particular no merge of the
+        // already-merged branch was made on top of the unrelated commit.
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+        expect(git(repo, ['rev-parse', 'HEAD^1'])).toBe(trunkAfterHandMerge);
+      } finally {
+        log.close();
+      }
+    });
+
     it('does not retry the merge once an operator has killed the run', async () => {
       const { repo, worktrees, log, trunkHead } = await reviewedAndRefusedByTheTrunk();
 

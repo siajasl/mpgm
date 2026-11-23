@@ -711,6 +711,51 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // moved at all.
   const retryMergeOnly = async (approved: PriorReview): Promise<ImplementResult> => {
     const tip = worktree.base;
+
+    // A branch the trunk already contains must not be merged a second time.
+    // `git merge --no-ff` answers "Already up to date" and exits 0 when the
+    // tip is reachable from `into`, creating no commit — so `mergeChange`
+    // reports a merge, and this would append a second `ChangeMerged` whose
+    // `commit` is whatever the trunk's head happens to be by then. Since
+    // `mergeChange` fast-forwards the local trunk onto the remote first,
+    // that head can be some other task's merge entirely, which would
+    // overwrite this task's `MergeState` — and its `by` — with a fact
+    // nothing later corrects. The two ways to get here are an operator who
+    // merged the branch by hand and a crash between a merge that landed and
+    // the release that follows it; both want the merge that exists recorded,
+    // not a new one invented, which is exactly what `mpgm record-merge` is
+    // for (`verifyOperatorMerge`, `merge.ts`).
+    //
+    // Answered against the local `into`, the same revision `mergeChange`
+    // would merge into before it fetches. A branch already contained only in
+    // `origin/<into>` still reaches the no-op merge below; what it cannot do
+    // is reach it silently, because `mergeChange`'s own fetch is what moves
+    // the local trunk there, and that case is a hand merge that was pushed —
+    // the same `mpgm record-merge` answer, one re-run later.
+    const trunkBase = await options.worktrees.mergeBase(task.id, tip, into);
+    if (trunkBase === undefined || namesCommit(trunkBase, tip)) {
+      return stop(
+        trunkBase === undefined
+          ? `${task.id}: cannot tell whether '${worktree.branch}' (${tip}) is already ` +
+              `contained in '${into}' — git could not find a merge base for the two ` +
+              `from the worktree at '${worktree.path}'. Refusing the merge retry rather ` +
+              `than guessing (CONV-4): re-merging a branch the trunk already has writes ` +
+              `a second 'ChangeMerged' naming the wrong commit. Check that '${into}' and ` +
+              `${tip} are both resolvable there; if the merge has in fact already ` +
+              `happened, record it with \`mpgm record-merge ${task.id} --commit <sha> ` +
+              `--by <who>\`.`
+          : `${task.id}: '${worktree.branch}' (${tip}) is already contained in ` +
+              `'${into}', so there is no merge left to retry — someone merged it ` +
+              `outside this run, or this run merged it and stopped before recording ` +
+              `that. Re-merging would append a second 'ChangeMerged' naming whatever ` +
+              `'${into}' points at now, which need not be this task's merge at all. ` +
+              `Record the merge that actually happened instead: \`mpgm record-merge ` +
+              `${task.id} --commit <sha> --by <who>\`, where <sha> is the merge commit ` +
+              `on '${into}' that brought ${tip} in.`,
+        { ref: tip },
+      );
+    }
+
     let verdict: MergeVerdict;
     try {
       verdict = await options.checks(tip);
