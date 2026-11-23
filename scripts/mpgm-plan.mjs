@@ -2684,6 +2684,168 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['OBS-2', 'NFR-2'],
             },
+            {
+              id: 'T4.3.24',
+              title:
+                'probe:sdk is still red on plan, intermittently, and what ' +
+                'its exit code means is untested',
+              completionCriteria: [
+                '`npm run probe:sdk` reports no failure for a schema it ' +
+                  'claims to cover on a run where nothing is broken, on every ' +
+                  'run rather than on most, and the decision it rests on -- ' +
+                  'which outcomes count as failures, what the exit code is, ' +
+                  'what the operator line says -- is asserted offline. ' +
+                  'T4.3.20 removed the standing failure on design and its ' +
+                  'second review approved it with three minor findings; this ' +
+                  'files those together with the failure T4.3.20 left on ' +
+                  'plan, because they are the same canary and the same ' +
+                  'promise: CLAUDE.md tells a session to run the probe first ' +
+                  'when a live demo fails in the SDK layer, and a probe that ' +
+                  'is red without a regression cannot keep that promise.',
+                'Plan fails the same way design did, but only sometimes. ' +
+                  "Measured, not supposed: on this repository's runs the plan " +
+                  'probe failed before 2026-11-13, passed on 2026-11-13, and ' +
+                  'failed again on 2026-11-23 with `every risk must be ' +
+                  'validated by a milestone the plan declares (PLN-2)` -- the ' +
+                  'refine on `planSchema` in src/schemas.ts. The cause has ' +
+                  "design's shape, a content refine a minimal connectivity " +
+                  'prompt has no reason to satisfy, with one difference that ' +
+                  'makes it worse: a failure that alternates with passes is ' +
+                  'the hardest kind to tell from a real regression, because ' +
+                  'the operator has seen the same line come and go. The ' +
+                  'change picks between a plan prompt that satisfies PLN-2 ' +
+                  "every time while staying minimal, T4.3.20's named " +
+                  'exclusion with a fixture parse and `demo:plan` named as ' +
+                  'the live cover, and narrowing what the probe asks of ' +
+                  'content refines in general so the next schema with one ' +
+                  'does not repeat this -- it says which and prices the ones ' +
+                  'it refused. The third is the only one that stops a fourth ' +
+                  'instance; the second is proven but is a claim about plan ' +
+                  'alone.',
+                "The behaviour T4.3.20's acceptance rests on lives only in " +
+                  'the untested script. scripts/demo/probe-sdk.mjs decides ' +
+                  'that an excluded outcome is not counted in `failures`, ' +
+                  "that the exclusion's reason reaches stdout, and that the " +
+                  'exit status follows `failures` alone; ' +
+                  'src/agent/probe.test.ts asserts the outcome objects and ' +
+                  'nothing offline asserts any of those three. Move that ' +
+                  'decision into src/agent/probe.ts, the way T4.3.20 moved ' +
+                  'the branching there so vitest could reach it, and test it ' +
+                  'there; the script keeps only the printing and the exit.',
+                "The operator line's verb table is a hand-kept copy of a " +
+                  'type. `failVerbs` in the script restates the ' +
+                  '`ProbeFailStage` union from src/agent/probe.ts in an ' +
+                  "untyped .mjs with a `?? 'failed'` fallback, so a stage " +
+                  'added to the union silently degrades the line to `failed` ' +
+                  'with nothing reporting it; and `ProbeFailStage` is not ' +
+                  'exported from src/index.ts though `ProbeOutcome`, whose ' +
+                  '`stage` field it types, is. Make the mapping exhaustive ' +
+                  'where the type lives -- a `Record<ProbeFailStage, string>` ' +
+                  'the compiler checks -- and export the type.',
+                'The `Design` doc comment in src/schemas.ts still asserts a ' +
+                  'house pattern the file does not have: it says the type is ' +
+                  'named for the same reason every other schema in this file ' +
+                  'gets one, but `Design` is the only `z.infer` export there, ' +
+                  'and the precedent runs the other way -- `Plan` is inferred ' +
+                  'from `planSchema` in its consumer, src/pm/projection.ts. ' +
+                  "T4.3.20's rework corrected the comment's consumer and kept " +
+                  'this half. State the actual reason and drop the claim.',
+                "It must not weaken what T4.3.20 holds or the probe's " +
+                  'reason for existing: an excluded schema is still named ' +
+                  'with its reason and its live cover, an exclusion keyed by ' +
+                  'an unregistered id still fails loudly, every schema the ' +
+                  'probe does not exclude still gets a live round-trip, and ' +
+                  'no prompt grows into a generation -- the probe is seconds ' +
+                  'and cents, which is why CLAUDE.md runs it first. The tests ' +
+                  'assert that a run whose outcomes are all ok or excluded ' +
+                  'exits 0 and one with a failure exits non-zero, that the ' +
+                  'exclusion reason is in the output, that every ' +
+                  '`ProbeFailStage` has a verb, and that the plan probe -- ' +
+                  'live prompt or fixture, whichever the change chose -- is ' +
+                  'satisfied by what it is checked against. They fail against ' +
+                  'today, where none of the three script decisions is ' +
+                  'asserted and the plan probe can fail on content; a test ' +
+                  'that only asserts the probe runs is the test this has ' +
+                  'always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['TST-1', 'OBS-1'],
+            },
+            {
+              id: 'T4.3.25',
+              title:
+                'Nothing rebuilds dist/ after the loop merges, so the next ' +
+                'invocation runs the code the merge replaced',
+              completionCriteria: [
+                'The code `mpgm implement` runs is the code on the trunk it ' +
+                  'reads its plan from, or the command says it is not before ' +
+                  'it spends a session. Today nothing connects the two. ' +
+                  'bin/mpgm.mjs imports `../dist/index.js`; `dist/` is ' +
+                  'written only by `npm run build` (and by ' +
+                  '`check`/`check:fast`, which build first); `mergeChange` ' +
+                  '(src/implement/merge.ts) fetches, merges and pushes the ' +
+                  'trunk but never builds; and nothing compares what `dist/` ' +
+                  'was built from with what HEAD now is. So once the loop ' +
+                  'merges a change to the loop, the next invocation in the ' +
+                  'same checkout runs the loop the merge replaced, and says ' +
+                  'nothing. The same holds for every script that loads ' +
+                  '`dist/` -- scripts/plan-artifact.mjs, which generates the ' +
+                  'gated Plan artifact, scripts/audit-drift.mjs, ' +
+                  'scripts/gen-scope-requirements.mjs and ' +
+                  'scripts/demo/probe-sdk.mjs.',
+                'Measured, not supposed. On 2026-11-23, five days after ' +
+                  'T4.3.20 merged as 8338e58, `npm run probe:sdk` died with ' +
+                  "`SyntaxError: The requested module '../../dist/index.js' " +
+                  'does not provide an export named ' +
+                  "'defaultProbeExclusions'`, because `dist/` predated the " +
+                  'merge, and `mpgm implement T4.3.22` was about to run from ' +
+                  'the same `dist/`. That case was loud only because an ' +
+                  'export had been added. Where a merge changes behaviour ' +
+                  'without changing exports, the old behaviour runs silently: ' +
+                  'had nobody built after T4.3.17 merged, the next blocked ' +
+                  "task would have been re-invoked with T4.3.17's defect -- a " +
+                  'fresh review budget -- still in force. That is the sharper ' +
+                  'cost in a self-hosting harness whose tasks change the ' +
+                  'loop: the first real check that a merged loop fix works is ' +
+                  'the next run, and the next run is the old loop.',
+                'The change picks between having the loop build after it ' +
+                  'merges, having every entry point that loads `dist/` refuse ' +
+                  'or warn when what `dist/` was built from is not what the ' +
+                  'checkout now holds, and running from source so there is no ' +
+                  'build to go stale -- it says which and prices the ones it ' +
+                  'refused. The first keeps the operator out of it but ' +
+                  'couples merge to build: a build that fails after a merge ' +
+                  'has landed needs an answer, and rebuilding under the ' +
+                  'process that is running from `dist/` needs one too. The ' +
+                  'second is cheapest and also catches a checkout someone ' +
+                  'pulled by hand, but only reports; a refusal must name `npm ' +
+                  'run build` as the fix (CONV-3). The third collides with ' +
+                  'what CLAUDE.md records -- Node strips types but will not ' +
+                  'resolve a `.js` specifier to a `.ts` file, which is why ' +
+                  'fixtures run against `dist/` -- and says what it does ' +
+                  'about that.',
+                'It must fail closed. Whatever records what `dist/` was ' +
+                  'built from, a missing or unreadable record means stale, ' +
+                  'not fresh -- absence is not success (IMP-2) -- and a check ' +
+                  'that cannot run must not wave the command through. It must ' +
+                  'not slow every invocation by rebuilding unconditionally ' +
+                  'without saying what that costs, and it must not disturb ' +
+                  'CI, where build precedes test precisely so the subprocess ' +
+                  'fixtures run against a `dist/` built from the commit under ' +
+                  'test.',
+                'The test builds, then moves the checkout to a commit whose ' +
+                  'source differs, then invokes an entry point that loads ' +
+                  '`dist/`, and asserts the outcome the change states -- ' +
+                  'rebuilt before running, or refused with the fix named. A ' +
+                  'second case removes the build record and asserts it is ' +
+                  'treated as stale. They fail against today, where the entry ' +
+                  'point runs the old build and reports nothing; a test that ' +
+                  'only asserts `npm run build` produces `dist/` is the test ' +
+                  'this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['ORC-2', 'MNT-4'],
+            },
           ],
         },
       ],
