@@ -2988,6 +2988,95 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['HIL-3', 'IMP-3'],
             },
+            {
+              id: 'T4.3.28',
+              title:
+                'mergeChange records a merge it did not make whenever the ' +
+                'merge is a no-op, and a failed push on the merge-only ' +
+                'retry has no lever',
+              completionCriteria: [
+                'A `ChangeMerged` names a merge commit this call made and ' +
+                  "whose second parent is the task's tip, or the merge is " +
+                  'refused with a reason naming what happened and `mpgm ' +
+                  'record-merge` where a merge somebody else made is what ' +
+                  'exists; and a task whose merge landed locally but failed ' +
+                  'to push can be carried to the remote by re-running it once ' +
+                  'the push can succeed. Today neither holds. ' +
+                  "src/implement/merge.ts's `perform` runs `git merge " +
+                  '--no-ff`, which exits 0 with "Already up to date" and ' +
+                  'makes no commit when the tip is already in the trunk, then ' +
+                  "records `git rev-parse HEAD` as the merge. T4.3.22's " +
+                  'hand-written fix (e1bfb0e) closed one shape of that -- a ' +
+                  'branch only the remote contains, brought in by the ' +
+                  'catch-up fetch -- and deliberately kept every containment ' +
+                  'the local trunk already had, so the rest stays open on the ' +
+                  'regular merge path (`attemptMerge` in ' +
+                  'src/implement/loop.ts), which has no containment check of ' +
+                  'its own.',
+                "Measured by an independent review of T4.3.22's fixes on " +
+                  '2026-11-23, with a bare remote and a second clone, not ' +
+                  'supposed. (A) A branch with no commits of its own, with ' +
+                  'the remote moved ahead: `merged: true`, `commit` an ' +
+                  "unrelated task's merge. (B) A branch merged on GitHub and " +
+                  'then pulled into the local trunk before the loop merged: ' +
+                  "`merged: true`, `commit` the remote's unrelated head. (D) " +
+                  'A branch merged locally by hand and not pushed: the loop ' +
+                  "pushes the operator's merge and records it as its own, " +
+                  'where T4.2.15 records a hand merge as ' +
+                  '`ChangeMergedByOperator` with who made it. Case A is the ' +
+                  "one T4.3.22's comment kept on purpose, and the only thing " +
+                  'that relies on it is test fixtures: refusing every ' +
+                  'containment fails 25 loop tests whose scripted sessions ' +
+                  'commit nothing.',
+                'The failed-push half. No production caller passes an ' +
+                  'effect journal to `mergeChange` (both calls in ' +
+                  'src/implement/loop.ts omit it), so the redo ' +
+                  "`gitMergeContract`'s doc describes -- re-run `perform`, " +
+                  're-merge nothing, push again -- is reachable only from ' +
+                  'merge.test.ts. After a push fails on the merge-only retry ' +
+                  "T4.3.22 added, re-running reaches that retry's local " +
+                  'containment check first, which finds the tip in the local ' +
+                  'trunk and nothing recorded, and sends the operator to ' +
+                  '`mpgm record-merge`; `verifyOperatorMerge` checks against ' +
+                  'the fetched remote trunk, where the merge is not, and ' +
+                  "refuses. A transient push failure on a task's last allowed " +
+                  'round therefore ends where T4.3.22 exists to stop tasks ' +
+                  'ending: nothing a re-run or the named command can move.',
+                'The change decides from what the merge produced rather ' +
+                  'than from what moved the trunk: after `git merge --no-ff`, ' +
+                  'HEAD must have moved and `HEAD^2` must be the tip; the ' +
+                  "only already-present merge it may accept is this task's " +
+                  'own -- recognisable because `mergeMessage` writes ' +
+                  '`Closes-Task: <taskId>` into it and its second parent is ' +
+                  'the tip -- and only when the remote lacks it, which is the ' +
+                  'redo; everything else is refused. It says what it does ' +
+                  'about a task whose branch has no commits of its own: ' +
+                  'refused explicitly as a change with nothing to merge, or ' +
+                  'recorded as such without a `ChangeMerged` claiming a ' +
+                  'commit, and why; and it gives the 25 fixtures real commits ' +
+                  'rather than keeping the no-op merge alive for them. It ' +
+                  'either passes a journal from the loop or lets the ' +
+                  'merge-only retry reach `mergeChange` for its own unpushed ' +
+                  'merge, says which, and prices the other.',
+                'It must not weaken what already holds: a real first-time ' +
+                  'merge still merges and pushes; the remote-only refusal ' +
+                  'T4.3.22 added still refuses; a hand merge is still ' +
+                  'recorded only through `mpgm record-merge` after ' +
+                  '`verifyOperatorMerge` agrees (CONV-4); a failed push still ' +
+                  'never produces a `ChangeMerged` (T4.2.12). The tests cover ' +
+                  'A, B and D on the regular merge path, each asserting no ' +
+                  '`ChangeMerged` and a reason naming the case, and a ' +
+                  'loop-level test in which a push fails on the merge-only ' +
+                  'retry and a re-run after the remote accepts pushes lands ' +
+                  'that same merge on the remote with one `ChangeMerged`. ' +
+                  'They fail against today, where A, B and D return `merged: ' +
+                  'true` naming the wrong commit and the re-run is refused; a ' +
+                  'test over a branch with real commits that has never been ' +
+                  'merged anywhere is the test this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-1', 'ORC-5', 'OBS-1'],
+            },
           ],
         },
       ],
