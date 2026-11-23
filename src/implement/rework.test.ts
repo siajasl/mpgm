@@ -4606,6 +4606,61 @@ describe('a review that never approves (NFR-1)', () => {
       }
     });
 
+    // The same hand merge, made the way this project's trunk actually moves:
+    // on the remote, from another clone, then pushed. The local trunk does
+    // not have it, so the guard above passes, and it is `mergeChange`'s own
+    // catch-up fetch that brings it in (T4.3.22, third review).
+    it('does not record a merge of a branch the remote trunk already merged', async () => {
+      const { repo, worktrees, log, tip } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        const remote = mkdtempSync(join(tmpdir(), 'mpgm-rework-remote-'));
+        tempDirs.push(remote);
+        git(remote, ['init', '--bare', '--initial-branch=main']);
+        git(repo, ['remote', 'add', 'origin', remote]);
+        git(repo, ['push', 'origin', 'main', 'mpgm/T1']);
+
+        const external = mkdtempSync(join(tmpdir(), 'mpgm-rework-clone-'));
+        tempDirs.push(external);
+        execFileSync('git', ['clone', remote, external], { encoding: 'utf8' });
+        git(external, ['config', 'user.email', 'test@example.com']);
+        git(external, ['config', 'user.name', 'Test']);
+        git(external, [
+          'merge',
+          '--no-ff',
+          '--no-edit',
+          '-m',
+          'merged by hand',
+          'origin/mpgm/T1',
+        ]);
+        writeFileSync(join(external, 'unrelated.txt'), 'another task landed\n');
+        git(external, ['add', '--all']);
+        git(external, ['commit', '-m', 'an unrelated task']);
+        git(external, ['push', 'origin', 'main']);
+        const remoteHead = git(external, ['rev-parse', 'HEAD']);
+
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(provider.requests).toHaveLength(0);
+        expect(second.reason).toContain('already contained');
+        expect(second.reason).toContain(tip);
+        expect(second.reason).toContain('mpgm record-merge T1');
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+        // Caught up onto the remote, and nothing merged on top of it.
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(remoteHead);
+      } finally {
+        log.close();
+      }
+    });
+
     it('re-reads the checks on the retry rather than reusing the verdict the round saw', async () => {
       const { repo, worktrees, log, tip, trunkHead } =
         await reviewedAndRefusedByTheTrunk();

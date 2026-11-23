@@ -740,12 +740,14 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // not a new one invented, which is exactly what `mpgm record-merge` is
     // for (`verifyOperatorMerge`, `merge.ts`).
     //
-    // Answered against the local `into`, the same revision `mergeChange`
-    // would merge into before it fetches. A branch already contained only in
-    // `origin/<into>` still reaches the no-op merge below; what it cannot do
-    // is reach it silently, because `mergeChange`'s own fetch is what moves
-    // the local trunk there, and that case is a hand merge that was pushed —
-    // the same `mpgm record-merge` answer, one re-run later.
+    // Answered here against the local `into` only. A branch already
+    // contained only in `origin/<into>` — merged elsewhere and pushed, the
+    // way this project's trunk usually advances — passes this check, and is
+    // refused by `mergeChange` itself instead: its catch-up fetch is what
+    // brings that merge into the local trunk, so it is the one place that
+    // can see it, and it refuses with the same `mpgm record-merge` answer
+    // rather than recording a merge it did not make (`merge.ts`, T4.3.22
+    // third review).
     const trunkBase = await options.worktrees.mergeBase(task.id, tip, into);
     if (trunkBase === undefined || namesCommit(trunkBase, tip)) {
       return stop(
