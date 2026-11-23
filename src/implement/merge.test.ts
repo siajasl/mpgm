@@ -507,6 +507,96 @@ describe('mergeChange', () => {
     }
   });
 
+  // T4.3.22, third review: the catch-up fetch is what can make a branch
+  // "already merged" — merged by hand or from GitHub's UI and pushed, never
+  // in the local trunk until the fetch above brings it in. `git merge
+  // --no-ff` then answers "Already up to date" and exits 0, and without a
+  // check here `ChangeMerged` recorded the remote's head — another task's
+  // commit — as this task's merge.
+  it('refuses, rather than records, a branch the remote trunk already merged', async () => {
+    const { repo, branch, ref } = await repoWithBranch();
+    const remote = newBareRemote();
+    git(repo, ['remote', 'add', 'origin', remote]);
+    git(repo, ['push', 'origin', 'main', branch]);
+
+    // Merged elsewhere and pushed, then another commit lands on top, so a
+    // wrong record would name a commit that is not this branch's merge.
+    const external = cloneOf(remote);
+    git(external, [
+      'merge',
+      '--no-ff',
+      '--no-edit',
+      '-m',
+      'merged by hand',
+      `origin/${branch}`,
+    ]);
+    writeFileSync(join(external, 'unrelated.txt'), 'another task\n');
+    git(external, ['add', '--all']);
+    git(external, ['commit', '-m', 'an unrelated task']);
+    git(external, ['push', 'origin', 'main']);
+    const remoteHead = git(external, ['rev-parse', 'HEAD']);
+
+    const events: EventInput[] = [];
+    const result = await mergeChange({
+      runId: 'run-1',
+      repo,
+      branch,
+      request: request({ ref }),
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('already contained');
+    expect(result.reason).toContain(ref);
+    expect(result.reason).toContain('mpgm record-merge T1');
+    expect(events.filter((event) => event.type === 'ChangeMerged')).toHaveLength(0);
+    // No merge commit of its own was made: the local trunk is exactly the
+    // remote's head the catch-up fast-forwarded onto, nothing more.
+    expect(git(repo, ['rev-parse', 'HEAD'])).toBe(remoteHead);
+  });
+
+  // The narrowing that keeps the check above from breaking the effect
+  // journal's redo: a merge this call made whose push failed is already in
+  // the local trunk before the fetch, so retrying it still only pushes.
+  it('still redoes only the push for its own merge whose push failed', async () => {
+    const { repo, branch, ref } = await repoWithBranch();
+    const remote = newBareRemote();
+    git(repo, ['remote', 'add', 'origin', remote]);
+    git(repo, ['push', 'origin', 'main']);
+
+    chmodSync(remote, 0o555);
+    let first: Awaited<ReturnType<typeof mergeChange>>;
+    try {
+      first = await mergeChange({
+        runId: 'run-1',
+        repo,
+        branch,
+        request: request({ ref }),
+      });
+    } finally {
+      chmodSync(remote, 0o755);
+    }
+    expect(first.merged).toBe(false);
+    const localMerge = git(repo, ['rev-parse', 'HEAD']);
+
+    const retried = await mergeChange({
+      runId: 'run-1',
+      repo,
+      branch,
+      request: request({ ref }),
+    });
+
+    expect(retried.merged).toBe(true);
+    expect(retried.commit).toBe(localMerge);
+    expect(
+      execFileSync('git', ['--git-dir', remote, 'rev-parse', 'main'], {
+        encoding: 'utf8',
+      }).trim(),
+    ).toBe(localMerge);
+  });
+
   // T4.2.12 rework: a plain, unforced `git push` after the local `--no-ff`
   // merge is rejected non-fast-forward the moment `origin/main` has moved by
   // any other route while the kernel wasn't looking — most likely the "Merge
