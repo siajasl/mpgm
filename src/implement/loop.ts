@@ -754,6 +754,10 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // "someone merged it outside this run", and pointing at `record-merge`
     // there would send an operator to record the same merge a second time
     // (T4.3.22, third review). Say which merge is already recorded instead.
+    // Read for this run only, as `mpgm record-merge` also records per run: a
+    // task merged under one run and retried under another still gets the
+    // record-merge answer below, and recording it there would record it for
+    // that run a second time.
     const recorded = fold(options.log.read()).runs[runId]?.tasks[task.id]?.merged ?? null;
     if (trunkBase !== undefined && namesCommit(trunkBase, tip) && recorded !== null) {
       return stop(

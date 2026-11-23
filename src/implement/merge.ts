@@ -419,13 +419,19 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
     // what `mpgm record-merge` exists to record (`verifyOperatorMerge`), so
     // it is refused and named rather than re-recorded (CONV-4).
     //
-    // Deliberately narrower than "already contained": containment the local
-    // trunk had *before* the fetch keeps its existing behaviour. That covers
-    // the effect journal's redo after a failed push — this call's own merge,
-    // still local, with only the push left to do (`gitMergeContract`) — and
-    // a branch that never diverged from the trunk at all, which callers
-    // already rely on. The loop answers local containment for its merge-only
-    // retry itself, before it gets here (`retryMergeOnly`, `loop.ts`).
+    // Deliberately narrower than "already contained", and so not a complete
+    // answer: containment the local trunk had *before* the fetch keeps its
+    // existing behaviour, which still records a no-op merge as this call's.
+    // That keeps two things working that refusing all containment would
+    // break: the effect journal's redo after a failed push (this call's own
+    // merge, still local, only the push left — `gitMergeContract`), though no
+    // production caller passes a journal today, so that redo is reachable
+    // only from this module's own tests; and branches that never diverged
+    // from the trunk, which only test fixtures rely on. What stays open — a
+    // hand merge already pulled or made locally, a zero-commit branch with a
+    // moved remote — is recorded as its own task rather than closed here.
+    // The loop answers local containment for its merge-only retry itself,
+    // before it gets here (`retryMergeOnly`, `loop.ts`).
     if (
       remote !== '' &&
       !containedBeforeFetch &&
