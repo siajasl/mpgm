@@ -4661,6 +4661,76 @@ describe('a review that never approves (NFR-1)', () => {
       }
     });
 
+    // A merge this run already made and recorded, left with its checkout
+    // because the run asked for `cleanUp: false`. Re-running reaches the
+    // already-contained refusal, which must not send the operator to record
+    // that same merge a second time (T4.3.22, third review).
+    it('names the merge already recorded rather than asking for it to be recorded again', async () => {
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'feature.txt'), 'the reviewed change\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'the change this task is about']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      try {
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+        const provider = new ScriptedProvider([
+          scriptedSuccess({
+            ref: tip,
+            summary: 'done',
+            files: ['feature.txt'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+          scriptedSuccess({
+            ref: tip,
+            verdict: 'approve',
+            summary: 'good',
+            findings: [],
+            deviations: [],
+          }),
+        ]);
+        const first = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+          cleanUp: false,
+        });
+        expect(first.status).toBe('merged');
+        const merges = log.read().filter((event) => event.type === 'ChangeMerged');
+        expect(merges).toHaveLength(1);
+        const recordedCommit = (merges[0]?.payload as { commit: string }).commit;
+
+        const after = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, after, log),
+          worktrees,
+          maxReviewAttempts: 1,
+          cleanUp: false,
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(after.requests).toHaveLength(0);
+        expect(second.reason).toContain('already recorded');
+        expect(second.reason).toContain(recordedCommit);
+        expect(second.reason).not.toContain('record-merge');
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          1,
+        );
+      } finally {
+        log.close();
+      }
+    });
+
     it('re-reads the checks on the retry rather than reusing the verdict the round saw', async () => {
       const { repo, worktrees, log, tip, trunkHead } =
         await reviewedAndRefusedByTheTrunk();

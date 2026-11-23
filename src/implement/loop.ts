@@ -749,6 +749,23 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // rather than recording a merge it did not make (`merge.ts`, T4.3.22
     // third review).
     const trunkBase = await options.worktrees.mergeBase(task.id, tip, into);
+    // A merge this task already has on the log — this run merged it and was
+    // run with `cleanUp: false`, so the checkout outlived the merge — is not
+    // "someone merged it outside this run", and pointing at `record-merge`
+    // there would send an operator to record the same merge a second time
+    // (T4.3.22, third review). Say which merge is already recorded instead.
+    const recorded = fold(options.log.read()).runs[runId]?.tasks[task.id]?.merged ?? null;
+    if (trunkBase !== undefined && namesCommit(trunkBase, tip) && recorded !== null) {
+      return stop(
+        `${task.id}: '${worktree.branch}' (${tip}) is already merged into ` +
+          `'${recorded.into}', and that merge is already recorded for this task as ` +
+          recorded.commit +
+          (recorded.by === '' ? '' : ` (recorded by ${recorded.by})`) +
+          `. There is nothing left to retry or to record; release the leftover ` +
+          `worktree at '${worktree.path}' if it is no longer wanted.`,
+        { ref: tip },
+      );
+    }
     if (trunkBase === undefined || namesCommit(trunkBase, tip)) {
       return stop(
         trunkBase === undefined
