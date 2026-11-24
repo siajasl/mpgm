@@ -14,7 +14,7 @@ import { RoleRegistry } from '../role/loader.js';
 import { projectOutputSchemas } from '../schemas.js';
 import { implementTask } from './loop.js';
 import { WorktreeManager } from './worktree.js';
-import { mergeVerdict, type CheckRun } from './checks.js';
+import { ChecksPollError, mergeVerdict, type CheckRun } from './checks.js';
 
 /**
  * T4.3.26: the loop asked CI about whatever `ref` the implementing session
@@ -200,6 +200,11 @@ describe('a ref the implementing session reported, not read from the worktree (T
       expect(result.reason ?? '').toContain(
         'ref: must be a commit object name (7-40 hex characters), not prose about one',
       );
+      // The two direct regression guards for the misdiagnosis this task is
+      // named after — a positive assertion on the schema message does not by
+      // itself exclude a reason that *also* blames CI (review finding).
+      expect(result.reason ?? '').not.toContain('CI could not be reached');
+      expect(result.reason ?? '').not.toContain('No commit found');
     } finally {
       log.close();
     }
@@ -253,6 +258,9 @@ describe('a ref the implementing session reported, not read from the worktree (T
         // The real tip, named too — not just the claim that was wrong.
         const tip = git(repo, ['rev-parse', 'main']);
         expect(result.reason ?? '').toContain(tip);
+        // This is not a build failure and CI was never asked about it — the
+        // refusal must not read as CI being unreachable (review finding).
+        expect(result.reason ?? '').not.toContain('CI could not be reached');
       } finally {
         log.close();
       }
@@ -303,7 +311,8 @@ describe('a ref the implementing session reported, not read from the worktree (T
 
   it(
     'asks CI about the worktree tip after a repair session commits and then ' +
-      'produces no usable output, spending the budget rather than aborting',
+      'produces no usable output, spending the budget rather than aborting ' +
+      '— and publishes that tip before polling it',
     async () => {
       // The second `checks` call, where the ref is not a session's claim at
       // all but whatever the loop carried forward after a repair produced
@@ -312,6 +321,17 @@ describe('a ref the implementing session reported, not read from the worktree (T
       // refuses — aborting the task on the implementing session's own
       // correct commit and abandoning the repair budget the loop documents
       // as still shrinking (review finding, T4.3.26).
+      //
+      // This path never called `options.publish` before T4.3.26's rework —
+      // only the usable-output arm did — so the tip it carried forward could
+      // be a commit the real CI provider had never seen, which answers a
+      // check-runs lookup 422, which `awaitChecks` retries and reports as CI
+      // being unreachable: the exact misdiagnosis this task exists to
+      // remove, reopened through the one path that skipped the push (review
+      // finding). `checks` below rejects any ref `publish` has not already
+      // recorded, the same way the real provider would answer for a sha it
+      // has never seen, so polling an unpushed commit fails this test
+      // instead of passing it quietly.
       const repo = newRepo();
       const worktrees = new WorktreeManager({ repo });
       const implemented = git(repo, ['rev-parse', 'HEAD']);
@@ -352,27 +372,46 @@ describe('a ref the implementing session reported, not read from the worktree (T
       ]);
       const log = openLog();
       const asked: string[] = [];
+      const published: { branch: string; ref: string }[] = [];
+      const pushedRefs = new Set<string>();
 
       try {
         const result = await implementTask({
           ...baseOptions(repo, provider, log, { maxValidationAttempts: 1 }),
           worktrees,
           maxRepairAttempts: 1,
+          publish: (branch: string, ref: string) => {
+            published.push({ branch, ref });
+            pushedRefs.add(ref);
+            return Promise.resolve();
+          },
           checks: (ref: string) => {
             asked.push(ref);
+            if (!pushedRefs.has(ref)) {
+              // What the real provider wrapper (`awaitChecks` over
+              // `fetchCheckRuns`) does once GitHub has answered "No commit
+              // found for SHA" enough times in a row to give up — the shape
+              // this test's own `checks` arrives in once an unpushed ref
+              // reaches production's provider.
+              throw new ChecksPollError(6, new Error(`No commit found for SHA: ${ref}`));
+            }
             return Promise.resolve(mergeVerdict({ ref, runs: RED }));
           },
         });
 
         // Two polls: the implementing commit, then the commit the repair
         // session actually left behind — read from git, since no usable
-        // output claimed it.
+        // output claimed it. Neither poll reached `checks` for an unpushed
+        // ref, because `published` already recorded it by the time the poll
+        // ran.
         expect(asked).toEqual([implemented, repairCommit]);
+        expect(published.map((p) => p.ref)).toContain(repairCommit);
         // The budget was spent on a verdict, not abandoned by a refusal
-        // naming the wrong session.
+        // naming the wrong session, and not misread as CI being unreachable.
         expect(result.status).toBe('blocked');
         expect(result.reason ?? '').toContain('retry budget of 1 attempts exhausted');
         expect(result.reason ?? '').not.toContain('refusing to ask CI about');
+        expect(result.reason ?? '').not.toContain('CI could not be reached');
       } finally {
         log.close();
       }
@@ -440,4 +479,93 @@ describe('a ref the implementing session reported, not read from the worktree (T
       log.close();
     }
   });
+
+  it(
+    'names the rework session, not the implementing one, when round 2 ' +
+      "reports a ref the branch is not on — round 1's commit really is on it",
+    async () => {
+      // `polled` used to be set only at declaration and inside the repair
+      // callback, never per round, so the first poll of round 2+ was given
+      // the rework session's ref (`ref: latest.ref`) while the refusal still
+      // blamed "the implementing session's output" — a commit the branch
+      // really is on (review finding, T4.3.26).
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const implemented = git(repo, ['rev-parse', 'HEAD']);
+      // Well-formed, resolvable, and simply not on the task's branch — the
+      // rework session's claim, not the implementing session's.
+      git(repo, ['checkout', '-b', 'unrelated']);
+      writeFileSync(join(repo, 'elsewhere.txt'), 'not on the task branch\n');
+      git(repo, ['add', '--all']);
+      git(repo, ['commit', '-m', 'a commit on an unrelated branch']);
+      const otherCommit = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, ['checkout', 'main']);
+
+      const provider = new ScriptedProvider([
+        // Round 1's implementing session: the real head, which CI passes.
+        scriptedSuccess({
+          ref: implemented,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        // Round 1's review asks for changes.
+        scriptedSuccess({
+          ref: implemented,
+          verdict: 'request-changes',
+          summary: 'not yet',
+          findings: [
+            {
+              file: 'README.md',
+              concern: 'no',
+              remedy: 'yes',
+              severity: 'major' as const,
+            },
+          ],
+          deviations: [],
+        }),
+        // Round 1's rework reports a commit the branch is not on — it never
+        // actually committed it to the worktree, so git's tip stays at
+        // `implemented`.
+        scriptedSuccess({
+          ref: otherCommit,
+          summary: 'tried',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+      ]);
+      const log = openLog();
+      const asked: string[] = [];
+
+      try {
+        const result = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          checks: (ref: string) => {
+            asked.push(ref);
+            return Promise.resolve(mergeVerdict({ ref, runs: GREEN }));
+          },
+        });
+
+        expect(result.status).toBe('blocked');
+        // Round 2's poll never reached CI: the ref could not be placed.
+        expect(asked).toEqual([implemented]);
+        // Whose claim it was. A refusal that says "the implementing session"
+        // sends an operator to round 1's commit, which the branch really is
+        // on — the wrong diagnosis in an error that stops work (CONV-3).
+        expect(result.reason ?? '').toContain("round 1's rework output");
+        expect(result.reason ?? '').not.toContain('the implementing session');
+        expect(result.reason ?? '').toContain(otherCommit);
+        expect(result.reason ?? '').toContain(implemented);
+      } finally {
+        log.close();
+      }
+    },
+  );
 });
