@@ -4283,4 +4283,566 @@ describe('a review that never approves (NFR-1)', () => {
       },
     );
   });
+
+  /**
+   * A task whose last allowed round cleared review and still did not merge
+   * (T4.3.22). Every case here starts from the same state, built by
+   * `reviewedAndRefusedByTheTrunk` below: a branch carrying a commit of its
+   * own, approved by a review that named that exact commit, whose merge
+   * `mergeChange` refused for a cause nothing about review can fix.
+   *
+   * The branch carries a real commit deliberately. The first version of
+   * these tests scripted a session that wrote nothing, which left the branch
+   * identical to the trunk — `git merge --no-ff` then answers "Already up to
+   * date" and exits 0, so `merged: true` came back from a merge that created
+   * no commit and the headline assertion passed without anything reaching
+   * the trunk (review finding, CONV-6). The assertions below are on the
+   * trunk moving, not on the status alone.
+   */
+  describe('a task whose last allowed round cleared review but did not merge (T4.3.22)', () => {
+    interface Resumable {
+      readonly repo: string;
+      readonly worktrees: WorktreeManager;
+      readonly log: EventLog;
+      /** The commit the approving round reviewed, and the branch's tip. */
+      readonly tip: string;
+      /** Where the trunk stood before any of this, and still stands. */
+      readonly trunkHead: string;
+    }
+
+    /**
+     * One invocation that authored a commit, had it approved, and was then
+     * refused by the trunk itself — `mergeChange` checks `options.repo` is
+     * clean before it merges, and this leaves an uncommitted file there, the
+     * same refusal `merge.test.ts`'s own "refuses to merge into a dirty
+     * trunk" asserts. The dirt is cleaned up before this returns: what the
+     * caller inherits is a task with no review budget left, a last round
+     * that reads as allowed, and nothing but the resume guard between it and
+     * a merge.
+     */
+    async function reviewedAndRefusedByTheTrunk(): Promise<Resumable> {
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const trunkHead = git(repo, ['rev-parse', 'HEAD']);
+
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'feature.txt'), 'the reviewed change\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'the change this task is about']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      log.append({
+        runId: 'r',
+        type: 'RunStarted',
+        payload: { project: 'mpgm', operator: 'op' },
+      });
+
+      writeFileSync(join(repo, 'stray.txt'), 'uncommitted\n');
+
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: tip,
+          summary: 'done',
+          files: ['feature.txt'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: tip,
+          verdict: 'approve',
+          summary: 'good',
+          findings: [],
+          deviations: [],
+        }),
+      ]);
+
+      const first = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxReviewAttempts: 1,
+      });
+
+      // The premise, asserted rather than assumed: review cleared the gate,
+      // and what stopped the merge was the trunk.
+      expect(first.status).toBe('blocked');
+      expect(first.reason).toContain('dirty');
+      expect(first.review?.approved).toBe(true);
+      expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+      expect(log.read().filter((event) => event.type === 'ChangeReviewed')).toHaveLength(
+        1,
+      );
+
+      rmSync(join(repo, 'stray.txt'));
+      return { repo, worktrees, log, tip, trunkHead };
+    }
+
+    const reviewSessionsOf = (provider: ScriptedProvider): SessionRequest[] =>
+      provider.requests.filter((request) =>
+        request.prompt.includes('Review the change for'),
+      );
+
+    it('retries the merge alone once the merge-side cause is fixed, with no new session', async () => {
+      const { repo, worktrees, log, tip, trunkHead } =
+        await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // Nothing scripted at all. If this refuses — the regression T4.3.22
+        // exists to close — or dispatches any session, `ScriptedProvider`
+        // throws rather than this test passing on a round it never checked.
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('merged');
+        expect(provider.requests).toHaveLength(0);
+
+        // The trunk actually moved, and moved onto the reviewed commit: a
+        // merge commit whose second parent is the tip the approving round
+        // named. `status: 'merged'` alone is satisfied by a no-op merge.
+        const trunk = git(repo, ['rev-parse', 'HEAD']);
+        expect(trunk).not.toBe(trunkHead);
+        expect(git(repo, ['rev-parse', 'HEAD^2'])).toBe(tip);
+        expect(git(repo, ['rev-parse', 'HEAD^1'])).toBe(trunkHead);
+
+        const merged = log.read().filter((event) => event.type === 'ChangeMerged');
+        expect(merged).toHaveLength(1);
+        expect((merged[0]?.payload as { commit: string }).commit).toBe(trunk);
+        expect(second.commit).toBe(trunk);
+
+        // No review round was spent getting there.
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(1);
+      } finally {
+        log.close();
+      }
+    });
+
+    it('gives an operator redirect a review round rather than a silent merge retry', async () => {
+      const { repo, worktrees, log, tip } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // The lever both refusals promise. Recorded after the last round,
+        // which is what `redirectAuthorizesContinuation` measures it against.
+        log.append({
+          runId: 'r',
+          type: 'OperatorIntervened',
+          payload: {
+            action: 'redirect',
+            detail: 'look at the error path again before this lands',
+            taskId: 'T1',
+          },
+        });
+
+        const provider = new ScriptedProvider([
+          scriptedSuccess({
+            ref: tip,
+            summary: 'looked again',
+            files: ['feature.txt'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+          scriptedSuccess({
+            ref: tip,
+            verdict: 'approve',
+            summary: 'still good',
+            findings: [],
+            deviations: [],
+          }),
+        ]);
+
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        // A round ran: the operator asked for one, and a merge retry that
+        // dispatched nothing would leave `requests` empty. Exactly one —
+        // one redirect buys one round, not a fresh budget (T4.3.17).
+        expect(reviewSessionsOf(provider)).toHaveLength(1);
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(2);
+        // The operator's own note reached the sessions it bought.
+        expect(provider.requests[0]?.prompt).toContain('look at the error path again');
+        expect(second.status).toBe('merged');
+      } finally {
+        log.close();
+      }
+    });
+
+    it('grants a redirect its round even where the branch has moved past the reviewed commit', async () => {
+      const { repo, worktrees, log } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // The state the case above this refuses outright: a tip nobody has
+        // reviewed, so there is no merge to retry. Without the redirect this
+        // invocation is blocked (see 'does not merge once the branch has
+        // moved past...'); with it, the operator gets the round.
+        const moved = await worktrees.acquire('T1');
+        writeFileSync(join(moved.path, 'extra.txt'), 'nobody reviewed this\n');
+        git(moved.path, ['add', '--all']);
+        git(moved.path, ['commit', '-m', 'unreviewed follow-up']);
+        const movedTip = git(moved.path, ['rev-parse', 'HEAD']);
+
+        log.append({
+          runId: 'r',
+          type: 'OperatorIntervened',
+          payload: {
+            action: 'redirect',
+            detail: 'the follow-up commit is mine; review the branch as it stands',
+            taskId: 'T1',
+          },
+        });
+
+        const granted = new ScriptedProvider([
+          scriptedSuccess({
+            ref: movedTip,
+            summary: 'the branch as it stands',
+            files: ['extra.txt'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+          scriptedSuccess({
+            ref: movedTip,
+            verdict: 'request-changes',
+            summary: 'not yet',
+            findings: [
+              {
+                file: 'extra.txt',
+                concern: 'says nothing',
+                remedy: 'say something',
+                severity: 'blocker',
+              },
+            ],
+            deviations: [],
+          }),
+        ]);
+
+        const second = await implementTask({
+          ...baseOptions(repo, granted, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(reviewSessionsOf(granted)).toHaveLength(1);
+        expect(second.status).toBe('blocked');
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(2);
+
+        // And one redirect is one round: re-running again, with no new
+        // redirect, is refused rather than granted a second.
+        const after = new ScriptedProvider([]);
+        const third = await implementTask({
+          ...baseOptions(repo, after, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(third.status).toBe('blocked');
+        expect(after.requests).toHaveLength(0);
+        expect(third.reason).toContain('review budget');
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(2);
+      } finally {
+        log.close();
+      }
+    });
+
+    it('does not merge a branch the trunk already contains a second time', async () => {
+      const { repo, worktrees, log, tip } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // The hand merge the old refusal message told an operator to make,
+        // or a crash between a merge that landed and the release after it.
+        // Either way the branch is in the trunk and nothing recorded it.
+        git(repo, ['merge', '--no-ff', '--no-edit', '-m', 'merged by hand', 'mpgm/T1']);
+        const trunkAfterHandMerge = git(repo, ['rev-parse', 'HEAD']);
+        // A later commit on the trunk, so that a retry that merged anyway
+        // would record a `ChangeMerged` naming a commit that is not this
+        // task's merge — the way the second record goes wrong, not merely
+        // that there is one.
+        writeFileSync(join(repo, 'unrelated.txt'), 'another task landed\n');
+        git(repo, ['add', '--all']);
+        git(repo, ['commit', '-m', 'an unrelated task']);
+        const trunkHead = git(repo, ['rev-parse', 'HEAD']);
+
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('blocked');
+        // Named well enough to act on without reading the loop (CONV-3):
+        // which branch, which commit, and the verb that records a merge
+        // somebody else made.
+        expect(second.reason).toContain('already contained');
+        expect(second.reason).toContain(tip);
+        expect(second.reason).toContain('mpgm record-merge T1');
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+        // The trunk is untouched, and in particular no merge of the
+        // already-merged branch was made on top of the unrelated commit.
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+        expect(git(repo, ['rev-parse', 'HEAD^1'])).toBe(trunkAfterHandMerge);
+      } finally {
+        log.close();
+      }
+    });
+
+    // The same hand merge, made the way this project's trunk actually moves:
+    // on the remote, from another clone, then pushed. The local trunk does
+    // not have it, so the guard above passes, and it is `mergeChange`'s own
+    // catch-up fetch that brings it in (T4.3.22, third review).
+    it('does not record a merge of a branch the remote trunk already merged', async () => {
+      const { repo, worktrees, log, tip } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        const remote = mkdtempSync(join(tmpdir(), 'mpgm-rework-remote-'));
+        tempDirs.push(remote);
+        git(remote, ['init', '--bare', '--initial-branch=main']);
+        git(repo, ['remote', 'add', 'origin', remote]);
+        git(repo, ['push', 'origin', 'main', 'mpgm/T1']);
+
+        const external = mkdtempSync(join(tmpdir(), 'mpgm-rework-clone-'));
+        tempDirs.push(external);
+        execFileSync('git', ['clone', remote, external], { encoding: 'utf8' });
+        git(external, ['config', 'user.email', 'test@example.com']);
+        git(external, ['config', 'user.name', 'Test']);
+        git(external, [
+          'merge',
+          '--no-ff',
+          '--no-edit',
+          '-m',
+          'merged by hand',
+          'origin/mpgm/T1',
+        ]);
+        writeFileSync(join(external, 'unrelated.txt'), 'another task landed\n');
+        git(external, ['add', '--all']);
+        git(external, ['commit', '-m', 'an unrelated task']);
+        git(external, ['push', 'origin', 'main']);
+        const remoteHead = git(external, ['rev-parse', 'HEAD']);
+
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(provider.requests).toHaveLength(0);
+        expect(second.reason).toContain('already contained');
+        expect(second.reason).toContain(tip);
+        expect(second.reason).toContain('mpgm record-merge T1');
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+        // Caught up onto the remote, and nothing merged on top of it.
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(remoteHead);
+      } finally {
+        log.close();
+      }
+    });
+
+    // A merge this run already made and recorded, left with its checkout
+    // because the run asked for `cleanUp: false`. Re-running reaches the
+    // already-contained refusal, which must not send the operator to record
+    // that same merge a second time (T4.3.22, third review).
+    it('names the merge already recorded rather than asking for it to be recorded again', async () => {
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const worktree = await worktrees.acquire('T1');
+      writeFileSync(join(worktree.path, 'feature.txt'), 'the reviewed change\n');
+      git(worktree.path, ['add', '--all']);
+      git(worktree.path, ['commit', '-m', 'the change this task is about']);
+      const tip = git(worktree.path, ['rev-parse', 'HEAD']);
+
+      const log = EventLog.open(MEMORY, { registry: kernelRegistry() });
+      try {
+        log.append({
+          runId: 'r',
+          type: 'RunStarted',
+          payload: { project: 'mpgm', operator: 'op' },
+        });
+        const provider = new ScriptedProvider([
+          scriptedSuccess({
+            ref: tip,
+            summary: 'done',
+            files: ['feature.txt'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+          scriptedSuccess({
+            ref: tip,
+            verdict: 'approve',
+            summary: 'good',
+            findings: [],
+            deviations: [],
+          }),
+        ]);
+        const first = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+          cleanUp: false,
+        });
+        expect(first.status).toBe('merged');
+        const merges = log.read().filter((event) => event.type === 'ChangeMerged');
+        expect(merges).toHaveLength(1);
+        const recordedCommit = (merges[0]?.payload as { commit: string }).commit;
+
+        const after = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, after, log),
+          worktrees,
+          maxReviewAttempts: 1,
+          cleanUp: false,
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(after.requests).toHaveLength(0);
+        expect(second.reason).toContain('already recorded');
+        expect(second.reason).toContain(recordedCommit);
+        expect(second.reason).not.toContain('record-merge');
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          1,
+        );
+      } finally {
+        log.close();
+      }
+    });
+
+    it('re-reads the checks on the retry rather than reusing the verdict the round saw', async () => {
+      const { repo, worktrees, log, tip, trunkHead } =
+        await reviewedAndRefusedByTheTrunk();
+
+      try {
+        const before = log.read().filter((event) => event.type === 'ChecksReported');
+
+        // The approving round saw green. CI for this same commit is red by
+        // the time the merge is retried — a scan finding published after the
+        // round, a check re-run. Absence of a fresh read is not success
+        // (IMP-2): this is the one path that merges with no review session
+        // at all, so its CI gate is the one that has to be real.
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+          checks: (ref: string) => Promise.resolve(mergeVerdict({ ref, runs: RED })),
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(second.reason).toContain('scan');
+        expect(provider.requests).toHaveLength(0);
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+
+        // The read happened and is on the log, for the commit being merged.
+        const after = log.read().filter((event) => event.type === 'ChecksReported');
+        expect(after).toHaveLength(before.length + 1);
+        const latest = after[after.length - 1]?.payload as {
+          ref: string;
+          mergeable: boolean;
+        };
+        expect(latest.ref).toBe(tip);
+        expect(latest.mergeable).toBe(false);
+      } finally {
+        log.close();
+      }
+    });
+
+    it('does not retry the merge once an operator has killed the run', async () => {
+      const { repo, worktrees, log, trunkHead } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // Recorded before the resuming invocation, which is the one shape
+        // the rest of the loop's control reads cannot catch: this path
+        // dispatches no session at all, so `track` — where a pause or a
+        // kill normally stops a task — never runs (T4.2.4, HIL-3).
+        log.append({
+          runId: 'r',
+          type: 'OperatorIntervened',
+          payload: { action: 'kill', detail: 'stop everything' },
+        });
+
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(second.reason).toContain('killed');
+        // The trunk is exactly where it was: without the control read the
+        // retry merges and pushes on an invocation an operator had already
+        // told to stop.
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+      } finally {
+        log.close();
+      }
+    });
+
+    it('does not merge once the branch has moved past the commit the approving round reviewed', async () => {
+      const { repo, worktrees, log, trunkHead } = await reviewedAndRefusedByTheTrunk();
+
+      try {
+        // A commit nobody reviewed — the one case a merge retry must refuse
+        // rather than carry the old approval onto.
+        const moved = await worktrees.acquire('T1');
+        writeFileSync(join(moved.path, 'extra.txt'), 'nobody reviewed this\n');
+        git(moved.path, ['add', '--all']);
+        git(moved.path, ['commit', '-m', 'unreviewed follow-up']);
+
+        const provider = new ScriptedProvider([]);
+        const second = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          maxReviewAttempts: 1,
+        });
+
+        expect(second.status).toBe('blocked');
+        expect(provider.requests).toHaveLength(0);
+        expect(second.reason).toMatch(/T4\.3\.22/);
+        // Says which of the three ways a last-allowed round can fail to be
+        // retryable this is, not merely that one of them did (CONV-3).
+        expect(second.reason).toContain('no longer on the exact commit');
+        // Nothing merged: the trunk is exactly where it started.
+        expect(git(repo, ['rev-parse', 'HEAD'])).toBe(trunkHead);
+        expect(log.read().filter((event) => event.type === 'ChangeMerged')).toHaveLength(
+          0,
+        );
+        expect(
+          log.read().filter((event) => event.type === 'ChangeReviewed'),
+        ).toHaveLength(1);
+      } finally {
+        log.close();
+      }
+    });
+  });
 });

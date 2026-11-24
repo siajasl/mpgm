@@ -365,6 +365,9 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
   const remote = (await remoteExists(options.repo, remoteName)) ? remoteName : '';
 
   const perform = async (): Promise<string> => {
+    // Read before the catch-up below moves the local trunk, so a branch that
+    // only the remote contains can be told apart from one already merged here.
+    const containedBeforeFetch = await isAncestor(options.repo, tip, 'HEAD');
     if (remote !== '') {
       // Nothing here fetches or fast-forwards the local trunk on its own
       // (worktree.ts branches from whatever `into` already is), so once
@@ -403,6 +406,46 @@ export async function mergeChange(options: MergeChangeOptions): Promise<MergeRes
           { cause },
         );
       }
+    }
+
+    // A branch the remote trunk already contains, and the local one did not
+    // until the catch-up above, was merged somewhere else and pushed — by
+    // hand, or from GitHub's UI, which is how this repository's trunk
+    // usually advances. `git merge --no-ff` would answer "Already up to
+    // date", exit 0 and make no commit; the `rev-parse HEAD` below would then
+    // record whatever the remote's head is as this task's merge — quite
+    // possibly another task's merge entirely — and `ChangeMerged` would claim
+    // a merge this call never made (T4.3.22, third review). That merge is
+    // what `mpgm record-merge` exists to record (`verifyOperatorMerge`), so
+    // it is refused and named rather than re-recorded (CONV-4).
+    //
+    // Deliberately narrower than "already contained", and so not a complete
+    // answer: containment the local trunk had *before* the fetch keeps its
+    // existing behaviour, which still records a no-op merge as this call's.
+    // That keeps two things working that refusing all containment would
+    // break: the effect journal's redo after a failed push (this call's own
+    // merge, still local, only the push left — `gitMergeContract`), though no
+    // production caller passes a journal today, so that redo is reachable
+    // only from this module's own tests; and branches that never diverged
+    // from the trunk, which only test fixtures rely on. What stays open — a
+    // hand merge already pulled or made locally, a zero-commit branch with a
+    // moved remote — is recorded as its own task rather than closed here.
+    // The loop answers local containment for its merge-only retry itself,
+    // before it gets here (`retryMergeOnly`, `loop.ts`).
+    if (
+      remote !== '' &&
+      !containedBeforeFetch &&
+      (await isAncestor(options.repo, tip, 'HEAD'))
+    ) {
+      throw new MergeError(
+        `'${options.branch}' (${tip}) is already contained in '${remote}/${into}', ` +
+          `merged there by something other than this call, so there is nothing ` +
+          `left to merge. Merging again would make no commit and record whatever ` +
+          `'${into}' points at now as this task's merge. Record the merge that ` +
+          `actually happened instead: \`mpgm record-merge ${options.request.taskId} ` +
+          `--commit <sha> --by <who>\`, where <sha> is the merge commit on '${into}' ` +
+          `that brought ${tip} in.`,
+      );
     }
     try {
       await git(options.repo, [

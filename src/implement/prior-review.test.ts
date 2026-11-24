@@ -57,6 +57,8 @@ describe('which review is still worth carrying', () => {
     );
 
     expect(found?.summary).toBe('second');
+    expect(found?.reviewerRole).toBe('code-reviewer');
+    expect(found?.deviations).toStrictEqual(['CONV-5']);
     expect(found?.undeclared).toStrictEqual(['CONV-5']);
     expect(found?.findings).toStrictEqual([
       {
@@ -127,6 +129,12 @@ describe('which review is still worth carrying', () => {
     expect(found?.undeclared).toStrictEqual([]);
   });
 
+  it('tolerates an event recorded before deviations were stored', () => {
+    const found = lastReviewOf([reviewed({ deviations: undefined })], 'T1', TIP);
+
+    expect(found?.deviations).toStrictEqual([]);
+  });
+
   it('tolerates a v1 event recorded before findings were more than a count (T4.2.14)', () => {
     // `upcastChangeReviewedV1` (`../event/catalog.ts`) sets `findingDetails`
     // to `[]` on replay, not to a fabricated array the length of `findings`,
@@ -140,9 +148,11 @@ describe('which review is still worth carrying', () => {
 describe('what the resuming author is told', () => {
   const base: PriorReview = {
     reviewTaskId: 'T1-review-3',
+    reviewerRole: 'code-reviewer',
     ref: TIP,
     approved: false,
     summary: 'the env constraint is missing at the input boundary',
+    deviations: ['CONV-5'],
     undeclared: ['CONV-5'],
     findings: [
       {

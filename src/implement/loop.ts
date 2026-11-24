@@ -29,7 +29,7 @@ import {
 import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
 import { namesCommit, reconcileRef } from './commit-ref.js';
-import { lastReviewOf, renderPriorReview } from './prior-review.js';
+import { lastReviewOf, renderPriorReview, type PriorReview } from './prior-review.js';
 import { priorReviewBudgetOf, redirectAuthorizesContinuation } from './review-budget.js';
 import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
 import type { ProgressReporter, SessionKind } from './progress.js';
@@ -687,6 +687,231 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     };
   };
 
+  // A merge-only retry for a task whose last recorded round cleared the
+  // merge gate and still did not merge (T4.3.22). `priorBudget.lastRoundAllowed`
+  // says the last `ChangeReviewed` this run logged for the task was approved
+  // with nothing undeclared; it does not say which commit that was, and
+  // `decideMerge` refuses on more than the review — a dirty or diverged
+  // `into`, a failed fetch — none of which a fresh review would have fixed
+  // anyway. This retries exactly that gate, against a fresh CI verdict for
+  // the exact commit the approving round reviewed, and dispatches no
+  // session at all: not the author's, which would be rework on a change
+  // nobody asked it to change, and not the reviewer's, which is the one
+  // thing T4.3.17's budget still refuses here (see the guard below).
+  //
+  // The bound that keeps this a *merge* retry rather than a second chance at
+  // review is `priorReview`, not `priorBudget`: `lastReviewOf` (above) only
+  // returns a record when the reviewed `ref` still names the branch's
+  // current tip exactly (`namesCommit`, not string equality) — the same rule
+  // it already applies before carrying a review's findings into a resumed
+  // author's prompt. A branch that has moved since the approving round, for
+  // whatever reason, is content nobody has reviewed; merging it on the
+  // strength of an old approval is exactly the silent introduction IMP-4
+  // exists to refuse, so this is only ever reached when the tip has not
+  // moved at all.
+  //
+  // The option refused, and its price: logging what `decideMerge` actually
+  // decided per round — the tip it compared against, and the verdict — would
+  // close the stale-ref misclassification `review-budget.ts` documents at its
+  // source, rather than routing around it as this does. It costs a field on
+  // `ChangeReviewed` or an event of its own, which under CONV-7 means a
+  // registered version bump and an upcaster carrying every payload already
+  // written forward, and it would still not merge anything on its own. This
+  // gets the same safety for nothing: a round `decideMerge` refused as stale
+  // logged a `ref` that is not the tip, so `lastReviewOf` returns nothing
+  // for it and no retry happens, and a round refused `checks-are-stale` is
+  // re-decided here against a verdict read fresh for the tip. The schema
+  // change is worth making when something other than this guard needs to
+  // know what the gate decided; it is not worth making for this guard.
+  const retryMergeOnly = async (approved: PriorReview): Promise<ImplementResult> => {
+    const tip = worktree.base;
+
+    // A branch the trunk already contains must not be merged a second time.
+    // `git merge --no-ff` answers "Already up to date" and exits 0 when the
+    // tip is reachable from `into`, creating no commit — so `mergeChange`
+    // reports a merge, and this would append a second `ChangeMerged` whose
+    // `commit` is whatever the trunk's head happens to be by then. Since
+    // `mergeChange` fast-forwards the local trunk onto the remote first,
+    // that head can be some other task's merge entirely, which would
+    // overwrite this task's `MergeState` — and its `by` — with a fact
+    // nothing later corrects. The two ways to get here are an operator who
+    // merged the branch by hand and a crash between a merge that landed and
+    // the release that follows it; both want the merge that exists recorded,
+    // not a new one invented, which is exactly what `mpgm record-merge` is
+    // for (`verifyOperatorMerge`, `merge.ts`).
+    //
+    // Answered here against the local `into` only. A branch already
+    // contained only in `origin/<into>` — merged elsewhere and pushed, the
+    // way this project's trunk usually advances — passes this check, and is
+    // refused by `mergeChange` itself instead: its catch-up fetch is what
+    // brings that merge into the local trunk, so it is the one place that
+    // can see it, and it refuses with the same `mpgm record-merge` answer
+    // rather than recording a merge it did not make (`merge.ts`, T4.3.22
+    // third review).
+    const trunkBase = await options.worktrees.mergeBase(task.id, tip, into);
+    // A merge this task already has on the log — this run merged it and was
+    // run with `cleanUp: false`, so the checkout outlived the merge — is not
+    // "someone merged it outside this run", and pointing at `record-merge`
+    // there would send an operator to record the same merge a second time
+    // (T4.3.22, third review). Say which merge is already recorded instead.
+    // Read for this run only, as `mpgm record-merge` also records per run: a
+    // task merged under one run and retried under another still gets the
+    // record-merge answer below, and recording it there would record it for
+    // that run a second time.
+    const recorded = fold(options.log.read()).runs[runId]?.tasks[task.id]?.merged ?? null;
+    if (trunkBase !== undefined && namesCommit(trunkBase, tip) && recorded !== null) {
+      return stop(
+        `${task.id}: '${worktree.branch}' (${tip}) is already merged into ` +
+          `'${recorded.into}', and that merge is already recorded for this task as ` +
+          recorded.commit +
+          (recorded.by === '' ? '' : ` (recorded by ${recorded.by})`) +
+          `. There is nothing left to retry or to record; release the leftover ` +
+          `worktree at '${worktree.path}' if it is no longer wanted.`,
+        { ref: tip },
+      );
+    }
+    if (trunkBase === undefined || namesCommit(trunkBase, tip)) {
+      return stop(
+        trunkBase === undefined
+          ? `${task.id}: cannot tell whether '${worktree.branch}' (${tip}) is already ` +
+              `contained in '${into}' — git could not find a merge base for the two ` +
+              `from the worktree at '${worktree.path}'. Refusing the merge retry rather ` +
+              `than guessing (CONV-4): re-merging a branch the trunk already has writes ` +
+              `a second 'ChangeMerged' naming the wrong commit. Check that '${into}' and ` +
+              `${tip} are both resolvable there; if the merge has in fact already ` +
+              `happened, record it with \`mpgm record-merge ${task.id} --commit <sha> ` +
+              `--by <who>\`.`
+          : `${task.id}: '${worktree.branch}' (${tip}) is already contained in ` +
+              `'${into}', so there is no merge left to retry — someone merged it ` +
+              `outside this run, or this run merged it and stopped before recording ` +
+              `that. Re-merging would append a second 'ChangeMerged' naming whatever ` +
+              `'${into}' points at now, which need not be this task's merge at all. ` +
+              `Record the merge that actually happened instead: \`mpgm record-merge ` +
+              `${task.id} --commit <sha> --by <who>\`, where <sha> is the merge commit ` +
+              `on '${into}' that brought ${tip} in.`,
+        { ref: tip },
+      );
+    }
+
+    let verdict: MergeVerdict;
+    try {
+      verdict = await options.checks(tip);
+    } catch (cause) {
+      return stop(
+        `${task.id}: retrying the merge alone could not reach CI for '${tip}': ` +
+          (cause instanceof Error ? cause.message : String(cause)),
+        { ref: tip },
+      );
+    }
+    options.log.append({
+      runId,
+      type: 'ChecksReported',
+      payload: {
+        taskId: task.id,
+        ref: verdict.ref,
+        mergeable: verdict.mergeable,
+        summary: verdict.summary,
+        blocking: blockingReasons(verdict),
+      },
+    });
+
+    const review: ReviewRecord = {
+      reviewTaskId: approved.reviewTaskId,
+      reviewerRole: approved.reviewerRole,
+      ref: approved.ref,
+      approved: true,
+      summary: approved.summary,
+      deviations: approved.deviations,
+    };
+    const retryRequest: MergeDecisionRequest = {
+      taskId: task.id,
+      authorRole: implementerRole.name,
+      ref: tip,
+      verdict,
+      review,
+      declaredDeviations: [...(priorBudget?.declared.values() ?? [])],
+    };
+
+    const retryDecision = decideMerge(retryRequest);
+    if (!retryDecision.allowed) {
+      return stop(
+        `${task.id}: retrying the merge alone was refused: ` +
+          `${retryDecision.reasons.join('; ')}. Fixing the cause and re-running ` +
+          `retries this same gate, with no review session spent doing so (T4.3.17) ` +
+          `— this ref was already reviewed and approved. If the cause is not one a ` +
+          `re-run can fix, an operator who judges it settled some other way can ` +
+          `\`mpgm redirect ${task.id} --run ${runId} --note '<why>'\` and re-run ` +
+          `for one further review round instead.`,
+        { ref: tip, review },
+      );
+    }
+
+    // The same read `controlBeforeMerge` makes at the end of this function,
+    // for the same reason and at the same distance from the same
+    // irreversible act (T4.2.4, HIL-3). This path reaches `mergeChange`
+    // without passing `track` at all — it dispatches no session, so the one
+    // place the loop normally notices a pause or a kill never runs — which
+    // left an operator who killed the run and then re-ran the task merging
+    // and pushing to the trunk anyway, on an invocation whose whole purpose
+    // was to merge. Read immediately before the merge rather than on entry
+    // so a kill landing while `options.checks` was in flight is caught too.
+    const controlBeforeRetry = runControl(fold(options.log.read()), runId);
+    if (controlBeforeRetry !== 'running') {
+      return stop(`the run was ${controlBeforeRetry} by an operator`, {
+        ref: tip,
+        review,
+      });
+    }
+
+    const retried = await mergeChange({
+      runId,
+      repo: options.repo,
+      branch: worktree.branch,
+      into,
+      request: retryRequest,
+      emit: (event) => {
+        options.log.append(event);
+      },
+    });
+
+    if (!retried.merged) {
+      // Named precisely enough to act on without reading this file (CONV-3):
+      // `mergeChange`'s own reasons already name a dirty or diverged `into`,
+      // a failed fetch or push, or real conflicted files. A cause fixed
+      // without touching the branch — the trunk cleaned up, a fetch retried
+      // — leaves the tip exactly where it was, so re-running reaches this
+      // same retry again. A real content conflict is not that: resolving it
+      // means committing on the branch, which moves the tip `lastReviewOf`
+      // compares against, so the *next* run no longer finds an approved
+      // round that still names it and is refused for that reason instead —
+      // needing the same `mpgm redirect` lever named below, which that
+      // refusal states for itself.
+      return stop(
+        `${task.id}: retrying the merge alone was refused: ` +
+          (retried.reason ?? 'the merge did not happen') +
+          ` If fixing this means committing on '${worktree.branch}' (for example to ` +
+          `resolve a conflict), the tip will no longer be the one this round approved, ` +
+          `and the next run will need \`mpgm redirect ${task.id} --run ${runId} ` +
+          `--note '<why>'\` for one further review round rather than another retry.`,
+        { ref: tip, review },
+      );
+    }
+
+    if (options.cleanUp ?? true) {
+      await options.worktrees.release(task.id, { deleteBranch: 'if-merged' });
+    }
+
+    return {
+      status: 'merged',
+      taskId: task.id,
+      branch: worktree.branch,
+      worktree: worktree.path,
+      ref: tip,
+      ...(retried.commit === undefined ? {} : { commit: retried.commit }),
+      review,
+    };
+  };
+
   // A reused checkout can also be one whose review budget this task already
   // spent in an earlier invocation — including the one-time declaration
   // extension — before that invocation blocked or crashed. Re-invoking it is
@@ -696,60 +921,113 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // resuming must not paper over: nothing about the task has changed, and
   // granting a fresh set of rounds anyway is exactly what let T4.3.16 merge
   // on an invocation that had, on its own, already been refused once
-  // (T4.3.17). `lastRoundAllowed` is the one case this names differently
-  // rather than excuses: a checkout left behind after an actual merge
-  // (`cleanUp: false`), or one whose last round cleared review and then
-  // `mergeChange` itself refused for an unrelated reason, has no round left
-  // to spend either, but it did not get there for want of one — sending it
-  // through the round loop below would be the "unreachable" branch at the
-  // bottom of this function reached after all, over a budget that was never
-  // really the problem.
+  // (T4.3.17).
   //
-  // `continuationAuthorized` is the one way "nothing about the task has
-  // changed" is allowed to be false: an operator who judges whatever the
-  // last round was refused over settled can say so with `mpgm redirect`
-  // before re-running, and the two at-the-cap refusals further down this
-  // function already tell an operator to do exactly that ("say so with
-  // `mpgm redirect` and re-run"). A review of this task's first attempt
-  // caught that promise dead-ending here: this guard returned before `track`
-  // ever got to read a redirect note, on the one path a resumed invocation
-  // is certain to hit first. Reading it here keeps that promise instead —
-  // one more round, never more than one per redirect. `redirectAuthorizesContinuation`
-  // (`review-budget.ts`) is what makes "one" hold rather than merely saying
-  // it: it consumes the redirect against the next `TaskDispatched` this task
-  // records, not against the next `ChangeReviewed`, because a granted round
-  // can block before ever reaching review — without that, the same redirect
-  // would re-authorize on every later invocation, a paid session each time.
-  // And the declaration grace below (`declarationRound`) is withheld from
-  // this specific round regardless of whether it would otherwise have
-  // earned one, so one redirect cannot buy two rounds by having its single
-  // granted round also trip the once-per-task extension. The round that
-  // follows shows the operator's own note as the reason, the same way any
-  // other redirect does (`track`, below), so nothing new needs logging to
-  // say an operator asked for this.
+  // `lastRoundAllowed` used to be the one case this named differently rather
+  // than excused, refusing a redirect outright because "review has nothing
+  // left to do here" — true exactly when `priorReview` also still names the
+  // branch's current tip, and never checked. A review of T4.3.17 itself
+  // caught that gap twice, and `review-budget.ts` documents why it is worse
+  // than a missing lever: a round `decideMerge` actually refused
+  // `review-is-stale` or `checks-are-stale` is appended to the log as
+  // approved with nothing undeclared before that refusal ever runs, so
+  // `priorBudget.lastRoundAllowed` cannot tell that round apart from one the
+  // gate truly allowed — and the old guard sent an operator's redirect
+  // straight into that same false "nothing to do" refusal, on the one task
+  // whose last round was never actually clear.
+  //
+  // So `lastRoundAllowed` alone is no longer what this checks `priorReview`
+  // against: only when the last reviewed ref still names the branch's exact
+  // tip (see `retryMergeOnly` above) is there a merge this guard may retry on
+  // its own, with no session at all. Every other case — the budget truly
+  // exhausted without a final approval, or a last round that reads as
+  // approved but is not provably about the commit sitting on the branch now
+  // — falls through to the same lever: an operator who judges whatever
+  // stopped it settled can say so with `mpgm redirect` before re-running,
+  // the same promise the two at-the-cap refusals further down this function
+  // already make. `redirectAuthorizesContinuation` (`review-budget.ts`) is
+  // what makes "one" hold rather than merely saying it: it consumes the
+  // redirect against the next `TaskDispatched` this task records, not
+  // against the next `ChangeReviewed`, because a granted round can block
+  // before ever reaching review — without that, the same redirect would
+  // re-authorize on every later invocation, a paid session each time. And
+  // the declaration grace below (`declarationRound`) is withheld from this
+  // specific round regardless of whether it would otherwise have earned
+  // one, so one redirect cannot buy two rounds by having its single granted
+  // round also trip the once-per-task extension. The round that follows
+  // shows the operator's own note as the reason, the same way any other
+  // redirect does (`track`, below), so nothing new needs logging to say an
+  // operator asked for this.
   if (priorBudget !== undefined && priorBudget.roundsSoFar >= priorBudget.attempts) {
-    continuationAuthorized =
-      !priorBudget.lastRoundAllowed &&
-      redirectAuthorizesContinuation(
-        options.log.read(),
-        runId,
-        task.id,
-        priorBudget.lastRoundSeq,
-      );
+    // An operator's redirect, when there is one, outranks an automatic merge
+    // retry: a redirect says the operator has already looked at whatever
+    // stopped this task and decided it needs a fresh round, not a replay of
+    // the old one, and that judgement is not this guard's to second-guess by
+    // merging on the strength of a review the operator may be redirecting
+    // *because* of. Checked unconditionally — not only when the budget is
+    // exhausted without a final approval, as it was before T4.3.22 — for the
+    // same reason `redirectAuthorizesContinuation` is scoped to be single-use
+    // regardless: an operator who redirects a task whose last round happened
+    // to clear the gate still gets the round, not the silent merge retry.
+    continuationAuthorized = redirectAuthorizesContinuation(
+      options.log.read(),
+      runId,
+      task.id,
+      priorBudget.lastRoundSeq,
+    );
+
+    const retryEligible =
+      !continuationAuthorized &&
+      priorBudget.lastRoundAllowed &&
+      priorReview !== undefined &&
+      priorReview.approved &&
+      priorReview.undeclared.length === 0;
+
+    if (retryEligible) {
+      return await retryMergeOnly(priorReview);
+    }
+
+    // Which of the three ways a last round that reads as allowed can still
+    // fail `retryEligible` above actually happened. They want different
+    // things done about them — a moved branch wants a look at what moved it,
+    // a refusing review wants the finding answered, an undeclared convention
+    // wants a declaration — and one message covering all three would name
+    // none of them (CONV-3).
+    //
+    // Only the first arm is reachable from a single run's log. The other two
+    // need `lastReviewOf` — which reads every run's reviews of this task —
+    // to return a review that disagrees with `priorBudget.lastRoundAllowed`,
+    // which reads only this run's: true only when another run has reviewed
+    // the same tip since. They are kept because that interleaving is legal
+    // (a task re-run under a new run id), not because a single run can
+    // reach them, and no test here builds such a log (T4.3.22, third
+    // review).
+    const noRetryBecause =
+      priorReview === undefined
+        ? `the branch '${worktree.branch}' is no longer on the exact commit that ` +
+          `round reviewed (its tip is now ${worktree.base}), so what would merge is ` +
+          `content nobody reviewed`
+        : !priorReview.approved
+          ? `the review naming that commit (${priorReview.ref}) did not approve it: ` +
+            priorReview.summary
+          : `the review naming that commit (${priorReview.ref}) approved it and ` +
+            `reported ${String(priorReview.undeclared.length)} convention(s) this ` +
+            `change never declared (${priorReview.undeclared.join(', ')}), which ` +
+            `IMP-4 refuses whatever the approval said`;
+
     // Checked here, before the implementing session runs again, rather than
     // only inside the round loop further down — a task that cannot proceed
     // should not spend a session finding that out a second time.
     if (!continuationAuthorized) {
       return stop(
         priorBudget.lastRoundAllowed
-          ? `${task.id}: this task's last recorded review round already cleared the ` +
-              `merge gate, and nothing left in its review budget would change that. If ` +
-              `this checkout is not on '${into}' yet, something other than review is ` +
-              `what is stopping it — check why 'mergeChange' itself refused (a dirty ` +
-              `or diverged '${into}', a real content conflict) rather than resuming ` +
-              `the review loop, which has nothing left to do here. If an operator has ` +
-              `since merged this by hand, record that with 'mpgm record-merge ${task.id} ` +
-              `--commit <sha> --by <who>' instead of re-running.`
+          ? `${task.id}: this task's last recorded review round reads as approved ` +
+              `with nothing undeclared, but ${noRetryBecause} — so there is no merge ` +
+              `this guard may retry on its own (T4.3.22). An operator who judges the ` +
+              `branch as it now stands fit to merge can say so with \`mpgm redirect ` +
+              `${task.id} --run ${runId} --note '<why>'\` and re-run, which grants ` +
+              `exactly one more round; a fresh worktree for this task starts it over ` +
+              `with a clean budget of its own instead.`
           : `${task.id}: this task's review budget was already exhausted in an earlier ` +
               `invocation — ${String(priorBudget.roundsSoFar)} round(s) taken against ` +
               `${String(priorBudget.attempts)} allowed` +

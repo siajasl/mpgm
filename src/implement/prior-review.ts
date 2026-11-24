@@ -51,9 +51,27 @@ export interface PriorFinding {
  */
 export interface PriorReview {
   readonly reviewTaskId: string;
+  /**
+   * The role that reviewed it, read off the same `ChangeReviewed` payload
+   * `decideMerge` itself checks for independence (IMP-3) (T4.3.22) — so a
+   * caller that rebuilds a `MergeDecisionRequest` from this record to retry a
+   * merge alone, with no new review session, re-runs that check against the
+   * role that actually reviewed rather than one invented for the occasion.
+   */
+  readonly reviewerRole: string;
   readonly ref: string;
   readonly approved: boolean;
   readonly summary: string;
+  /**
+   * Convention ids the reviewer found broken, as that round reported them
+   * (IMP-4) — not the ones left undeclared, which `undeclared` below already
+   * answers. Carried so a merge retried without a new review (T4.3.22,
+   * `loop.ts`'s `retryMergeOnly`) recomputes `decideMerge`'s own undeclared-
+   * deviation check from the same two lists `changeReviewed` compared when it
+   * appended the event, rather than asserting the answer was empty without
+   * the data that made it so.
+   */
+  readonly deviations: readonly string[];
   readonly undeclared: readonly string[];
   readonly findings: readonly PriorFinding[];
 }
@@ -61,9 +79,11 @@ export interface PriorReview {
 interface ReviewPayload {
   readonly taskId: string;
   readonly reviewTaskId: string;
+  readonly reviewerRole: string;
   readonly ref: string;
   readonly approved: boolean;
   readonly summary: string;
+  readonly deviations?: readonly string[];
   readonly undeclaredDeviations?: readonly string[];
   readonly findingDetails?: readonly PriorFinding[];
 }
@@ -99,9 +119,11 @@ export function lastReviewOf(
     return namesCommit(payload.ref, tip)
       ? {
           reviewTaskId: payload.reviewTaskId,
+          reviewerRole: payload.reviewerRole,
           ref: payload.ref,
           approved: payload.approved,
           summary: payload.summary,
+          deviations: payload.deviations ?? [],
           undeclared: payload.undeclaredDeviations ?? [],
           findings: payload.findingDetails ?? [],
         }
