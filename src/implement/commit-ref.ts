@@ -78,3 +78,40 @@ export function refsAgree(one: string, other: string): boolean {
   const b = normalise(other);
   return a === b || namesCommit(a, b) || namesCommit(b, a);
 }
+
+/**
+ * Thrown when a ref the loop is about to ask CI about cannot be placed on the
+ * branch it is said to describe (T4.3.26).
+ *
+ * The reviewer's ref has always gone through `reconcileRef` before it was
+ * recorded or compared — a mismatch there is kept exactly as written, so the
+ * staleness refusal downstream can still fire on it. The implementer's never
+ * did: `change.data.ref` and `fixed.data.ref` reached `checks(ref)` as
+ * written, so a session that reported its commit with surrounding prose
+ * (T4.3.22's implementing session: `5925262 (branch mpgm/T4.3.22) --
+ * "..."`) reached the provider unexamined, which answered "no commit found"
+ * and was read as CI being unreachable — the wrong cause, pointing an
+ * operator at CI when CI was never actually asked.
+ *
+ * This is the other half: a caller that reads the worktree's actual tip
+ * before asking CI anything throws this instead of asking, and instead of
+ * quietly substituting the tip for a ref that does not name it — a session
+ * that describes a different commit than the one it left is evidence the
+ * review must not lose, the same reasoning `reconcileRef`'s own doc gives.
+ */
+export class UnplacedRefError extends Error {
+  /** What the session claimed. */
+  readonly reported: string;
+  /** The worktree's actual tip, or `undefined` when it could not be read. */
+  readonly tip: string | undefined;
+
+  constructor(reported: string, tip: string | undefined) {
+    super(
+      tip === undefined
+        ? `could not read the commit the worktree is on, so the reported ref '${reported}' cannot be checked against it`
+        : `the reported ref '${reported}' does not name the worktree's tip (${tip})`,
+    );
+    this.reported = reported;
+    this.tip = tip;
+  }
+}

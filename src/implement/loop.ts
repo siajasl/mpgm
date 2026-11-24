@@ -28,7 +28,7 @@ import {
 } from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
-import { namesCommit, reconcileRef } from './commit-ref.js';
+import { namesCommit, reconcileRef, UnplacedRefError } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview, type PriorReview } from './prior-review.js';
 import {
   priorReviewBudgetOf,
@@ -471,6 +471,44 @@ async function reachableDeclarationRefs(
     }
   }
   return (ref: string) => reachable.has(ref);
+}
+
+/**
+ * Wrap a `checks(ref)` callback so every ref it is actually asked about is
+ * one read from the worktree, not one a session claimed (T4.3.26).
+ *
+ * `repairUntilGreen` is handed whatever ref the loop is holding at the
+ * time — the implementing session's own `change.data.ref`, or a repair
+ * session's `fixed.data.ref` — and asks the provider about exactly that
+ * string. The reviewer's ref has always been reconciled against the
+ * worktree's tip before it is recorded or compared (`reconcileRef`); the
+ * implementer's never was, so a session that reported its commit with
+ * surrounding prose reached the provider unexamined and a 404-shaped answer
+ * was read as CI being unreachable — the wrong cause.
+ *
+ * Reads the tip fresh on every call, because this wraps every ref
+ * `repairUntilGreen` ever asks about — the first poll and the one after
+ * every repair attempt — not only the one the loop happened to hold when
+ * the round began.
+ *
+ * A mismatch throws `UnplacedRefError` rather than asking about the tip
+ * instead: silently substituting it would hide a session that described a
+ * different commit than the one it left, which is evidence the review must
+ * not lose (the same reasoning `reconcileRef`'s own doc gives for leaving a
+ * reviewer's mismatched ref untouched).
+ */
+function checksAgainstWorktreeTip(
+  worktrees: WorktreeManager,
+  taskId: string,
+  checks: (ref: string) => Promise<MergeVerdict>,
+): (ref: string) => Promise<MergeVerdict> {
+  return async (reported: string): Promise<MergeVerdict> => {
+    const tip = await worktrees.head(taskId);
+    if (tip === undefined || !namesCommit(reported, tip)) {
+      throw new UnplacedRefError(reported, tip);
+    }
+    return checks(tip);
+  };
 }
 
 /**
@@ -1492,7 +1530,10 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         ...(options.maxRepairAttempts === undefined
           ? {}
           : { maxAttempts: options.maxRepairAttempts }),
-        checks: options.checks,
+        // Wrapped so every ref this asks CI about is read from the
+        // worktree first, not trusted as the implementer wrote it
+        // (T4.3.26, `checksAgainstWorktreeTip` above).
+        checks: checksAgainstWorktreeTip(options.worktrees, task.id, options.checks),
         ...(options.logsFor === undefined ? {} : { logsFor: options.logsFor }),
         emit: (event) => {
           options.log.append(event);
@@ -1545,6 +1586,27 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         },
       });
     } catch (cause) {
+      // The ref `checksAgainstWorktreeTip` found could not be placed on the
+      // branch — checked first, and distinctly: this is not CI being down,
+      // it is the loop refusing to ask CI about a commit the branch is not
+      // on (T4.3.26). Named precisely enough to act on without reading this
+      // file (CONV-3): what the session reported, and what the worktree's
+      // tip actually is (or that it could not be read at all). CI was never
+      // asked, so this does not retry — retrying asks nothing new.
+      if (cause instanceof UnplacedRefError) {
+        return stop(
+          `${task.id}: refusing to ask CI about '${cause.reported}' — ` +
+            (cause.tip === undefined
+              ? `could not read the commit '${worktree.branch}' is on, so nothing ` +
+                `can be checked against it`
+              : `it does not name the tip of '${worktree.branch}' (${cause.tip}). ` +
+                `The implementing session reported a commit the branch is not on. ` +
+                `This is not a build failure and CI was never asked, so retrying ` +
+                `will not change the answer — check what was actually committed ` +
+                `at '${worktree.path}'.`),
+          { ref: cause.reported },
+        );
+      }
       // `repairUntilGreen` also awaits the repair callback above — a real
       // `git push` and a dispatched session (`cli/commands.ts`) — so a bare
       // `catch` here would misreport *their* rejections as an unreachable CI,

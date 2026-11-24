@@ -554,8 +554,24 @@ export const kbCurationSchema = z.object({
  */
 export const changeSchema = z
   .object({
-    /** The commit the work ended at. */
-    ref: z.string().min(1),
+    /**
+     * The commit the work ended at — a git object name, not a description of
+     * one (T4.3.26). T4.3.22's implementing session reported this as
+     * `5925262 (branch mpgm/T4.3.22) -- "..."`; the loop passed that whole
+     * string to CI's check-runs API, which answered "no commit found" and
+     * was read as CI being unreachable. A shape this narrow still admits a
+     * well-formed sha that names some other commit — the loop reconciles
+     * that against the worktree's actual tip itself (`commit-ref.ts`,
+     * `UnplacedRefError`), because no schema can know what the branch's tip
+     * is.
+     */
+    ref: z
+      .string()
+      .min(1)
+      .regex(
+        /^[0-9a-f]{7,40}$/i,
+        'must be a commit object name (7-40 hex characters), not prose about one',
+      ),
     /** Why the change is what it is; becomes the merge commit's body. */
     summary: z.string().min(1),
     files: z.array(z.string().min(1)),
