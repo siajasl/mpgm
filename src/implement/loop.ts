@@ -498,10 +498,12 @@ async function reachableDeclarationRefs(
  * reviewer's mismatched ref untouched).
  *
  * `sourceOf` is read at the moment of the refusal, not when this is wrapped,
- * because the author of the ref changes within a round: the first poll holds
- * the implementing session's claim and each poll after a repair attempt holds
- * that attempt's. The refusal names whichever one it actually refused
- * (CONV-3).
+ * because the author of the ref changes within and across rounds: round 1's
+ * first poll holds the implementing session's claim, each poll after a
+ * repair attempt holds that attempt's, and round 2 onward's first poll holds
+ * the rework session's — `polled` (the caller's `sourceOf` state, in
+ * `implementTask`) is reassigned at every one of those points, not only the
+ * first. The refusal names whichever one it actually refused (CONV-3).
  */
 function checksAgainstWorktreeTip(
   worktrees: WorktreeManager,
@@ -1440,14 +1442,18 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
 
   // The ref the next CI poll will be given, and where it came from in the
   // words a refusal should use for it (`UnplacedRefError.source`, T4.3.26).
-  // Both start as the implementing session's claim and are reassigned by the
-  // repair callback below, because after a repair attempt the ref being polled
-  // is that attempt's — or, when the attempt produced nothing usable, the
-  // worktree's own tip and nobody's claim at all. Kept beside `latest` rather
-  // than read off it: `latest` is the newest *session's account* of the change
-  // and stops moving as soon as a session's output is unusable, while this
-  // follows the commit CI is actually being asked about, which is what the
-  // refusals below have to name.
+  // Starts as the implementing session's claim and is reassigned wherever the
+  // ref the next poll uses changes: by the repair callback below, because
+  // after a repair attempt the ref being polled is that attempt's — or, when
+  // the attempt produced nothing usable, the worktree's own tip and nobody's
+  // claim at all — and, once a round's review asks for changes, by the
+  // rework session's own result (where `latest` is reassigned, below), since
+  // round 2's first poll is of the rework's ref, not the implementing
+  // session's. Kept beside `latest` rather than read off it: `latest` is the
+  // newest *session's account* of the change and stops moving as soon as a
+  // session's output is unusable, while this follows the commit CI is
+  // actually being asked about, which is what the refusals below have to
+  // name.
   let polled = { ref: latest.ref, source: "the implementing session's output" };
 
   // Read again immediately before publishing this change or opening its pull
@@ -1643,6 +1649,25 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
           // against a branch whose head cannot be read — rather than inventing
           // a ref to carry (CONV-4).
           const tipAfterRepair = await options.worktrees.head(task.id);
+          // Published before it is ever polled, under the same guard as the
+          // usable-output arm above. This path never ran `options.publish`
+          // (only the `fixed.success === true` arm above did), so the tip it
+          // hands to the next `checks` call could be a commit this process
+          // had only ever made locally — one the real provider has never
+          // seen, which answers the check-runs lookup 422, which
+          // `awaitChecks` retries six times and reports as CI being
+          // unreachable: the exact misdiagnosis this task exists to remove,
+          // reopened through the one path that skipped the push (review
+          // finding, T4.3.26).
+          if (tipAfterRepair !== undefined) {
+            const controlBeforeUnusableRepairPublish = runControl(
+              fold(options.log.read()),
+              runId,
+            );
+            if (controlBeforeUnusableRepairPublish === 'running') {
+              await options.publish?.(worktree.branch, tipAfterRepair);
+            }
+          }
           polled = {
             ref: tipAfterRepair ?? request.ref,
             source:
@@ -2190,6 +2215,22 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     }
 
     latest = revised.data;
+
+    // The next round's first `checks` call is given `latest.ref` (`ref:
+    // latest.ref` where `repairUntilGreen` is called, above) — which is now
+    // this rework's ref, not the implementing session's that opened the
+    // task. `polled` is reassigned here, the one place `latest` changes
+    // after round 1, so a refusal on that next poll names the session that
+    // actually produced the ref being asked about rather than whichever
+    // session last set `polled` (round 1's implementing session, or one of
+    // its repair attempts). Left unassigned, a rework session's own
+    // off-branch sha was blamed on "the implementing session's output" — a
+    // commit the branch really is on — sending an operator to look at the
+    // wrong session's work (CONV-3, review finding, T4.3.26).
+    polled = {
+      ref: revised.data.ref,
+      source: `round ${String(round)}'s rework output`,
+    };
 
     // Read again immediately before publishing the reworked change, for the
     // same reason as the guard around the first publish above: the rework
