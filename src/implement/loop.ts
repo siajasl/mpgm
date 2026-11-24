@@ -877,12 +877,22 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     if (!retried.merged) {
       // Named precisely enough to act on without reading this file (CONV-3):
       // `mergeChange`'s own reasons already name a dirty or diverged `into`,
-      // a failed fetch or push, or real conflicted files — whichever it was,
-      // fixing it and re-running reaches this same retry again, since
-      // nothing about the task's review changes between now and then.
+      // a failed fetch or push, or real conflicted files. A cause fixed
+      // without touching the branch — the trunk cleaned up, a fetch retried
+      // — leaves the tip exactly where it was, so re-running reaches this
+      // same retry again. A real content conflict is not that: resolving it
+      // means committing on the branch, which moves the tip `lastReviewOf`
+      // compares against, so the *next* run no longer finds an approved
+      // round that still names it and is refused for that reason instead —
+      // needing the same `mpgm redirect` lever named below, which that
+      // refusal states for itself.
       return stop(
         `${task.id}: retrying the merge alone was refused: ` +
-          (retried.reason ?? 'the merge did not happen'),
+          (retried.reason ?? 'the merge did not happen') +
+          ` If fixing this means committing on '${worktree.branch}' (for example to ` +
+          `resolve a conflict), the tip will no longer be the one this round approved, ` +
+          `and the next run will need \`mpgm redirect ${task.id} --run ${runId} ` +
+          `--note '<why>'\` for one further review round rather than another retry.`,
         { ref: tip, review },
       );
     }
