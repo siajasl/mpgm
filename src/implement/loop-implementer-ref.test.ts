@@ -151,10 +151,13 @@ describe('a ref the implementing session reported, not read from the worktree (T
       // refused it, which is the cheapest place to stop it (CONV-3): one
       // session, no `checks` call at all.
       expect(checksCalls).toBe(0);
-      // The wrong cause this task exists to stop reporting: CI was never
-      // asked, so the refusal must not say it could not be reached.
-      expect(result.reason ?? '').not.toContain('CI could not be reached');
-      expect(result.reason ?? '').not.toContain('No commit found');
+      // Not merely "not the wrong cause" — the right one, named well enough
+      // to fix without reading this file (CONV-3). `SessionRunner` already
+      // has this detail in `lastIssues`; the refusal must actually carry it
+      // rather than only the attempt count.
+      expect(result.reason ?? '').toContain(
+        'ref: must be a commit object name (7-40 hex characters), not prose about one',
+      );
     } finally {
       log.close();
     }

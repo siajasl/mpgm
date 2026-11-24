@@ -1394,7 +1394,19 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   });
 
   if (authored.status !== 'completed') {
-    return stop(`the implementing session blocked: ${authored.reason}`);
+    // `authored.reason` alone says how many attempts failed and nothing
+    // about why (CONV-3) — it is the same count whether the session
+    // produced prose instead of a commit object name or something else
+    // entirely wrong with its output. `lastIssues` is what `SessionRunner`
+    // fed back to the session on every retry (`#promptFor`), so it already
+    // names the field and what was expected; appending it here is the only
+    // way the operator sees that without reading this file or the log. For
+    // T4.3.22's prose ref this turns into `ref: must be a commit object
+    // name (7-40 hex characters), not prose about one` rather than a count.
+    return stop(
+      `the implementing session blocked: ${authored.reason}` +
+        (authored.lastIssues.length === 0 ? '' : ` — ${authored.lastIssues.join('; ')}`),
+    );
   }
 
   const change = changeSchema.safeParse(authored.output);
