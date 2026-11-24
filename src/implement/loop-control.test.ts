@@ -437,66 +437,188 @@ describe("an operator's control reaches a running task (HIL-3, HIL-5, T4.2.4)", 
     }
   });
 
-  it('a redirection recorded while the task is in flight is obeyed by the review session that follows', async () => {
-    // The review session for T1 dispatches under `T1-review`, not `T1` — the
-    // regression this task's first review found: looking the note up under
-    // the session's own id, rather than the plan task's, meant a redirect
-    // landing after the implementing session and before the review reached
-    // nothing at all, and the change merged as if the operator had said
-    // nothing.
-    const repo = newRepo();
-    const head = git(repo, ['rev-parse', 'HEAD']);
-    const provider = new ScriptedProvider([
-      scriptedSuccess({
-        ref: head,
-        summary: 'done',
-        files: ['README.md'],
-        tests: [],
-        complete: true,
-        remaining: '',
-        deviations: [],
-      }),
-      scriptedSuccess({
-        ref: head,
-        verdict: 'approve',
-        summary: 'good',
-        findings: [],
-        deviations: [],
-      }),
-    ]);
-
-    const log = openLog();
-
-    try {
-      const result = await implementTask({
-        ...baseOptions(repo, provider, log),
-        // The window PLAN M4.2's verification names: a redirection issued
-        // while a task is in flight, before its next (here, review) session
-        // has been dispatched.
-        checks: (ref) => {
-          log.append({
-            runId: 'r',
-            type: 'OperatorIntervened',
-            payload: {
-              action: 'redirect',
-              detail: 'reject anything that raises the late fee',
-              taskId: 'T1',
+  it(
+    'consumes a redirect note on the first session that reads it, and never shows ' +
+      'it to a review (T4.3.27)',
+    async () => {
+      // T4.3.27's own measured incident: a note written "for the next
+      // implementing session" instead reached every later session under the
+      // task — the review that judged what that session produced, and the
+      // rework round that followed the review's rejection, which re-read
+      // "make no other change" and made none even though the review it was
+      // reacting to asked for exactly that. Four sessions run here —
+      // implement, review (rejects), rework, review again (approves) — and
+      // only the first should ever see the note.
+      const repo = newRepo();
+      const head = git(repo, ['rev-parse', 'HEAD']);
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: head,
+          summary: 'first pass',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: head,
+          verdict: 'request-changes',
+          summary: 'not yet',
+          findings: [
+            {
+              file: 'README.md',
+              concern: 'not good enough',
+              remedy: 'fix it',
+              severity: 'major',
             },
-          });
-          return Promise.resolve(mergeVerdict({ ref, runs: GREEN }));
-        },
+          ],
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: head,
+          summary: 'reworked',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: head,
+          verdict: 'approve',
+          summary: 'good now',
+          findings: [],
+          deviations: [],
+        }),
+      ]);
+
+      const log = openLog();
+      log.append({
+        runId: 'r',
+        type: 'OperatorIntervened',
+        payload: { action: 'redirect', detail: 'keep the change small', taskId: 'T1' },
       });
 
-      expect(result.status).toBe('merged');
-      // Not the implementing session's prompt — that was already sent
-      // before the redirect was recorded. The review's is.
-      expect(provider.requests[1]?.prompt).toContain(
-        'reject anything that raises the late fee',
-      );
-    } finally {
-      log.close();
-    }
-  });
+      try {
+        const result = await implementTask(baseOptions(repo, provider, log));
+
+        expect(result.status).toBe('merged');
+        // Session 0: implement — the very next session after the redirect,
+        // the one it was written for.
+        expect(provider.requests[0]?.prompt).toContain('keep the change small');
+        // Session 1: review — never shown an implementer-addressed note as
+        // binding on it, whatever its timing.
+        expect(provider.requests[1]?.prompt).not.toContain('keep the change small');
+        // Session 2: rework — able, in principle, to act on the note, but it
+        // was already spent on session 0 and does not resurface here.
+        expect(provider.requests[2]?.prompt).not.toContain('keep the change small');
+        // Session 3: the second review — same rule as session 1.
+        expect(provider.requests[3]?.prompt).not.toContain('keep the change small');
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'a redirection recorded while the task is in flight is never shown to the ' +
+      'review session that follows, but still reaches the rework round the ' +
+      "review's rejection causes (T4.3.27)",
+    async () => {
+      // Companion to the test above: here the redirect lands *between* the
+      // implementing session and the review, so the review is the first
+      // session dispatched since it was recorded. A review must still never
+      // read it — but because a review does not count as having read it
+      // either, the note is still there, waiting, for the rework round the
+      // review's rejection triggers.
+      const repo = newRepo();
+      const head = git(repo, ['rev-parse', 'HEAD']);
+      const provider = new ScriptedProvider([
+        scriptedSuccess({
+          ref: head,
+          summary: 'done',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: head,
+          verdict: 'request-changes',
+          summary: 'not yet',
+          findings: [
+            {
+              file: 'README.md',
+              concern: 'raises the late fee',
+              remedy: 'drop it',
+              severity: 'major',
+            },
+          ],
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: head,
+          summary: 'reworked',
+          files: ['README.md'],
+          tests: [],
+          complete: true,
+          remaining: '',
+          deviations: [],
+        }),
+        scriptedSuccess({
+          ref: head,
+          verdict: 'approve',
+          summary: 'good now',
+          findings: [],
+          deviations: [],
+        }),
+      ]);
+
+      const log = openLog();
+
+      try {
+        const result = await implementTask({
+          ...baseOptions(repo, provider, log),
+          // The window PLAN M4.2's verification names: a redirection issued
+          // while a task is in flight, before its next (here, review)
+          // session has been dispatched.
+          checks: (ref) => {
+            log.append({
+              runId: 'r',
+              type: 'OperatorIntervened',
+              payload: {
+                action: 'redirect',
+                detail: 'reject anything that raises the late fee',
+                taskId: 'T1',
+              },
+            });
+            return Promise.resolve(mergeVerdict({ ref, runs: GREEN }));
+          },
+        });
+
+        expect(result.status).toBe('merged');
+        // Session 1: the first review — not shown the note, even though it
+        // is the first session dispatched since the redirect landed.
+        expect(provider.requests[1]?.prompt).not.toContain(
+          'reject anything that raises the late fee',
+        );
+        // Session 2: rework — the first session able to act on the note, so
+        // it is the one that reads it.
+        expect(provider.requests[2]?.prompt).toContain(
+          'reject anything that raises the late fee',
+        );
+        // Session 3: the second review — never shown it, same as session 1,
+        // and in any case already spent by session 2.
+        expect(provider.requests[3]?.prompt).not.toContain(
+          'reject anything that raises the late fee',
+        );
+      } finally {
+        log.close();
+      }
+    },
+  );
 
   it('a redirection reaches a blocked task when the operator requeues it by running implement again', async () => {
     // DESIGN §4.4 glosses `redirect <task>` as "revise a task's

@@ -1,9 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import type { StoredEvent } from '../event/envelope.js';
-import { priorReviewBudgetOf, redirectAuthorizesContinuation } from './review-budget.js';
+import {
+  isReviewDispatchId,
+  priorReviewBudgetOf,
+  redirectAuthorizesContinuation,
+  redirectNoteIsLive,
+} from './review-budget.js';
 
 const ALWAYS_REACHABLE = () => true;
 const NEVER_REACHABLE = () => false;
+
+/** A minimal `TaskDispatched` event, the only type `redirectNoteIsLive` and
+ * `redirectAuthorizesContinuation` read besides `OperatorIntervened`. */
+function dispatched(seq: number, taskId = 'T1', runId = 'r'): StoredEvent {
+  return {
+    seq,
+    ts: new Date().toISOString(),
+    runId,
+    type: 'TaskDispatched',
+    schemaVersion: 1,
+    payload: { taskId, role: 'implementer', model: 'claude' },
+  };
+}
 
 /** A minimal `ChangeReviewed` event, the only type this reads. */
 function changeReviewed(
@@ -252,17 +270,6 @@ describe('redirectAuthorizesContinuation', () => {
     expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(false);
   });
 
-  function dispatched(seq: number, taskId = 'T1', runId = 'r'): StoredEvent {
-    return {
-      seq,
-      ts: new Date().toISOString(),
-      runId,
-      type: 'TaskDispatched',
-      schemaVersion: 1,
-      payload: { taskId, role: 'implementer', model: 'claude' },
-    };
-  }
-
   it(
     'does not re-authorize once the granted round has dispatched, even if ' +
       'it never reached a review (T4.3.17)',
@@ -315,4 +322,74 @@ describe('redirectAuthorizesContinuation', () => {
       expect(redirectAuthorizesContinuation(events, 'r', 'T1', 5)).toBe(true);
     },
   );
+});
+
+describe('isReviewDispatchId', () => {
+  it('matches the first review round and later numbered rounds', () => {
+    expect(isReviewDispatchId('T1', 'T1-review')).toBe(true);
+    expect(isReviewDispatchId('T1', 'T1-review-2')).toBe(true);
+  });
+
+  it('does not match the bare task id or its other session-only suffixes', () => {
+    expect(isReviewDispatchId('T1', 'T1')).toBe(false);
+    expect(isReviewDispatchId('T1', 'T1-catchup')).toBe(false);
+    expect(isReviewDispatchId('T1', 'T1-catchup-2')).toBe(false);
+  });
+
+  it('does not match an unrelated task whose id merely shares the prefix', () => {
+    expect(isReviewDispatchId('T1', 'T10-review')).toBe(false);
+  });
+});
+
+describe('redirectNoteIsLive (T4.3.27)', () => {
+  it('is live for the very next session when nothing has dispatched since the redirect', () => {
+    const events: StoredEvent[] = [];
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'implement')).toBe(true);
+  });
+
+  it('is never live for a review session, however soon after the redirect', () => {
+    // The finding this closes: a note written for "the next implementing
+    // session" reached both reviewers of T4.3.22 too. A review dispatched
+    // the instant after the redirect lands gets nothing, the same as one
+    // dispatched later.
+    const events: StoredEvent[] = [];
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'review')).toBe(false);
+  });
+
+  it('goes dark for every later session once one non-review session has dispatched', () => {
+    // The implementing session the redirect was written for reads it once
+    // (`dispatched(10)`); a later repair or rework round for the same task
+    // must not read it again (T4.3.17's "one redirect, one round", applied
+    // here to the note's content rather than its continuation).
+    const events = [dispatched(10)];
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'repair')).toBe(false);
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'rework')).toBe(false);
+  });
+
+  it('stays live across a review session that never read it, for the implementer session after', () => {
+    // A review dispatched between the redirect and the first implementer
+    // session does not spend the note — it was never shown it — so the
+    // rework round that follows the review's rejection still gets it.
+    const events = [dispatched(10, 'T1-review')];
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'rework')).toBe(true);
+  });
+
+  it('counts the trunk catch-up conflict resolver as a read, by its session-only suffix', () => {
+    const events = [dispatched(10, 'T1-catchup')];
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'implement')).toBe(false);
+  });
+
+  it('ignores a dispatch recorded before the redirect, or for a different run or task', () => {
+    const events = [
+      dispatched(5),
+      dispatched(10, 'T1', 'other-run'),
+      dispatched(10, 'T2'),
+    ];
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'implement')).toBe(true);
+  });
+
+  it('does not treat an unrelated task whose id merely shares the prefix as a read', () => {
+    const events = [dispatched(10, 'T10')];
+    expect(redirectNoteIsLive(events, 'r', 'T1', 9, 'implement')).toBe(true);
+  });
 });

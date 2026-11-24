@@ -30,7 +30,11 @@ import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
 import { namesCommit, reconcileRef } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview, type PriorReview } from './prior-review.js';
-import { priorReviewBudgetOf, redirectAuthorizesContinuation } from './review-budget.js';
+import {
+  priorReviewBudgetOf,
+  redirectAuthorizesContinuation,
+  redirectNoteIsLive,
+} from './review-budget.js';
 import { earnsDeclarationRound, renderDeclarationRound } from './late-deviation.js';
 import type { ProgressReporter, SessionKind } from './progress.js';
 import type { WorktreeManager } from './worktree.js';
@@ -503,13 +507,15 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   // rule `runPhase`'s own `shouldDispatch` applies to a playbook's steps: an
   // operator who pauses or kills mid-task expects the session already
   // running to be the last one, and one who redirects expects the very next
-  // session — whichever kind it is — to read the note.
+  // session able to read it — not every session dispatched under this task
+  // for the rest of the run (T4.3.27, below) — to do so.
   const track = async (
     kind: SessionKind,
     round: number,
     request: Omit<Parameters<typeof options.sessions.runTask>[0], 'runId'>,
   ): Promise<TaskOutcome> => {
-    const state = fold(options.log.read());
+    const events = options.log.read();
+    const state = fold(events);
     const control = runControl(state, runId);
     if (control !== 'running') {
       // Not dispatched at all: `onProgress` reports sessions that ran, and
@@ -533,7 +539,23 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     // been read by anything. `task.id` is what a redirect names (DESIGN
     // §4.4 `redirect <task>`), so it is what every dispatch under this task
     // reads the note back under, whichever kind of session it is.
-    const note = redirectNoteFor(state, runId, task.id);
+    //
+    // `redirectNoteIsLive` (T4.3.27) decides whether *this* session is still
+    // the one that note is for: a note is addressed to the implementer, not
+    // to the review that later judges what it produced (`kind === 'review'`
+    // never reads it, regardless of timing), and for every other kind it is
+    // read back only until the first such session dispatched since the
+    // redirect landed — the same single read the 2026-11-23 incident this
+    // task closes shows an unbounded note does not stop at on its own: a
+    // rework round re-read "make no other change" off a note nothing had
+    // retired, after a review the note was never shown to had already
+    // rejected the commit it was written for.
+    const redirect = redirectNoteFor(state, runId, task.id);
+    const note =
+      redirect !== undefined &&
+      redirectNoteIsLive(events, runId, task.id, redirect.seq, kind)
+        ? redirect.detail
+        : undefined;
     const prompt =
       note === undefined
         ? request.prompt

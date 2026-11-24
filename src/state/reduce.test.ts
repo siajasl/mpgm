@@ -1123,7 +1123,7 @@ describe('reduce', () => {
         ]),
       );
 
-      expect(redirectNoteFor(state, RUN, 'T1')).toBe('focus on overdue fees');
+      expect(redirectNoteFor(state, RUN, 'T1')?.detail).toBe('focus on overdue fees');
       // Nothing was said about T2 — a note reaches the task it names, not
       // every task in the run.
       expect(redirectNoteFor(state, RUN, 'T2')).toBeUndefined();
@@ -1146,7 +1146,11 @@ describe('reduce', () => {
         ]),
       );
 
-      expect(redirectNoteFor(state, RUN, 'T1')).toBe('second note');
+      // The second note's own `seq` travels with it (T4.3.27) — it is a
+      // later event than the first note it supersedes.
+      const redirect = redirectNoteFor(state, RUN, 'T1');
+      expect(redirect?.detail).toBe('second note');
+      expect(redirect?.seq).toBe(3);
     });
 
     it('refuses a redirect with no taskId rather than recording it and dropping the note (CONV-5)', () => {
@@ -1192,7 +1196,7 @@ describe('reduce', () => {
         ]),
       );
 
-      expect(redirectNoteFor(state, RUN, 'T1')).toBe('focus on overdue fees');
+      expect(redirectNoteFor(state, RUN, 'T1')?.detail).toBe('focus on overdue fees');
       expect(runControl(state, RUN)).toBe('running');
     });
   });

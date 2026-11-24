@@ -555,8 +555,15 @@ export function status(
       // to tell a note delivered from one still waiting.
       const redirects = Object.entries(current.redirects);
       if (redirects.length > 0) {
-        for (const [redirectedTask, note] of redirects) {
-          context.write(`  redirected: ${redirectedTask} — ${note}`);
+        for (const [redirectedTask, redirect] of redirects) {
+          // `seq` reported alongside the note (T4.3.27): the operator sees
+          // since when it has stood, the same fact `redirectNoteIsLive`
+          // (`implement/review-budget.ts`) measures a session's own read
+          // against — this line does not say whether it has already been
+          // read, only when it was written.
+          context.write(
+            `  redirected: ${redirectedTask} — ${redirect.detail} (seq ${String(redirect.seq)})`,
+          );
         }
       }
 
@@ -721,8 +728,8 @@ export async function serve(
  *
  * `taskId` names what a redirection is aimed at (DESIGN §4.4 `redirect
  * <task>`): the implement loop reads it back before dispatching that task's
- * next session (`redirectNoteFor`, T4.2.4). `pause`/`resume`/`kill` act on
- * the whole run and pass none.
+ * sessions (`redirectNoteFor`, T4.2.4). `pause`/`resume`/`kill` act on the
+ * whole run and pass none.
  *
  * DESIGN §4.4 glosses `redirect` as "revise a task's instructions/context and
  * requeue". There is no separate requeue step here, and none is added: this
@@ -730,13 +737,20 @@ export async function serve(
  * its own — `mpgm implement <task>` is what dispatches one, named, every
  * time, and a blocked task was already the operator's to reissue that
  * command against before this task existed. What redirecting changes is
- * what that next invocation's first session — and, once a task is already
- * in flight, whichever session comes after the redirect, review included —
- * is told. A task that has already merged is deliberately not put back in
- * front of the scheduler: `done` meaning merged, never reopened, is load-
- * bearing elsewhere (§4.8, the PM projector) — a redirect that resurrected a
- * merged task would contradict it, and a fresh plan task is where further
- * work on a merged change belongs.
+ * what the first *non-review* session dispatched for the task after this
+ * call is told — a review is never shown the note, and once that first
+ * non-review session has run, no later session under the same task is
+ * either (`redirectNoteIsLive`, `implement/review-budget.ts`, T4.3.27): a
+ * note is addressed to the implementer for one session, not standing
+ * instruction for the rest of the task, and the one logged example of it
+ * read as the latter cost a review round and a rework round that made no
+ * change at all. A standing instruction for the whole task is a different
+ * tool — revise the task's own context, not this one-session note. A task
+ * that has already merged is deliberately not put back in front of the
+ * scheduler: `done` meaning merged, never reopened, is load-bearing
+ * elsewhere (§4.8, the PM projector) — a redirect that resurrected a merged
+ * task would contradict it, and a fresh plan task is where further work on
+ * a merged change belongs.
  *
  * Two overloads rather than one signature with `taskId?: string` (CONV-5,
  * review): the event schema (`operatorIntervened`, T4.2.4) already makes a
