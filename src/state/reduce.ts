@@ -42,6 +42,7 @@ import {
   type DestructiveCallState,
   type EffectState,
   type MergeState,
+  type RedirectState,
   type ReviewState,
   type RunControl,
   type GateState,
@@ -60,7 +61,7 @@ import {
  * *this* reducer's output, and silently reusing one written by a different
  * reducer would resume a run into state the current code would never produce.
  */
-export const REDUCER_VERSION = 16;
+export const REDUCER_VERSION = 17;
 
 /** Payload type of an event definition. */
 export type PayloadOf<D> = D extends EventDefinition<infer T> ? T : never;
@@ -718,7 +719,10 @@ export function reduce(state: KernelState, event: StoredEvent): KernelState {
       // a redirect naming no task never reaches this fold at all (CONV-5).
       const redirects =
         payload.action === 'redirect'
-          ? { ...run.redirects, [payload.taskId]: payload.detail }
+          ? {
+              ...run.redirects,
+              [payload.taskId]: { detail: payload.detail, seq } satisfies RedirectState,
+            }
           : run.redirects;
 
       return withRun(
@@ -806,17 +810,22 @@ export function runControl(state: KernelState, runId: string): RunControl {
 }
 
 /**
- * The latest operator redirection note aimed at a task, if any (HIL-3).
+ * The latest operator redirection recorded for a task, if any (HIL-3).
  *
- * What the implement loop reads before dispatching a task's next session
- * (T4.2.4): a redirect names the task it is for, and this is how that
+ * What `track` (`implement/loop.ts`) reads before dispatching any of a
+ * task's sessions: a redirect names the task it is for, and this is how a
  * session finds it again without the loop having to be the one watching for
- * the event as it arrives.
+ * the event as it arrives. Returns the note's own log sequence number
+ * alongside its text (T4.3.27) — this function says only what the operator
+ * last wrote and when; whether a *particular* session should still read it
+ * back is `redirectNoteIsLive`'s question (`implement/review-budget.ts`),
+ * not this one's, the same separation `runControl` draws from `reduce` in
+ * general: what the log says, versus what a caller does with it.
  */
 export function redirectNoteFor(
   state: KernelState,
   runId: string,
   taskId: string,
-): string | undefined {
+): RedirectState | undefined {
   return state.runs[runId]?.redirects[taskId];
 }

@@ -444,7 +444,7 @@ export {
   listGateTags,
   tagGate,
 } from './git/tag.js';
-export type { ChecksState, RunControl } from './state/kernel-state.js';
+export type { ChecksState, RedirectState, RunControl } from './state/kernel-state.js';
 export { redirectNoteFor, runControl } from './state/reduce.js';
 export type { AggregateMetric, RunMetrics } from './state/metrics.js';
 export { computeRunMetrics } from './state/metrics.js';

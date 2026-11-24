@@ -274,8 +274,25 @@ export interface RunState {
    * HIL-5). Only the latest is kept, the same as `checks` and `review`
    * above: what the implement loop's next session needs is the current
    * instruction, not the history of ones it has superseded.
+   *
+   * The note's own log sequence number travels with it (T4.3.27): a note has
+   * no expiry of its own, so it is `redirectNoteIsLive`
+   * (`implement/review-budget.ts`) that decides, per session, whether this
+   * is still the note that session should read — by comparing this `seq`
+   * against the `TaskDispatched` events that have already run since it was
+   * recorded. Keeping only the latest here is still correct for that: a
+   * second redirect supersedes the first outright, the same way `checks` and
+   * `review` already treat a new round as replacing the old one rather than
+   * joining it.
    */
-  readonly redirects: Readonly<Record<string, string>>;
+  readonly redirects: Readonly<Record<string, RedirectState>>;
+}
+
+/** One task's standing redirect note, and when it was recorded (T4.3.27). */
+export interface RedirectState {
+  readonly detail: string;
+  /** The `OperatorIntervened` event's own log sequence number. */
+  readonly seq: number;
 }
 
 export interface KernelState {

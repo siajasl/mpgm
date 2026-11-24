@@ -73,8 +73,10 @@ export const USAGE = `mpgm — agentic SDLC harness
   mpgm pause --run <id>                stop dispatching new tasks
   mpgm resume --run <id>               resume a paused run
   mpgm kill --run <id>                 stop a run permanently
-  mpgm redirect <task> --run <id> --note <s>  record an operator redirection, read by
-    that task's next dispatched session
+  mpgm redirect <task> --run <id> --note <s>  record an operator redirection, read once
+    by the first non-review session dispatched for that task after this is recorded
+    (implement, repair, rework or the trunk conflict resolver); a review session never
+    reads it, and a later session under the same task does not either (T4.3.27)
   mpgm approve <gate> --run <id> --by <who> [--reject --reason <s>] [--tag]
   mpgm confirm <fingerprint> --run <id> --by <who> [--reason <s>]
   mpgm attest <task> --by <who> --evidence <s> [--note <s>] [--run <id>]

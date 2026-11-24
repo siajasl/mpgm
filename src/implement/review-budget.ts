@@ -1,5 +1,6 @@
 import type { StoredEvent } from '../event/envelope.js';
 import { conventionIdOf } from '../context/conventions.js';
+import type { SessionKind } from './progress.js';
 
 /**
  * A task's review budget, read back off the event log it already wrote
@@ -325,5 +326,81 @@ export function redirectAuthorizesContinuation(
     }
     const payload = event.payload as OperatorIntervenedPayload;
     return payload.action === 'redirect' && payload.taskId === taskId;
+  });
+}
+
+/**
+ * Whether `dispatchedId` is a review session's id for `taskId` — `${taskId}
+ * -review` or `${taskId}-review-<n>` (`track`, `loop.ts`, round `> 1`) —
+ * rather than the task's own bare id or one of its other session-only
+ * suffixes (`${taskId}-catchup[-n]`).
+ *
+ * Exported for {@link redirectNoteIsLive} below, and for any other caller
+ * that needs to tell a review dispatch apart from every other kind `track`
+ * dispatches under a task.
+ */
+export function isReviewDispatchId(taskId: string, dispatchedId: string): boolean {
+  return (
+    dispatchedId === `${taskId}-review` || dispatchedId.startsWith(`${taskId}-review-`)
+  );
+}
+
+/**
+ * Whether an operator's redirect note for `taskId`, recorded at log sequence
+ * `redirectSeq`, is still the note the session about to be dispatched as
+ * `kind` should read (T4.3.27).
+ *
+ * A note is addressed to the implementer, never to the review that later
+ * judges what the implementer produced — the finding this closes: on
+ * 2026-11-23, a note written "for the next implementing session" reached
+ * both reviewers of T4.3.22 too, as an instruction neither of their roles was
+ * named in. So `kind === 'review'` answers `false` unconditionally below,
+ * not merely "not yet" — a review dispatched the moment after the redirect
+ * landed gets nothing either, the same as one dispatched an hour later.
+ *
+ * For every other kind, the note lives only until the first *other* such
+ * session dispatched since the redirect landed. That is deliberately not
+ * "the very next dispatch of any kind": a review in between does not count
+ * as having read the note (it was never shown it), so the note is still
+ * there, unread, for the next implement/repair/rework/resolve-conflict
+ * session that can actually act on it — which is what let a rework round
+ * re-read "make no other change" after a review had already rejected the
+ * commit the note was written for, with no implementer session in between
+ * to have spent it on. Once a non-review session *has* run since the
+ * redirect, though, the note does not resurface for the round's later
+ * rework or any later round — the single read it buys (T4.3.17 binds the
+ * same redirect's *continuation* to one round; this binds its *content* to
+ * one session) is already spent, and only a fresh redirect writes a new one.
+ *
+ * Matches dispatch ids the same way {@link lastTaskDispatchedSeq} does: the
+ * bare `taskId` or anything starting with `${taskId}-`, so the trunk
+ * catch-up conflict resolver (`${taskId}-catchup[-n]`) counts as a read the
+ * same way a plain `repair` or `rework` dispatch does, and an unrelated task
+ * whose id merely shares the prefix (`'T10'` against a redirect for
+ * `'T1'`) does not.
+ */
+export function redirectNoteIsLive(
+  events: readonly StoredEvent[],
+  runId: string,
+  taskId: string,
+  redirectSeq: number,
+  kind: SessionKind,
+): boolean {
+  if (kind === 'review') {
+    return false;
+  }
+  return !events.some((event) => {
+    if (
+      event.type !== 'TaskDispatched' ||
+      event.runId !== runId ||
+      event.seq <= redirectSeq
+    ) {
+      return false;
+    }
+    const dispatchedId = (event.payload as TaskDispatchedPayload).taskId;
+    return (
+      (dispatchedId === taskId || dispatchedId.startsWith(`${taskId}-`)) &&
+      !isReviewDispatchId(taskId, dispatchedId)
+    );
   });
 }
