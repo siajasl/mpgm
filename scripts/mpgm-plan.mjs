@@ -354,7 +354,8 @@ export const MPGM_PLAN = {
             'Spend and quality dashboards populated from real self-hosted runs; kernel ' +
             'overhead measured under 10% of run wall-clock; a clean-machine install ' +
             'reaches a gated Definition artifact within one hour, timed; a redirection ' +
-            'issued while a task is in flight changes what its next session is told; a ' +
+            'issued while a task is in flight changes what its next non-review session ' +
+            'is told (narrowed by T4.3.27); a ' +
             "coverage run over this repository's own history names every commit whose " +
             'trace claim it could not read, and names none.',
           validatesRisk: null,
@@ -484,7 +485,10 @@ export const MPGM_PLAN = {
               completionCriteria: [
                 'A redirection names the task it is aimed at, requeues it, and ' +
                   'a planted instruction in the note is demonstrably obeyed by ' +
-                  "that task's next session.",
+                  "that task's next session. (Narrowed by T4.3.27: a review " +
+                  'session is never told a note addressed to the implementer, ' +
+                  'and a note is spent by the first non-review session that ' +
+                  'reads it.)',
                 'Pause and kill likewise stop the implement loop, which reads ' +
                   'none of the three today.',
               ],
@@ -3076,6 +3080,57 @@ export const MPGM_PLAN = {
               ],
               dependsOn: [],
               tracesTo: ['IMP-1', 'ORC-5', 'OBS-1'],
+            },
+            {
+              id: 'T4.3.29',
+              title:
+                '`mpgm status` cannot tell a live redirect note from a ' +
+                'spent one, and a conflict-resolver session can spend a ' +
+                'note written for the implementer',
+              completionCriteria: [
+                '`mpgm status` says, for each recorded redirect, whether ' +
+                  'its note is still standing or already read, and by which ' +
+                  'dispatch, computed with the same `redirectNoteIsLive` the ' +
+                  'loop uses rather than a second rule. Today it prints ' +
+                  '`redirected: <task> — <note> (seq N)` identically either ' +
+                  'way (src/cli/commands.ts), while the comment above that ' +
+                  'block still says it exists so an operator can tell a note ' +
+                  'delivered from one still waiting -- which, since T4.3.27 ' +
+                  'made notes expire on first read, it no longer does. Found ' +
+                  'by the independent review that approved T4.3.27 (c82bf27), ' +
+                  'not supposed.',
+                'The change decides whether the trunk conflict resolver ' +
+                  '(`${taskId}-catchup`, `-catchup-2`) spends a note, and ' +
+                  'says why. Today it does: `redirectNoteIsLive` counts every ' +
+                  "non-review dispatch under the task's id as a read, and on " +
+                  'a re-run whose catch-up conflicts the resolver is ' +
+                  'dispatched (src/implement/loop.ts, ' +
+                  "`catchUpAndResolve('catchup')`) before the implementing " +
+                  'session, so a note an operator wrote for the implementer ' +
+                  'is read by a session resolving a merge and gone before the ' +
+                  'implementer starts, with no signal anywhere. Either the ' +
+                  'resolver does not consume it and the note waits for the ' +
+                  'implementing session, or it does and `status` names the ' +
+                  'resolver as the reader; a test covers a redirect followed ' +
+                  'by a re-run whose catch-up conflicts and asserts which ' +
+                  'session the note reaches, failing against today if the ' +
+                  'resolver is meant not to consume it.',
+                "`redirectNoteIsLive`'s doc, or the commit that changes it, " +
+                  'names the lifetime T4.3.27 refused without saying so: a ' +
+                  'note scoped by the operator to a session kind, or to the ' +
+                  'next N dispatches, at the command line -- and prices it ' +
+                  '(more to type, more to get wrong, a new flag to validate), ' +
+                  'so the refusal stands on record beside the choice, as ' +
+                  'T4.3.27 was asked to do and did for the standing-note ' +
+                  'option only.',
+                'It must not weaken what T4.3.27 and T4.3.17 hold: a review ' +
+                  'session is still never told an implementer-addressed note; ' +
+                  'one redirect still buys exactly one round; ' +
+                  '`OperatorIntervened` and its payload are unchanged (OBS-1, ' +
+                  'CONV-7).',
+              ],
+              dependsOn: [],
+              tracesTo: ['HIL-3', 'OBS-3'],
             },
           ],
         },
