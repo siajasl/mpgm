@@ -2846,6 +2846,237 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['ORC-2', 'MNT-4'],
             },
+            {
+              id: 'T4.3.26',
+              title:
+                'The loop asks CI about whatever ref the implementing ' +
+                'session wrote, so a ref in prose blocks the task as if CI ' +
+                'were down',
+              completionCriteria: [
+                'The commit the loop asks CI about, and every commit it ' +
+                  'acts on for a change, is one it read from the worktree, ' +
+                  'not one a session claims; or a claim that does not name ' +
+                  "the worktree's tip blocks with a reason that says exactly " +
+                  "that. Today the implementing session's `ref` is used as " +
+                  'written. `changeSchema` (src/schemas.ts) accepts any ' +
+                  'non-empty string, and src/implement/loop.ts passes ' +
+                  '`change.data.ref` -- and after a repair, `fixed.data.ref` ' +
+                  '-- through `latest.ref` into `repairUntilGreen`, whose ' +
+                  "`checks(ref)` asks GitHub's check-runs API about it. The " +
+                  'tip the merge request eventually uses ' +
+                  '(`options.worktrees.head`) is read only after that, and ' +
+                  "the reviewer's ref is reconciled against it " +
+                  "(`reconcileRef`), but the implementer's never is.",
+                "Measured on this project's run, not supposed. On " +
+                  "2026-11-23 T4.3.22's implementing session reported `ref` " +
+                  'as `5925262 (branch mpgm/T4.3.22) -- "Let a task retry the ' +
+                  'merge alone once its last allowed round cleared review"`. ' +
+                  'The commit was pushed, its pull request (#186) opened and ' +
+                  'its CI ran; the loop asked `gh api ' +
+                  'repos/siajasl/mpgm/commits/<that whole ' +
+                  'string>/check-runs`, was told `No commit found for SHA` ' +
+                  '(HTTP 422) six times, and blocked with `CI could not be ' +
+                  'reached` -- the wrong cause, sending the operator to look ' +
+                  "at CI when CI was fine. No earlier ref on this project's " +
+                  'log contains a space, so this is the first instance, but ' +
+                  'nothing stops the next: the field is free text a model ' +
+                  "fills in, and it was a model's own phrasing that broke it.",
+                "The change picks between taking the change's ref from the " +
+                  "worktree's tip and treating the session's `ref` as a claim " +
+                  "to compare against it, reconciling the session's ref " +
+                  "against the tip the way the reviewer's is (`reconcileRef`, " +
+                  'src/implement/commit-ref.ts), and tightening ' +
+                  '`changeSchema` so `ref` must be a hex object name -- it ' +
+                  'says which and prices the ones it refused. The schema ' +
+                  'alone is not enough: a well-formed sha that names some ' +
+                  "other commit passes it, and the reviewer's path already " +
+                  'shows why the loop must not trust a ref it can check. ' +
+                  'Whichever it picks, a claim that names a commit the branch ' +
+                  'is not on blocks, and says the session reported a ref that ' +
+                  'is not the branch tip, naming both -- it does not quietly ' +
+                  'substitute the tip, because a session that describes a ' +
+                  'different commit than the one it left is evidence the ' +
+                  "review must not lose (the same reasoning `reconcileRef`'s " +
+                  'doc gives).',
+                'It must not weaken the CI oracle or the merge gate: ' +
+                  'absence is not success (IMP-2), so a ref that cannot be ' +
+                  'placed still blocks, only with a reason that names the ' +
+                  'cause; the error that does mean CI is unreachable still ' +
+                  'reads that way and still retries; and the merge still ' +
+                  'lands only on a commit CI and the reviewer both answered ' +
+                  'for. The tests drive the loop with an implementing session ' +
+                  'that reports its ref with surrounding prose, and with one ' +
+                  'that reports a well-formed sha of another commit, and ' +
+                  'assert the outcome the change states for each; they fail ' +
+                  'against today, where the first reaches the CI provider ' +
+                  'with the prose and blocks as unreachable. A test whose ' +
+                  'session reports a bare sha is the test this has always ' +
+                  'passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-2', 'IMP-1'],
+            },
+            {
+              id: 'T4.3.27',
+              title:
+                "An operator redirect's note never expires, so a note meant " +
+                'for one session steers every later session of the task, ' +
+                'reviewers included',
+              completionCriteria: [
+                "An operator's redirect note reaches the sessions the " +
+                  'operator meant it for and no others, or the loop says, in ' +
+                  'what every later session and the operator can see, which ' +
+                  'note is still in force and since when. Today a note is ' +
+                  'forever. The fold in src/state/reduce.ts keeps the latest ' +
+                  '`OperatorIntervened` redirect detail per task in ' +
+                  '`run.redirects[taskId]` and never clears it, and `track` ' +
+                  'in src/implement/loop.ts appends it under `## An operator ' +
+                  'redirected this task` to the prompt of every session ' +
+                  'dispatched under that task -- implementing, repair, review ' +
+                  'and rework alike -- for the rest of the run. T4.3.17 ' +
+                  'bounded what a redirect *buys* to one round ' +
+                  '(`redirectAuthorizesContinuation`, consumed against the ' +
+                  'next `TaskDispatched`); nothing bounds what its note ' +
+                  '*says*, or to whom.',
+                "Measured on this project's run, not supposed. On " +
+                  '2026-11-23 the operator redirected T4.3.22 after a block ' +
+                  "that was not the implementer's fault (T4.3.26): the note " +
+                  'told the next implementing session to keep its commit, ' +
+                  'make no other change and only re-report its ref as a bare ' +
+                  'sha. That session did, and the review then rejected the ' +
+                  'commit with a blocker and two majors. The rework round ' +
+                  'that followed read the same note -- "make no other change" ' +
+                  '-- and made none: three shell calls, $0.14, no commit. ' +
+                  'Review 2 re-reviewed the unchanged commit for $3.23 and ' +
+                  'rejected it again, and the final round was only saved by a ' +
+                  'second, superseding redirect written by hand. The note was ' +
+                  "also in both reviewers' prompts, where an instruction " +
+                  'addressed to an implementer has no business being. One ' +
+                  'note, written for one session, cost a round and a review ' +
+                  'and moved the task onto its last round.',
+                'The change picks between consuming a note with the session ' +
+                  'that first reads it (as T4.3.17 consumes the round), ' +
+                  'scoping a note to a session kind or to the next N ' +
+                  'dispatches the operator names when redirecting, and ' +
+                  'keeping notes standing but showing each later session the ' +
+                  "note's age and the dispatches that have already read it, " +
+                  'with a way to withdraw it -- it says which and prices the ' +
+                  'ones it refused. Consuming on first read is simplest and ' +
+                  'matches the round it buys, but loses a note an operator ' +
+                  'meant as standing guidance for the rest of the task; a ' +
+                  'scope is more to type at the command line and more to get ' +
+                  'wrong. Whichever it picks, a reviewer must not be shown an ' +
+                  'instruction addressed to the implementer as if it bound ' +
+                  'the review, and `mpgm redirect` says what lifetime the ' +
+                  'note it records will have.',
+                'It must not weaken what redirects already do: a redirect ' +
+                  'still reaches the very next session whatever its kind, ' +
+                  "which is the property `track`'s comment says the operator " +
+                  'relies on (T4.2.4, HIL-3); one redirect still buys exactly ' +
+                  'one continuation round (T4.3.17); the note stays on the ' +
+                  'log as an `OperatorIntervened` event, append-only, so who ' +
+                  'said what and when is still reconstructable (OBS-1). The ' +
+                  'tests record a redirect, dispatch the next session and ' +
+                  'then two more for the same task, and assert which of them ' +
+                  'see the note -- per the lifetime the change states -- and ' +
+                  'that a review session is never shown an ' +
+                  'implementer-addressed note as binding; they fail against ' +
+                  'today, where all three see it unchanged. A test that only ' +
+                  'asserts the next session sees the note is the test this ' +
+                  'has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['HIL-3', 'IMP-3'],
+            },
+            {
+              id: 'T4.3.28',
+              title:
+                'mergeChange records a merge it did not make whenever the ' +
+                'merge is a no-op, and a failed push on the merge-only ' +
+                'retry has no lever',
+              completionCriteria: [
+                'A `ChangeMerged` names a merge commit this call made and ' +
+                  "whose second parent is the task's tip, or the merge is " +
+                  'refused with a reason naming what happened and `mpgm ' +
+                  'record-merge` where a merge somebody else made is what ' +
+                  'exists; and a task whose merge landed locally but failed ' +
+                  'to push can be carried to the remote by re-running it once ' +
+                  'the push can succeed. Today neither holds. ' +
+                  "src/implement/merge.ts's `perform` runs `git merge " +
+                  '--no-ff`, which exits 0 with "Already up to date" and ' +
+                  'makes no commit when the tip is already in the trunk, then ' +
+                  "records `git rev-parse HEAD` as the merge. T4.3.22's " +
+                  'hand-written fix (e1bfb0e) closed one shape of that -- a ' +
+                  'branch only the remote contains, brought in by the ' +
+                  'catch-up fetch -- and deliberately kept every containment ' +
+                  'the local trunk already had, so the rest stays open on the ' +
+                  'regular merge path (`attemptMerge` in ' +
+                  'src/implement/loop.ts), which has no containment check of ' +
+                  'its own.',
+                "Measured by an independent review of T4.3.22's fixes on " +
+                  '2026-11-23, with a bare remote and a second clone, not ' +
+                  'supposed. (A) A branch with no commits of its own, with ' +
+                  'the remote moved ahead: `merged: true`, `commit` an ' +
+                  "unrelated task's merge. (B) A branch merged on GitHub and " +
+                  'then pulled into the local trunk before the loop merged: ' +
+                  "`merged: true`, `commit` the remote's unrelated head. (D) " +
+                  'A branch merged locally by hand and not pushed: the loop ' +
+                  "pushes the operator's merge and records it as its own, " +
+                  'where T4.2.15 records a hand merge as ' +
+                  '`ChangeMergedByOperator` with who made it. Case A is the ' +
+                  "one T4.3.22's comment kept on purpose, and the only thing " +
+                  'that relies on it is test fixtures: refusing every ' +
+                  'containment fails 25 loop tests whose scripted sessions ' +
+                  'commit nothing.',
+                'The failed-push half. No production caller passes an ' +
+                  'effect journal to `mergeChange` (both calls in ' +
+                  'src/implement/loop.ts omit it), so the redo ' +
+                  "`gitMergeContract`'s doc describes -- re-run `perform`, " +
+                  're-merge nothing, push again -- is reachable only from ' +
+                  'merge.test.ts. After a push fails on the merge-only retry ' +
+                  "T4.3.22 added, re-running reaches that retry's local " +
+                  'containment check first, which finds the tip in the local ' +
+                  'trunk and nothing recorded, and sends the operator to ' +
+                  '`mpgm record-merge`; `verifyOperatorMerge` checks against ' +
+                  'the fetched remote trunk, where the merge is not, and ' +
+                  "refuses. A transient push failure on a task's last allowed " +
+                  'round therefore ends where T4.3.22 exists to stop tasks ' +
+                  'ending: nothing a re-run or the named command can move.',
+                'The change decides from what the merge produced rather ' +
+                  'than from what moved the trunk: after `git merge --no-ff`, ' +
+                  'HEAD must have moved and `HEAD^2` must be the tip; the ' +
+                  "only already-present merge it may accept is this task's " +
+                  'own -- recognisable because `mergeMessage` writes ' +
+                  '`Closes-Task: <taskId>` into it and its second parent is ' +
+                  'the tip -- and only when the remote lacks it, which is the ' +
+                  'redo; everything else is refused. It says what it does ' +
+                  'about a task whose branch has no commits of its own: ' +
+                  'refused explicitly as a change with nothing to merge, or ' +
+                  'recorded as such without a `ChangeMerged` claiming a ' +
+                  'commit, and why; and it gives the 25 fixtures real commits ' +
+                  'rather than keeping the no-op merge alive for them. It ' +
+                  'either passes a journal from the loop or lets the ' +
+                  'merge-only retry reach `mergeChange` for its own unpushed ' +
+                  'merge, says which, and prices the other.',
+                'It must not weaken what already holds: a real first-time ' +
+                  'merge still merges and pushes; the remote-only refusal ' +
+                  'T4.3.22 added still refuses; a hand merge is still ' +
+                  'recorded only through `mpgm record-merge` after ' +
+                  '`verifyOperatorMerge` agrees (CONV-4); a failed push still ' +
+                  'never produces a `ChangeMerged` (T4.2.12). The tests cover ' +
+                  'A, B and D on the regular merge path, each asserting no ' +
+                  '`ChangeMerged` and a reason naming the case, and a ' +
+                  'loop-level test in which a push fails on the merge-only ' +
+                  'retry and a re-run after the remote accepts pushes lands ' +
+                  'that same merge on the remote with one `ChangeMerged`. ' +
+                  'They fail against today, where A, B and D return `merged: ' +
+                  'true` naming the wrong commit and the re-run is refused; a ' +
+                  'test over a branch with real commits that has never been ' +
+                  'merged anywhere is the test this has always passed.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-1', 'ORC-5', 'OBS-1'],
+            },
           ],
         },
       ],
