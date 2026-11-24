@@ -104,14 +104,29 @@ export class UnplacedRefError extends Error {
   readonly reported: string;
   /** The worktree's actual tip, or `undefined` when it could not be read. */
   readonly tip: string | undefined;
+  /**
+   * Where the refused ref came from, as a phrase a refusal can name without
+   * guessing — `the implementing session's output`, `repair attempt 2's
+   * output`, and so on.
+   *
+   * Carried rather than assumed because a loop asks CI about a ref more than
+   * once per round: the first poll's ref is the implementing session's, and
+   * every poll after a repair attempt has a different author. A refusal that
+   * always said "the implementing session" blamed the wrong session as soon
+   * as a repair ran, which is a wrong diagnosis in an error that stops work
+   * (CONV-3) — the operator it sends to the implementing commit finds a
+   * commit the branch really is on.
+   */
+  readonly source: string;
 
-  constructor(reported: string, tip: string | undefined) {
+  constructor(reported: string, tip: string | undefined, source: string) {
     super(
       tip === undefined
-        ? `could not read the commit the worktree is on, so the reported ref '${reported}' cannot be checked against it`
-        : `the reported ref '${reported}' does not name the worktree's tip (${tip})`,
+        ? `could not read the commit the worktree is on, so the reported ref '${reported}' (from ${source}) cannot be checked against it`
+        : `the reported ref '${reported}' (from ${source}) does not name the worktree's tip (${tip})`,
     );
     this.reported = reported;
     this.tip = tip;
+    this.source = source;
   }
 }

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MEMORY } from '../database.js';
 import { kernelRegistry } from '../event/catalog.js';
 import { EventLog } from '../event/store.js';
-import type { AgentSessionProvider } from '../agent/session.js';
+import type { AgentSessionProvider, SessionResult } from '../agent/session.js';
 import { SessionRunner } from '../agent/runner.js';
 import { ScriptedProvider, scriptedSuccess } from '../agent/scripted-provider.js';
 import { RoleRegistry } from '../role/loader.js';
@@ -25,12 +25,18 @@ import { mergeVerdict, type CheckRun } from './checks.js';
  * was read as CI being unreachable — six retries and a refusal naming the
  * wrong cause, sending the operator to look at CI when CI was never asked.
  *
- * Both tests here drive `implementTask` with an implementing session whose
- * reported `ref` the loop must not simply trust: one with surrounding prose,
- * and one that is a well-formed sha naming a real commit the branch is not
- * on. Each must fail against the unmodified loop — the first by reaching
+ * The first two tests drive `implementTask` with an implementing session
+ * whose reported `ref` the loop must not simply trust: one with surrounding
+ * prose, and one that is a well-formed sha naming a real commit the branch is
+ * not on. Each must fail against the unmodified loop — the first by reaching
  * `options.checks` with the prose intact, the second by merging content
  * nobody asked CI about.
+ *
+ * The last two are the same question asked of the *second* poll of a round,
+ * where the ref is a repair attempt's rather than the implementing session's:
+ * once CI is asked again after every repair, a round has more than one author
+ * of refs, and a guard that assumes the implementing session is the only one
+ * misnames the cause and strands the repair budget (review finding).
  */
 
 const GREEN: CheckRun[] = [
@@ -41,7 +47,43 @@ const GREEN: CheckRun[] = [
   { name: 'scan', status: 'completed', conclusion: 'success', url: '' },
 ];
 
+const RED: CheckRun[] = [
+  { name: 'build', status: 'completed', conclusion: 'failure', url: '' },
+  { name: 'lint', status: 'completed', conclusion: 'success', url: '' },
+  { name: 'typecheck', status: 'completed', conclusion: 'success', url: '' },
+  { name: 'test (node 24.x)', status: 'completed', conclusion: 'success', url: '' },
+  { name: 'scan', status: 'completed', conclusion: 'success', url: '' },
+];
+
 const tempDirs: string[] = [];
+
+/**
+ * A provider that runs a side effect before answering.
+ *
+ * `ScriptedProvider` cannot touch the worktree, and the case the post-repair
+ * poll turns on is a session that *committed* and then produced unusable
+ * output — so the tip moves while no claim about it exists. That needs the
+ * commit to happen at the moment the session runs, between one `checks` call
+ * and the next.
+ */
+class EffectfulProvider implements AgentSessionProvider {
+  readonly #steps: { readonly effect?: () => void; readonly result: SessionResult }[];
+
+  constructor(
+    steps: readonly { readonly effect?: () => void; readonly result: SessionResult }[],
+  ) {
+    this.#steps = [...steps];
+  }
+
+  run(): Promise<SessionResult> {
+    const next = this.#steps.shift();
+    if (next === undefined) {
+      throw new Error('EffectfulProvider ran out of steps');
+    }
+    next.effect?.();
+    return Promise.resolve(next.result);
+  }
+}
 
 function git(cwd: string, args: readonly string[]): string {
   return execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim();
@@ -254,6 +296,146 @@ describe('a ref the implementing session reported, not read from the worktree (T
 
       expect(result.status).toBe('merged');
       expect(checksCalls).toBeGreaterThan(0);
+    } finally {
+      log.close();
+    }
+  });
+
+  it(
+    'asks CI about the worktree tip after a repair session commits and then ' +
+      'produces no usable output, spending the budget rather than aborting',
+    async () => {
+      // The second `checks` call, where the ref is not a session's claim at
+      // all but whatever the loop carried forward after a repair produced
+      // nothing usable. Carrying the *previous* ref there names an ancestor
+      // of the branch once the repair has committed, which the tip guard
+      // refuses — aborting the task on the implementing session's own
+      // correct commit and abandoning the repair budget the loop documents
+      // as still shrinking (review finding, T4.3.26).
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const implemented = git(repo, ['rev-parse', 'HEAD']);
+      let repairCommit = '';
+
+      const provider = new EffectfulProvider([
+        {
+          result: scriptedSuccess({
+            ref: implemented,
+            summary: 'done',
+            files: ['README.md'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+        },
+        {
+          // The repair session commits — then fails validation, which since
+          // this task is exactly what reporting a ref as prose does.
+          effect: () => {
+            const path = worktrees.pathFor('T1');
+            writeFileSync(join(path, 'fix.txt'), 'an attempted fix\n');
+            git(path, ['add', '--all']);
+            git(path, ['commit', '-m', 'an attempted fix']);
+            repairCommit = git(path, ['rev-parse', 'HEAD']);
+          },
+          result: scriptedSuccess({
+            ref: 'the commit I just made -- "an attempted fix"',
+            summary: 'tried',
+            files: ['fix.txt'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+        },
+      ]);
+      const log = openLog();
+      const asked: string[] = [];
+
+      try {
+        const result = await implementTask({
+          ...baseOptions(repo, provider, log, { maxValidationAttempts: 1 }),
+          worktrees,
+          maxRepairAttempts: 1,
+          checks: (ref: string) => {
+            asked.push(ref);
+            return Promise.resolve(mergeVerdict({ ref, runs: RED }));
+          },
+        });
+
+        // Two polls: the implementing commit, then the commit the repair
+        // session actually left behind — read from git, since no usable
+        // output claimed it.
+        expect(asked).toEqual([implemented, repairCommit]);
+        // The budget was spent on a verdict, not abandoned by a refusal
+        // naming the wrong session.
+        expect(result.status).toBe('blocked');
+        expect(result.reason ?? '').toContain('retry budget of 1 attempts exhausted');
+        expect(result.reason ?? '').not.toContain('refusing to ask CI about');
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it('names the repair session, not the implementing one, when a repair reports a ref the branch is not on', async () => {
+    const repo = newRepo();
+    const worktrees = new WorktreeManager({ repo });
+    const implemented = git(repo, ['rev-parse', 'HEAD']);
+    // Well-formed, resolvable, and simply not on the task's branch.
+    git(repo, ['checkout', '-b', 'unrelated']);
+    writeFileSync(join(repo, 'elsewhere.txt'), 'not on the task branch\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'a commit on an unrelated branch']);
+    const otherCommit = git(repo, ['rev-parse', 'HEAD']);
+    git(repo, ['checkout', 'main']);
+
+    const provider = new ScriptedProvider([
+      scriptedSuccess({
+        ref: implemented,
+        summary: 'done',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+      scriptedSuccess({
+        ref: otherCommit,
+        summary: 'tried',
+        files: ['README.md'],
+        tests: [],
+        complete: true,
+        remaining: '',
+        deviations: [],
+      }),
+    ]);
+    const log = openLog();
+    const asked: string[] = [];
+
+    try {
+      const result = await implementTask({
+        ...baseOptions(repo, provider, log),
+        worktrees,
+        maxRepairAttempts: 1,
+        checks: (ref: string) => {
+          asked.push(ref);
+          return Promise.resolve(mergeVerdict({ ref, runs: RED }));
+        },
+      });
+
+      expect(result.status).toBe('blocked');
+      // CI was asked only about the implementing commit; the repair's claim
+      // never reached it.
+      expect(asked).toEqual([implemented]);
+      // Whose claim it was. A refusal that says "the implementing session"
+      // here sends an operator to a commit the branch really is on, which is
+      // a wrong diagnosis in an error that stops work (CONV-3).
+      expect(result.reason ?? '').toContain("repair attempt 1's output");
+      expect(result.reason ?? '').not.toContain('implementing session');
+      expect(result.reason ?? '').toContain(otherCommit);
+      expect(result.reason ?? '').toContain(implemented);
     } finally {
       log.close();
     }
