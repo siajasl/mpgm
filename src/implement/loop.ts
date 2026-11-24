@@ -818,7 +818,7 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     const review: ReviewRecord = {
       reviewTaskId: approved.reviewTaskId,
       reviewerRole: approved.reviewerRole,
-      ref: tip,
+      ref: approved.ref,
       approved: true,
       summary: approved.summary,
       deviations: approved.deviations,
