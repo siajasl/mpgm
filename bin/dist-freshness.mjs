@@ -64,19 +64,33 @@
  * on-disk content of `src/**\/*.ts` (excluding `*.test.ts`, matching
  * `tsconfig.build.json`) together with `tsconfig.json` and
  * `tsconfig.build.json`, which is what `tsc` actually reads. So there is no
- * git in the decision and no exemption anywhere in it: not for the default
- * root, not for `MPGM_PROJECT_ROOT`, not for a directory with no git
- * history. A tree this cannot read is stale, and a stale tree refuses.
+ * git in the decision and no exemption anywhere in it: not for the root this
+ * module always derives from its own location, not for a directory with no
+ * git history. A tree this cannot read is stale, and a stale tree refuses.
  *
  * Fails closed (CONV-4, IMP-2): a build record that is missing, unreadable,
  * malformed or silent on the fingerprint is stale, not fresh; a source tree
  * that cannot be read is stale, not fresh; absence is not success. There is
- * one code path and `MPGM_PROJECT_ROOT` only moves which root it runs
- * against, so a test can point this at a throwaway fixture repository —
- * rather than mutating this project's own checkout to exercise staleness —
- * without the pointer being able to change what the guard decides. That is
- * why the fixture tests and the default-root tests in
- * `src/implement/dist-freshness.test.ts` exercise the same code.
+ * no override of the root this decides about (T4.3.25 rework, finding 1 —
+ * an earlier version read `MPGM_PROJECT_ROOT`, which moved the root the
+ * *decision* ran against without moving the `dist/` an entry point then
+ * imports: `bin/mpgm.mjs` resolves `../dist/index.js` from its own location
+ * regardless of any environment variable, so pointing the override at any
+ * directory with a fresh record turned the guard off for the real `dist/`
+ * being loaded). The root is always derived from this module's own file
+ * location, the same way `bin/mpgm.mjs` derives the `dist/` it loads, so the
+ * two can never point at different trees. A test exercises this by copying
+ * the guard modules into a throwaway fixture's own `bin/` and running an
+ * entry point there (`asDefaultRoot` in
+ * `src/implement/dist-freshness.test.ts`), not by redirecting this module
+ * away from the fixture it copied them into.
+ *
+ * `scripts/write-build-info.mjs` keeps its own `MPGM_PROJECT_ROOT` override:
+ * it only decides what to *write*, to a root it is told about, and nothing
+ * downstream of it assumes that root is where a `dist/` load will later
+ * happen from. That asymmetry is deliberate, not an oversight — the hazard
+ * here is specific to a module whose decision gates an import the same
+ * process makes from a fixed location.
  *
  * Known cost, stated rather than discovered: because this reads the working
  * tree, editing a compiled source without rebuilding makes `dist/` stale
@@ -95,8 +109,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeSourceFingerprint } from './source-fingerprint.mjs';
 
-const root =
-  process.env.MPGM_PROJECT_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const BUILD_INFO_PATH = join(root, 'dist', 'build-info.json');
 
