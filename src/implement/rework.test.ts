@@ -3204,7 +3204,7 @@ describe('a review that never approves (NFR-1)', () => {
 
     const provider = new ScriptedProvider([
       scriptedSuccess({
-        ref: 'unused',
+        ref: 'deadbeef',
         summary: 'done',
         files: ['README.md'],
         tests: [],
@@ -3213,7 +3213,7 @@ describe('a review that never approves (NFR-1)', () => {
         deviations: [],
       }),
       scriptedSuccess({
-        ref: 'unused',
+        ref: 'deadbeef',
         verdict: 'approve',
         summary: 'good',
         findings: [],

@@ -28,7 +28,7 @@ import {
 } from './merge.js';
 import { repairUntilGreen, type RepairReport } from './repair.js';
 import { DEFAULT_REVIEW_ATTEMPTS, isReworkable, renderReview } from './rework.js';
-import { namesCommit, reconcileRef } from './commit-ref.js';
+import { namesCommit, reconcileRef, UnplacedRefError } from './commit-ref.js';
 import { lastReviewOf, renderPriorReview, type PriorReview } from './prior-review.js';
 import {
   priorReviewBudgetOf,
@@ -471,6 +471,53 @@ async function reachableDeclarationRefs(
     }
   }
   return (ref: string) => reachable.has(ref);
+}
+
+/**
+ * Wrap a `checks(ref)` callback so every ref it is actually asked about is
+ * one read from the worktree, not one a session claimed (T4.3.26).
+ *
+ * `repairUntilGreen` is handed whatever ref the loop is holding at the
+ * time — the implementing session's own `change.data.ref`, or a repair
+ * session's `fixed.data.ref` — and asks the provider about exactly that
+ * string. The reviewer's ref has always been reconciled against the
+ * worktree's tip before it is recorded or compared (`reconcileRef`); the
+ * implementer's never was, so a session that reported its commit with
+ * surrounding prose reached the provider unexamined and a 404-shaped answer
+ * was read as CI being unreachable — the wrong cause.
+ *
+ * Reads the tip fresh on every call, because this wraps every ref
+ * `repairUntilGreen` ever asks about — the first poll and the one after
+ * every repair attempt — not only the one the loop happened to hold when
+ * the round began.
+ *
+ * A mismatch throws `UnplacedRefError` rather than asking about the tip
+ * instead: silently substituting it would hide a session that described a
+ * different commit than the one it left, which is evidence the review must
+ * not lose (the same reasoning `reconcileRef`'s own doc gives for leaving a
+ * reviewer's mismatched ref untouched).
+ *
+ * `sourceOf` is read at the moment of the refusal, not when this is wrapped,
+ * because the author of the ref changes within and across rounds: round 1's
+ * first poll holds the implementing session's claim, each poll after a
+ * repair attempt holds that attempt's, and round 2 onward's first poll holds
+ * the rework session's — `polled` (the caller's `sourceOf` state, in
+ * `implementTask`) is reassigned at every one of those points, not only the
+ * first. The refusal names whichever one it actually refused (CONV-3).
+ */
+function checksAgainstWorktreeTip(
+  worktrees: WorktreeManager,
+  taskId: string,
+  checks: (ref: string) => Promise<MergeVerdict>,
+  sourceOf: () => string,
+): (ref: string) => Promise<MergeVerdict> {
+  return async (reported: string): Promise<MergeVerdict> => {
+    const tip = await worktrees.head(taskId);
+    if (tip === undefined || !namesCommit(reported, tip)) {
+      throw new UnplacedRefError(reported, tip, sourceOf());
+    }
+    return checks(tip);
+  };
 }
 
 /**
@@ -1356,7 +1403,19 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   });
 
   if (authored.status !== 'completed') {
-    return stop(`the implementing session blocked: ${authored.reason}`);
+    // `authored.reason` alone says how many attempts failed and nothing
+    // about why (CONV-3) — it is the same count whether the session
+    // produced prose instead of a commit object name or something else
+    // entirely wrong with its output. `lastIssues` is what `SessionRunner`
+    // fed back to the session on every retry (`#promptFor`), so it already
+    // names the field and what was expected; appending it here is the only
+    // way the operator sees that without reading this file or the log. For
+    // T4.3.22's prose ref this turns into `ref: must be a commit object
+    // name (7-40 hex characters), not prose about one` rather than a count.
+    return stop(
+      `the implementing session blocked: ${authored.reason}` +
+        (authored.lastIssues.length === 0 ? '' : ` — ${authored.lastIssues.join('; ')}`),
+    );
   }
 
   const change = changeSchema.safeParse(authored.output);
@@ -1380,6 +1439,22 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
   //
   // Deviations are the exception, and `declaredDeviations` below is why.
   let latest = change.data;
+
+  // The ref the next CI poll will be given, and where it came from in the
+  // words a refusal should use for it (`UnplacedRefError.source`, T4.3.26).
+  // Starts as the implementing session's claim and is reassigned wherever the
+  // ref the next poll uses changes: by the repair callback below, because
+  // after a repair attempt the ref being polled is that attempt's — or, when
+  // the attempt produced nothing usable, the worktree's own tip and nobody's
+  // claim at all — and, once a round's review asks for changes, by the
+  // rework session's own result (where `latest` is reassigned, below), since
+  // round 2's first poll is of the rework's ref, not the implementing
+  // session's. Kept beside `latest` rather than read off it: `latest` is the
+  // newest *session's account* of the change and stops moving as soon as a
+  // session's output is unusable, while this follows the commit CI is
+  // actually being asked about, which is what the refusals below have to
+  // name.
+  let polled = { ref: latest.ref, source: "the implementing session's output" };
 
   // Read again immediately before publishing this change or opening its pull
   // request — the first things the loop does outside the repository itself,
@@ -1492,7 +1567,15 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
         ...(options.maxRepairAttempts === undefined
           ? {}
           : { maxAttempts: options.maxRepairAttempts }),
-        checks: options.checks,
+        // Wrapped so every ref this asks CI about is read from the
+        // worktree first, not trusted as the implementer wrote it
+        // (T4.3.26, `checksAgainstWorktreeTip` above).
+        checks: checksAgainstWorktreeTip(
+          options.worktrees,
+          task.id,
+          options.checks,
+          () => polled.source,
+        ),
         ...(options.logsFor === undefined ? {} : { logsFor: options.logsFor }),
         emit: (event) => {
           options.log.append(event);
@@ -1537,14 +1620,91 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
             if (controlBeforeRepairPublish === 'running') {
               await options.publish?.(worktree.branch, fixed.data.ref);
             }
+            polled = {
+              ref: fixed.data.ref,
+              source: `repair attempt ${String(request.attempt)}'s output`,
+            };
+            return { ref: fixed.data.ref };
           }
-          // A repair session that produced nothing usable leaves the ref where it
-          // was, so the next verdict is the same one and the budget still shrinks
-          // — rather than the loop losing track of which commit it is judging.
-          return { ref: fixed?.success === true ? fixed.data.ref : request.ref };
+          // A repair session that produced nothing usable — it crashed, or its
+          // output failed `changeSchema`, which since T4.3.26 is what a
+          // reported ref written as prose does — still gets the budget it was
+          // promised: the next verdict is read, the attempt is recorded, and
+          // the budget shrinks (`repairUntilGreen`).
+          //
+          // Which ref that verdict is read for has to come from git, not from
+          // `request.ref`. A session with no usable *output* may well have
+          // committed: the one case this task is about commits, validates its
+          // own work, and only then fails on its output. Carrying `request
+          // .ref` forward then names an ancestor of the branch, which
+          // `checksAgainstWorktreeTip` rightly refuses — and the refusal
+          // aborted the task on the implementing session's own correct
+          // commit, blaming the wrong session and abandoning the rest of the
+          // budget (review finding, T4.3.26). Reading the tip asks CI about
+          // the commit git is actually on, which is the ref every other
+          // decision in this round uses.
+          //
+          // An unreadable tip falls back to `request.ref` so the refusal below
+          // reports the thing that is actually wrong — nothing can be placed
+          // against a branch whose head cannot be read — rather than inventing
+          // a ref to carry (CONV-4).
+          const tipAfterRepair = await options.worktrees.head(task.id);
+          // Published before it is ever polled, under the same guard as the
+          // usable-output arm above. This path never ran `options.publish`
+          // (only the `fixed.success === true` arm above did), so the tip it
+          // hands to the next `checks` call could be a commit this process
+          // had only ever made locally — one the real provider has never
+          // seen, which answers the check-runs lookup 422, which
+          // `awaitChecks` retries six times and reports as CI being
+          // unreachable: the exact misdiagnosis this task exists to remove,
+          // reopened through the one path that skipped the push (review
+          // finding, T4.3.26).
+          if (tipAfterRepair !== undefined) {
+            const controlBeforeUnusableRepairPublish = runControl(
+              fold(options.log.read()),
+              runId,
+            );
+            if (controlBeforeUnusableRepairPublish === 'running') {
+              await options.publish?.(worktree.branch, tipAfterRepair);
+            }
+          }
+          polled = {
+            ref: tipAfterRepair ?? request.ref,
+            source:
+              tipAfterRepair === undefined
+                ? `the ref carried into repair attempt ${String(request.attempt)}, whose ` +
+                  `output was unusable and whose worktree tip could not be read`
+                : `the worktree's own tip, read because repair attempt ` +
+                  `${String(request.attempt)} produced no usable output — so the branch ` +
+                  `moved again between that read and this one`,
+          };
+          return { ref: polled.ref };
         },
       });
     } catch (cause) {
+      // The ref `checksAgainstWorktreeTip` found could not be placed on the
+      // branch — checked first, and distinctly: this is not CI being down,
+      // it is the loop refusing to ask CI about a commit the branch is not
+      // on (T4.3.26). Named precisely enough to act on without reading this
+      // file (CONV-3): what was reported, which session reported it
+      // (`cause.source` — not always the implementing one, since a round
+      // polls CI again after every repair attempt), and what the worktree's
+      // tip actually is (or that it could not be read at all). CI was never
+      // asked, so this does not retry — retrying asks nothing new.
+      if (cause instanceof UnplacedRefError) {
+        return stop(
+          `${task.id}: refusing to ask CI about '${cause.reported}' — ` +
+            (cause.tip === undefined
+              ? `could not read the commit '${worktree.branch}' is on, so nothing ` +
+                `can be checked against it`
+              : `it does not name the tip of '${worktree.branch}' (${cause.tip}). ` +
+                `That ref came from ${cause.source}, which named a commit the ` +
+                `branch is not on. This is not a build failure and CI was never ` +
+                `asked, so retrying will not change the answer — check what was ` +
+                `actually committed at '${worktree.path}'.`),
+          { ref: cause.reported },
+        );
+      }
       // `repairUntilGreen` also awaits the repair callback above — a real
       // `git push` and a dispatched session (`cli/commands.ts`) — so a bare
       // `catch` here would misreport *their* rejections as an unreachable CI,
@@ -1565,9 +1725,9 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       // escape to the top of the process the way it did on the live run this
       // task was filed from.
       return stop(
-        `CI could not be reached for '${latest.ref}' after retrying ` +
+        `CI could not be reached for '${polled.ref}' after retrying ` +
           `(${String(cause.attempts)} attempts): ${cause.message}`,
-        { ref: latest.ref },
+        { ref: polled.ref },
       );
     }
 
@@ -2055,6 +2215,22 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
     }
 
     latest = revised.data;
+
+    // The next round's first `checks` call is given `latest.ref` (`ref:
+    // latest.ref` where `repairUntilGreen` is called, above) — which is now
+    // this rework's ref, not the implementing session's that opened the
+    // task. `polled` is reassigned here, the one place `latest` changes
+    // after round 1, so a refusal on that next poll names the session that
+    // actually produced the ref being asked about rather than whichever
+    // session last set `polled` (round 1's implementing session, or one of
+    // its repair attempts). Left unassigned, a rework session's own
+    // off-branch sha was blamed on "the implementing session's output" — a
+    // commit the branch really is on — sending an operator to look at the
+    // wrong session's work (CONV-3, review finding, T4.3.26).
+    polled = {
+      ref: revised.data.ref,
+      source: `round ${String(round)}'s rework output`,
+    };
 
     // Read again immediately before publishing the reworked change, for the
     // same reason as the guard around the first publish above: the rework
