@@ -1,63 +1,113 @@
 #!/usr/bin/env node
 /**
- * A content fingerprint of every file `tsconfig.build.json` actually
- * compiles (`src/**\/*.ts`, excluding `*.test.ts`) as of `HEAD` in a given
- * checkout root (T4.3.25 rework).
+ * A content fingerprint of everything that determines what `tsc -p
+ * tsconfig.build.json` emits into `dist/`: the on-disk content of every file
+ * it compiles (`src/**\/*.ts`, excluding `*.test.ts`) plus the two config
+ * files that say how (T4.3.25).
  *
- * `bin/dist-freshness.mjs` keyed staleness on the commit alone in its first
- * version. That over-refused: any commit that changes HEAD without changing
- * a compiled input — a docs-only commit, a test-only commit, an
- * `--allow-empty`, a branch switch between identical trees — still moved
- * `HEAD`, so it was reported stale even though `dist/` is exactly what that
- * commit would produce. Measured collateral: `src/implement/
- * scan-secrets.test.ts` and `src/implement/audit-drift-script.test.ts` spawn
- * scripts that carry the freshness guard, so after an ordinary
- * build-then-test-then-commit cycle those suites went red on the next
- * commit even though nothing they exercise had changed, because the guard
- * itself was reporting stale.
+ * Two earlier keys, and why neither held:
  *
- * Fingerprinting the compiled inputs instead of the commit fixes that: two
- * trees with the same compiled files produce the same fingerprint
- * regardless of what else changed between them.
+ * - The commit alone. Any commit that moved `HEAD` without changing a
+ *   compiled input — docs-only, test-only, an `--allow-empty`, a branch
+ *   switch between identical trees — reported stale even though `dist/` is
+ *   exactly what that commit would produce. Measured collateral:
+ *   `src/implement/scan-secrets.test.ts` and
+ *   `src/implement/audit-drift-script.test.ts` spawn scripts that carry the
+ *   freshness guard, so an ordinary build-then-test-then-commit cycle left
+ *   `npm test` red on the next commit in suites unrelated to it.
+ * - The git blobs of those files as of `HEAD` (`git ls-tree`). Closer, but
+ *   wrong twice over, both reproduced in review. It answers the wrong
+ *   question: `tsc` compiles the working tree, not `HEAD`, so a `dist/`
+ *   built from an uncommitted edit — the normal state of a session that is
+ *   mid-change — fingerprinted as fresh when it was not. And it made the
+ *   answer depend on git being able to answer: when `git rev-parse` or `git
+ *   ls-tree` failed for any reason (an unborn `HEAD`, an unreadable `.git`),
+ *   the fingerprint was unavailable and the caller skipped the comparison
+ *   entirely, so a check that could not run waved the command through —
+ *   exactly the fail-open the filing forbids (IMP-2, CONV-4).
  *
- * Built from `git ls-tree`'s blob hashes rather than by reading file bytes
- * directly — git already content-addresses every blob, and reading via
- * `ls-tree` means this never has to care whether the working tree and the
- * index agree, only what `HEAD` actually committed.
+ * Hashing the working tree fixes both: it is what the compiler reads, so it
+ * is fresh exactly when `dist/` is, and it needs no git at all, so there is
+ * no "git would not answer" branch left to fail open in. `git` now appears
+ * nowhere in the decision — `bin/dist-freshness.mjs` reads a commit only to
+ * make a refusal message readable.
  *
- * Returns `undefined` when `root` has no readable git history at all (e.g.
- * a package extracted from a tarball with no `.git`) — the same "nothing to
- * compare" case callers already have to handle for `git rev-parse HEAD`
- * itself.
+ * Two bounds worth stating rather than implying. The TypeScript compiler's
+ * own version also determines `dist/` and is not keyed here: a compiler
+ * upgrade is a change to `package.json`/`package-lock.json`, which this does
+ * not hash, so an upgrade that is not followed by a build is not caught.
+ * And this reads the working tree, so an uncommitted edit to a compiled
+ * source does make `dist/` stale until the next build — correctly, because
+ * the built output no longer matches what the compiler would now produce.
+ *
+ * Fails closed (CONV-4): a tree this cannot read does not produce a
+ * fingerprint and does not produce silence either — it returns a `reason`
+ * its caller must refuse on. The result is `{ fingerprint }` or
+ * `{ reason }`, never neither and never both.
  */
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 
-export function computeSourceFingerprint(root) {
-  let listing;
-  try {
-    listing = execFileSync('git', ['ls-tree', '-r', 'HEAD', '--', 'src'], {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-  } catch {
-    return undefined;
+/**
+ * Files outside `src/` that still decide what `tsc` emits.
+ * `tsconfig.build.json` extends `tsconfig.json`, so both count: a change to
+ * either (a `target`, a `rootDir`, an added `exclude`) changes `dist/`
+ * without changing a single source file.
+ */
+const CONFIG_INPUTS = ['tsconfig.json', 'tsconfig.build.json'];
+
+function describe(cause) {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** Collects `dir`'s compiled `.ts` files, recursively. Throws if unreadable. */
+function collectCompiled(dir, found) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectCompiled(full, found);
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith('.ts') &&
+      !entry.name.endsWith('.test.ts')
+    ) {
+      found.push(full);
+    }
   }
+}
 
-  const lines = listing
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .filter((line) => {
-      const path = line.split('\t')[1] ?? '';
-      return path.endsWith('.ts') && !path.endsWith('.test.ts');
-    })
-    .sort();
+/**
+ * `{ fingerprint }` for the checkout at `root`, or `{ reason }` naming what
+ * could not be read. Path names are hashed alongside content, so a file
+ * renamed or deleted changes the fingerprint even when the bytes elsewhere
+ * are identical.
+ */
+export function computeSourceFingerprint(root) {
+  const sourceDir = join(root, 'src');
+  const files = [];
+  try {
+    collectCompiled(sourceDir, files);
+  } catch (cause) {
+    return {
+      reason: `cannot read the compiled sources under ${sourceDir} (${describe(cause)})`,
+    };
+  }
+  files.sort();
 
   const hash = createHash('sha256');
-  for (const line of lines) {
-    hash.update(line);
-    hash.update('\n');
+  const inputs = [...CONFIG_INPUTS.map((name) => join(root, name)), ...files];
+  for (const path of inputs) {
+    let content;
+    try {
+      content = readFileSync(path);
+    } catch (cause) {
+      return { reason: `cannot read the build input ${path} (${describe(cause)})` };
+    }
+    hash.update(relative(root, path).split(sep).join('/'));
+    hash.update('\0');
+    hash.update(content);
+    hash.update('\0');
   }
-  return hash.digest('hex');
+  return { fingerprint: hash.digest('hex') };
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Refuses to let `dist/` load when `dist/` was not built from what this
- * checkout's compiled sources now look like (T4.3.25, MNT-4).
+ * checkout's compiled sources now hold (T4.3.25, MNT-4).
  *
  * Side-effect only: every entry point that loads `dist/` — `bin/mpgm.mjs`
  * and every `scripts/*.mjs`/`scripts/demo/*.mjs` that imports from
@@ -45,52 +45,46 @@
  *   whole module-resolution story, something else — a much larger change
  *   than a staleness check, and not this task's to make. Not chosen.
  * - This module: a cheap, fail-closed read-and-compare that refuses rather
- *   than rebuilds. Chosen. It costs one `git rev-parse HEAD`, one
- *   `git ls-tree`, and one small file read per invocation — real but
- *   negligible next to a session, and nowhere near the cost of a rebuild on
- *   every invocation, which is why this does not rebuild unconditionally
- *   itself either. It also catches a checkout someone moved by hand (a
- *   manual `git checkout`), not only a merge the loop made, because it looks
- *   at what the checkout holds now, not at how it got there.
+ *   than rebuilds. Chosen. It costs reading and hashing the files `tsc`
+ *   compiles (~1.4MB, measured at roughly 10ms) and one small file read per
+ *   invocation — real but negligible next to a session, and nowhere near
+ *   the cost of a rebuild on every invocation, which is why this does not
+ *   rebuild unconditionally itself either. It also catches a checkout
+ *   someone moved by hand (a manual `git checkout`, a `git pull`), not only
+ *   a merge the loop made, because it looks at what the checkout holds now,
+ *   not at how it got there.
  *
- * Keyed on compiled inputs, not on the commit (T4.3.25 rework, finding 3):
- * the first version of this module compared `HEAD` directly, which meant any
- * commit that changed `HEAD` without changing anything `tsc` compiles — a
- * docs-only commit, a test-only commit, an `--allow-empty` — was reported
- * stale even though `dist/` is exactly what that commit would produce.
- * Measured collateral: `src/implement/scan-secrets.test.ts` and
- * `src/implement/audit-drift-script.test.ts` spawn scripts this guard now
- * sits in front of, so an ordinary build-then-test-then-commit cycle left
- * `npm test` red on the very next commit, in suites unrelated to whatever
- * that commit touched. `bin/source-fingerprint.mjs` fixes that: it hashes
- * the content of `src/**\/*.ts` (excluding `*.test.ts`, matching
- * `tsconfig.build.json`) as of `HEAD`, and only a change to one of those
- * files changes the fingerprint.
+ * Keyed on what the compiler reads, and on nothing that can decline to
+ * answer (T4.3.25 rework rounds 1 and 2). The first version compared
+ * `HEAD`; the second compared the git blobs of the compiled sources as of
+ * `HEAD`. Both asked git, and git can fail — an unborn `HEAD`, an
+ * unreadable `.git` — and when it did, the comparison was skipped and the
+ * command ran from a stale `dist/` reporting nothing. Reproduced in review
+ * at the default root, twice. `bin/source-fingerprint.mjs` now hashes the
+ * on-disk content of `src/**\/*.ts` (excluding `*.test.ts`, matching
+ * `tsconfig.build.json`) together with `tsconfig.json` and
+ * `tsconfig.build.json`, which is what `tsc` actually reads. So there is no
+ * git in the decision and no exemption anywhere in it: not for the default
+ * root, not for `MPGM_PROJECT_ROOT`, not for a directory with no git
+ * history. A tree this cannot read is stale, and a stale tree refuses.
  *
- * Fails closed (CONV-4): a build record that is missing, unreadable, or
- * names no fingerprint is treated as stale, not fresh — absence is not
- * success — and refuses the same way a real mismatch does rather than
- * waving the command through because the check itself could not run.
+ * Fails closed (CONV-4, IMP-2): a build record that is missing, unreadable,
+ * malformed or silent on the fingerprint is stale, not fresh; a source tree
+ * that cannot be read is stale, not fresh; absence is not success. There is
+ * one code path and `MPGM_PROJECT_ROOT` only moves which root it runs
+ * against, so a test can point this at a throwaway fixture repository —
+ * rather than mutating this project's own checkout to exercise staleness —
+ * without the pointer being able to change what the guard decides. That is
+ * why the fixture tests and the default-root tests in
+ * `src/implement/dist-freshness.test.ts` exercise the same code.
  *
- * The one case this does *not* refuse is the default (module-derived) root
- * having no git history to read at all (`git rev-parse HEAD` itself fails,
- * e.g. a package extracted from a tarball with no `.git`): there, "what was
- * `dist/` built from" is not a question this checkout can even pose, so
- * there is nothing to compare against and nothing to refuse — the same case
- * `scripts/write-build-info.mjs` already treats as nothing to record.
- *
- * `MPGM_PROJECT_ROOT` does *not* get that same allowance (T4.3.25 rework,
- * finding 2): a stale build record plus an override pointed at a directory
- * with no git history used to exit 0 silently, because `currentCommit()`
- * failed and the whole comparison was skipped — a one-environment-variable
- * way to defeat a guard the filing requires to fail closed. When the
- * override is explicitly set, a failure to read git history now refuses
- * instead: an override must not be able to grant an exemption the default
- * path does not have. This is now the same shape `scripts/audit-drift.mjs`'s
- * `AUDIT_BASE_REF` uses, and for the same reason — a test points this module
- * at a throwaway fixture repository instead of mutating this project's own
- * checkout to exercise staleness, without that pointer being able to weaken
- * what it's testing.
+ * Known cost, stated rather than discovered: because this reads the working
+ * tree, editing a compiled source without rebuilding makes `dist/` stale
+ * immediately, so the suites that spawn guarded scripts
+ * (`scan-secrets.test.ts`, `audit-drift-script.test.ts`) will fail while an
+ * edit is unbuilt — `vitest --watch` mid-edit, not `npm run check`, where
+ * `build` precedes `test`. Those failures surface the refusal on the
+ * spawned process's stderr; the fix is the one every refusal names.
  *
  * Every refusal names the fix (CONV-3): run `npm run build`, which (since
  * T4.3.25) also regenerates this record via `scripts/write-build-info.mjs`.
@@ -101,20 +95,24 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeSourceFingerprint } from './source-fingerprint.mjs';
 
-const overrideSet = process.env.MPGM_PROJECT_ROOT !== undefined;
 const root =
   process.env.MPGM_PROJECT_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const BUILD_INFO_PATH = join(root, 'dist', 'build-info.json');
 
+function describe(cause) {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 /**
- * `{ commit, fingerprint }` as of `HEAD` in `root`, or `undefined` when
- * `root` has no readable git history at all.
+ * `HEAD`'s short commit, for a readable message only. Nothing is decided
+ * from this, which is why it may safely be unknown: a checkout with no
+ * usable git history still gets the same refusal, just worded without a
+ * commit in it.
  */
-function currentState() {
-  let commit;
+function headForDiagnostics() {
   try {
-    commit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -122,7 +120,6 @@ function currentState() {
   } catch {
     return undefined;
   }
-  return { commit, fingerprint: computeSourceFingerprint(root) };
 }
 
 /**
@@ -139,7 +136,7 @@ function recordedBuildInfo() {
     return {
       commit: undefined,
       fingerprint: undefined,
-      reason: `no build record at ${BUILD_INFO_PATH} (${cause instanceof Error ? cause.message : String(cause)})`,
+      reason: `no build record at ${BUILD_INFO_PATH} (${describe(cause)})`,
     };
   }
   let parsed;
@@ -149,7 +146,7 @@ function recordedBuildInfo() {
     return {
       commit: undefined,
       fingerprint: undefined,
-      reason: `the build record at ${BUILD_INFO_PATH} is not valid JSON (${cause instanceof Error ? cause.message : String(cause)})`,
+      reason: `the build record at ${BUILD_INFO_PATH} is not valid JSON (${describe(cause)})`,
     };
   }
   if (typeof parsed.sourceFingerprint !== 'string' || parsed.sourceFingerprint === '') {
@@ -174,24 +171,22 @@ function refuse(reason) {
   process.exit(1);
 }
 
-const current = currentState();
-if (current === undefined) {
-  if (overrideSet) {
-    refuse(
-      `MPGM_PROJECT_ROOT=${root} has no readable git history to check dist/ against — ` +
-        `an override must not grant an exemption the default checkout does not have`,
-    );
-  }
-  // Default root, no git history at all: nothing to compare, nothing to refuse.
+const current = computeSourceFingerprint(root);
+if (current.fingerprint === undefined) {
+  refuse(
+    `${current.reason} — a check that cannot read what dist/ would be built from must refuse, ` +
+      `not wave the command through`,
+  );
 } else {
   const record = recordedBuildInfo();
   if (record.fingerprint === undefined) {
     refuse(`${record.reason} — a missing or unreadable record is stale, not fresh`);
   } else if (record.fingerprint !== current.fingerprint) {
+    const head = headForDiagnostics();
     refuse(
       `it was built from ${record.commit ?? 'an unrecorded commit'}, but this checkout's compiled ` +
-        `sources now differ (HEAD ${current.commit}) — something (very likely a merge) moved the ` +
-        `checkout without rebuilding`,
+        `sources now differ${head === undefined ? '' : ` (HEAD ${head})`} — something (a merge, ` +
+        `a pull, or an edit) changed them without rebuilding`,
     );
   }
 }
