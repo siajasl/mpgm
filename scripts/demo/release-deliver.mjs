@@ -13,6 +13,8 @@
  * Requires a Docker daemon. GitHub Actions' `ubuntu-latest` runners ship one
  * preinstalled, and so does this repository's own dev setup.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import {
   CapabilityRegistry,
   composeProvider,

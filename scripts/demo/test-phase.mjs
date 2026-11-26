@@ -98,6 +98,8 @@
  * own transcript, since artifacts are the only interface between phases and
  * gate truth lives in the log (glossary, "Gate").
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

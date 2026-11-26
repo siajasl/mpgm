@@ -51,6 +51,8 @@
  *
  * Requires a Docker daemon, the same as `demo:env`/`demo:release`/`demo:verify`.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

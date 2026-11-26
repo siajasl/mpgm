@@ -31,6 +31,8 @@
  * is, so the derivation is auditable — every design element's provenance is
  * visible here rather than only in the generated YAML.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../bin/dist-freshness.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ArtifactStore, projectArtifactSchemas } from '../dist/index.js';

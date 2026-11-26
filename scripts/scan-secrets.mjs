@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../bin/dist-freshness.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { defaultValueRules } from '../dist/index.js';

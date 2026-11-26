@@ -10,6 +10,8 @@
  * REQUIREMENTS.md section, and the two genuinely quantified thresholds
  * (NFR-3, NFR-6) are visible here rather than only in the generated YAML.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../bin/dist-freshness.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

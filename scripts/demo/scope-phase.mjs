@@ -16,6 +16,8 @@
  * as requirements; catching that they cannot both hold is the conflict lens's
  * job, and is what M2.1's verification asks of this phase.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

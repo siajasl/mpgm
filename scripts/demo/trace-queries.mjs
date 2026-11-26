@@ -10,6 +10,8 @@
  * it with `Verifies:` trailers on some requirements and not others, and then
  * asks the questions ART-2 and TST-2 exist to answer.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

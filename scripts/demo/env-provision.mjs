@@ -14,6 +14,8 @@
  * preinstalled, and so does this repository's own dev setup — nothing here
  * installs or configures it.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import {
   CapabilityRegistry,
   composeProvider,
