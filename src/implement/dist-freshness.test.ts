@@ -184,6 +184,22 @@ describe('dist/ freshness (T4.3.25)', () => {
     expect(result.stderr).toContain('no build record');
   });
 
+  it('treats a build record that is valid JSON but not an object as stale, not fresh', () => {
+    // `JSON.parse('null')` succeeds and returns `null`; reading
+    // `.sourceFingerprint` off that used to throw a bare TypeError instead
+    // of refusing with the fix named (CONV-3).
+    const repo = newRepo();
+    const run = asDefaultRoot(repo);
+    commitSource(repo, 'v1');
+    writeFileSync(join(repo, 'dist', 'build-info.json'), 'null\n');
+
+    const result = run();
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('npm run build');
+    expect(result.stderr).toContain('not a JSON object');
+  });
+
   it('refuses before a rebuild and proceeds once dist/ has actually been rebuilt', () => {
     const repo = newRepo();
     const run = asDefaultRoot(repo);

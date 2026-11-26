@@ -162,6 +162,13 @@ function recordedBuildInfo() {
       reason: `the build record at ${BUILD_INFO_PATH} is not valid JSON (${describe(cause)})`,
     };
   }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return {
+      commit: undefined,
+      fingerprint: undefined,
+      reason: `the build record at ${BUILD_INFO_PATH} is not a JSON object`,
+    };
+  }
   if (typeof parsed.sourceFingerprint !== 'string' || parsed.sourceFingerprint === '') {
     return {
       commit: typeof parsed.commit === 'string' ? parsed.commit : undefined,
