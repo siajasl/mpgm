@@ -3132,6 +3132,68 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['HIL-3', 'OBS-3'],
             },
+            {
+              id: 'T4.3.30',
+              title:
+                "The loop's own trunk catch-up merge carries no trace " +
+                'trailer, so an approved change is held for a CONV-8 ' +
+                'departure its author never made',
+              completionCriteria: [
+                'Every commit the loop itself writes onto a task branch ' +
+                  'carries a trace trailer, or the review does not count a ' +
+                  "commit the loop made as the author's departure, and the " +
+                  'change says which and why. Today neither holds: `catchUp` ' +
+                  '(src/implement/worktree.ts) runs `git merge --no-edit ' +
+                  "<trunk>`, which writes git's default \"Merge branch 'main' " +
+                  'into mpgm/<task>" message with no trailer, and the ' +
+                  'conflict resolver is told to conclude with `git commit ' +
+                  '--no-edit` (src/implement/conflict.ts), which does the ' +
+                  'same. CONV-8 (kb/conventions.md) says every commit carries ' +
+                  'at least one trace trailer, so a reviewer who checks it ' +
+                  'reports a departure on any branch the loop caught up. ' +
+                  "Measured, not supposed: T4.3.26's review 4 (seq 26755, " +
+                  '2026-11-24) approved f00fc20 and the task was held anyway ' +
+                  'for an undeclared CONV-8 departure; the only trailer-less ' +
+                  "commit on the branch was d296a87, the loop's own catch-up " +
+                  'merge, and every authored commit carried trailers. ' +
+                  'Releasing it cost an operator redirect and a further ' +
+                  'session and review.',
+                'If the merge gets a trailer, it names the task the way the ' +
+                  "loop already names it on the task's own merge " +
+                  '(`mergeMessage` writes `Closes-Task: <taskId>`) or with a ' +
+                  'key the trace index reads (CONV-8, ADR-4), in a paragraph ' +
+                  'of its own, for both the clean catch-up and the merge a ' +
+                  'conflict resolver concludes; a test reads the trailers of ' +
+                  'each and fails against today. If instead the review ' +
+                  'excludes loop-made merges, the exclusion is decided by the ' +
+                  'kernel from what the loop recorded about the merge it ' +
+                  'made, not left to a reviewer to notice, and a test shows ' +
+                  'an approved change whose only trailer-less commit is a ' +
+                  'catch-up merge is not held.',
+                'Review 4 of T4.3.26 (seq 26755) also left four minors, ' +
+                  'carried here: the comment above the stranded-rework ' +
+                  'comparison in src/implement/loop.ts still says the ' +
+                  'implementer\'s ref "is never run through `reconcileRef`", ' +
+                  'which T4.3.26 made untrue; the prose-ref and wrong-sha ' +
+                  'tests in src/implement/loop-implementer-ref.test.ts fail ' +
+                  'against the old code by exhausting the scripted provider ' +
+                  'rather than on their own assertions, and should script the ' +
+                  'follow-on review so they fail on `checksCalls` and the ' +
+                  'reason text; the `tip === undefined` arm of ' +
+                  '`UnplacedRefError` (src/implement/commit-ref.ts) and its ' +
+                  'refusal have no test; and two `publish` call sites still ' +
+                  "pass a session's claimed ref rather than the tip read from " +
+                  "the worktree, or the `publish` option's doc should say its " +
+                  'ref is informational.',
+                'It must not weaken what holds: a catch-up merge still ' +
+                  'never moves the tip a reviewer approved without being ' +
+                  're-reviewed or re-checked as today; trailers stay readable ' +
+                  'only in a paragraph of their own (T4.2.11); a commit an ' +
+                  'author writes without a trailer is still reported.',
+              ],
+              dependsOn: [],
+              tracesTo: ['IMP-1', 'OBS-1'],
+            },
           ],
         },
       ],
