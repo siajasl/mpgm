@@ -9,6 +9,8 @@
  * script exists so the two cannot be hand-edited apart — the artifact is
  * generated, never authored.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../bin/dist-freshness.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ArtifactStore, projectArtifactSchemas } from '../dist/index.js';

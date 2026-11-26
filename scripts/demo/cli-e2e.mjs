@@ -5,6 +5,8 @@
  * real argument parsing and the real command implementations without making
  * model calls. The live path is the M1.3 demo.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   cpSync,

@@ -10,6 +10,8 @@
  * ingestion, the role freeze, the worktree manager, the repair loop, the merge
  * gate and git itself.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

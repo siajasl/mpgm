@@ -9,6 +9,8 @@
  * runner that records an id and returns — a bespoke simulation would prove the
  * plan schedulable under a scheduler nobody runs.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

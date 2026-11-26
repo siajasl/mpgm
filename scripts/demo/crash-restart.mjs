@@ -11,6 +11,8 @@
  * All three must agree byte-for-byte, on both the stored log and the folded
  * state. Exits non-zero on any mismatch, so it works as a gate.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -8,6 +8,8 @@
  * was never interrupted. Without that, "identical" could only ever mean
  * "identical apart from the timestamps", which is a much weaker claim.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import {
   BlobStore,
   demoTimestamp,

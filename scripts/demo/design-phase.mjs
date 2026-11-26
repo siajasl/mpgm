@@ -24,6 +24,8 @@
  * it upstream rather than editing a generated design is the only way to plant
  * a flaw in output that does not exist until the phase runs.
  */
+// T4.3.25: refuses before this script loads a stale dist/.
+import '../../bin/dist-freshness.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   cpSync,

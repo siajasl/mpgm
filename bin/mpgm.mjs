@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 /** Operator console entry point. Wiring only; the verbs live in src/cli. */
+// T4.3.25: refuses before this script loads a stale dist/.
+import './dist-freshness.mjs';
 import {
   ClaudeAgentProvider,
   projectArtifactSchemas,
