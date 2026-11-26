@@ -102,6 +102,16 @@
  *
  * Every refusal names the fix (CONV-3): run `npm run build`, which (since
  * T4.3.25) also regenerates this record via `scripts/write-build-info.mjs`.
+ *
+ * Requires a full checkout (T4.3.25 rework, finding 4): this and
+ * `bin/source-fingerprint.mjs` read `src/**\/*.ts`, `tsconfig.json` and
+ * `tsconfig.build.json` to compute the fingerprint they compare, none of
+ * which `package.json`'s `files` ships (`dist` and `bin` only). A package
+ * installed from a tarball therefore has nothing for this guard to read and
+ * refuses every invocation of `bin/mpgm.mjs`. This is not a supported way to
+ * run the CLI — there is no `bin` field in `package.json`, and the project
+ * is invoked as `node ./bin/mpgm.mjs` from a full checkout — so the guard is
+ * not made to tolerate it.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeSync } from 'node:fs';
