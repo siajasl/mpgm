@@ -112,9 +112,26 @@
  * run the CLI — there is no `bin` field in `package.json`, and the project
  * is invoked as `node ./bin/mpgm.mjs` from a full checkout — so the guard is
  * not made to tolerate it.
+ *
+ * Operator decision (T4.3.25 rework, redirect): `mpgm pause`, `mpgm kill`,
+ * `mpgm redirect` and `mpgm status` run even when `dist/` is stale, so an
+ * operator can always reach a running task after a merge or pull lands
+ * underneath it (HIL-3) without rebuilding the very `dist/` a process is
+ * currently running from — one of the two hazards cited above against
+ * rebuilding automatically. Every other verb, `resume` included (it can
+ * restart work, not merely inspect or stop it), and every script under
+ * `scripts/`, refuse exactly as before. The exemption is narrow on purpose:
+ * it is decided here from `process.argv[1]` — the *entry script* the
+ * process was actually started from — matched against this project's own
+ * `bin/mpgm.mjs` under the same root this module always derives, not from
+ * guessing at a verb string anywhere else. A guarded script invoked with
+ * `status` as one of its own arguments is not `bin/mpgm.mjs` and is not
+ * exempt; nothing about its argument list is inspected. A stale `dist/` on
+ * an exempt verb still gets one line on stderr saying so and naming the
+ * fix, then the process continues — it is not silent, only not fatal.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeSync } from 'node:fs';
+import { readFileSync, realpathSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeSourceFingerprint } from './source-fingerprint.mjs';
@@ -193,13 +210,15 @@ function recordedBuildInfo() {
   };
 }
 
+// `writeSync` rather than `process.stderr.write` below, in both `refuse`
+// and the exempt-verb warning (T4.3.25 rework, finding 3): a piped stderr
+// is written asynchronously on macOS, and neither `process.exit(1)` nor the
+// normal continuation that follows the warning waits for that write to
+// land, so a refusal — or a warning an operator needs to see before acting
+// — from a process spawned with piped stderr could be lost. A synchronous
+// write to fd 2 cannot be dropped that way.
+
 function refuse(reason) {
-  // `writeSync` rather than `process.stderr.write` (T4.3.25 rework, finding
-  // 3): a piped stderr is written asynchronously on macOS, and the
-  // `process.exit(1)` below does not wait for that write to land, so a
-  // refusal from a guarded script spawned with piped stderr could be lost,
-  // leaving a bare exit 1 with no cause and no named fix (CONV-3). A
-  // synchronous write to fd 2 cannot be dropped that way.
   writeSync(
     2,
     `dist/ is stale: ${reason}.\n` +
@@ -208,22 +227,86 @@ function refuse(reason) {
   process.exit(1);
 }
 
-const current = computeSourceFingerprint(root);
-if (current.fingerprint === undefined) {
-  refuse(
-    `${current.reason} — a check that cannot read what dist/ would be built from must refuse, ` +
-      `not wave the command through`,
-  );
-} else {
+/**
+ * Operator control verbs that must always reach a running task, even past a
+ * stale `dist/` (T4.3.25 rework, redirect; HIL-3). Deliberately narrow:
+ * `resume` is left out because it can restart work, not merely inspect or
+ * stop it, and every other verb spends a session.
+ */
+const EXEMPT_VERBS = new Set(['pause', 'kill', 'redirect', 'status']);
+
+/**
+ * The exempt verb this process was invoked with through this project's own
+ * `bin/mpgm.mjs`, or `undefined` if it was not. Keyed on `process.argv[1]`
+ * — the entry script Node actually started from — rather than on any verb
+ * string appearing anywhere in `process.argv`, so a guarded script given
+ * `status` as one of its own arguments (not `bin/mpgm.mjs`) is never
+ * mistaken for an exempt invocation of the CLI. Compared through
+ * `realpathSync` on both sides (`root` already is one, via
+ * `fileURLToPath`/Node's module loader): `process.argv[1]` carries whatever
+ * literal path the command line gave it, unresolved, and on a checkout
+ * reached through a symlinked path — `/tmp` and macOS's own per-process
+ * temp directory both are — the two would otherwise never match even for a
+ * real `bin/mpgm.mjs status`. A path `realpathSync` cannot resolve is
+ * treated as not matching, not as a reason to guess: this only narrows an
+ * exemption, so failing that comparison closed means refusing, the same as
+ * every other branch here.
+ */
+function exemptVerb() {
+  const entry = process.argv[1];
+  if (entry === undefined) {
+    return undefined;
+  }
+  let realEntry;
+  try {
+    realEntry = realpathSync(resolve(entry));
+  } catch {
+    return undefined;
+  }
+  if (realEntry !== join(root, 'bin', 'mpgm.mjs')) {
+    return undefined;
+  }
+  const verb = process.argv[2];
+  return EXEMPT_VERBS.has(verb) ? verb : undefined;
+}
+
+/** The reason `dist/` is stale, or `undefined` if it matches what it was built from. */
+function staleness() {
+  const current = computeSourceFingerprint(root);
+  if (current.fingerprint === undefined) {
+    return (
+      `${current.reason} — a check that cannot read what dist/ would be built from must refuse, ` +
+      `not wave the command through`
+    );
+  }
   const record = recordedBuildInfo();
   if (record.fingerprint === undefined) {
-    refuse(`${record.reason} — a missing or unreadable record is stale, not fresh`);
-  } else if (record.fingerprint !== current.fingerprint) {
+    return `${record.reason} — a missing or unreadable record is stale, not fresh`;
+  }
+  if (record.fingerprint !== current.fingerprint) {
     const head = headForDiagnostics();
-    refuse(
+    return (
       `it was built from ${record.commit ?? 'an unrecorded commit'}, but this checkout's compiled ` +
-        `sources now differ${head === undefined ? '' : ` (HEAD ${head})`} — something (a merge, ` +
-        `a pull, or an edit) changed them without rebuilding`,
+      `sources now differ${head === undefined ? '' : ` (HEAD ${head})`} — something (a merge, ` +
+      `a pull, or an edit) changed them without rebuilding`
+    );
+  }
+  return undefined;
+}
+
+const reason = staleness();
+if (reason !== undefined) {
+  const verb = exemptVerb();
+  if (verb === undefined) {
+    refuse(reason);
+  } else {
+    // Not silent, only not fatal: the operator still needs to know, and
+    // still needs the fix named (CONV-3), but this verb must reach a
+    // running task regardless (HIL-3) — see the module doc for why.
+    writeSync(
+      2,
+      `dist/ is stale: ${reason}. Running '${verb}' anyway because mpgm's operator control verbs ` +
+        `(pause, kill, redirect, status) must always be able to reach a running task; run 'npm run build' when it is safe to.\n`,
     );
   }
 }

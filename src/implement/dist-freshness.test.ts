@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -106,17 +106,21 @@ function writeBuildInfo(root: string): void {
   });
 }
 
+/**
+ * Runs via `spawnSync` rather than `execFileSync` (unlike the earlier
+ * cases in this suite, which only ever assert on a non-zero exit and so
+ * never needed stderr from a *successful* run): the control-verb cases
+ * below assert on stderr emitted alongside exit 0 — the warning an exempt
+ * verb still prints on a stale `dist/` — and `execFileSync` only returns
+ * output on the error path, discarding it on success.
+ */
 function runNode(
   script: string,
   env: NodeJS.ProcessEnv,
+  args: readonly string[] = [],
 ): { code: number; stderr: string } {
-  try {
-    execFileSync('node', [script], { encoding: 'utf8', env });
-    return { code: 0, stderr: '' };
-  } catch (error) {
-    const failure = error as { status?: number; stderr?: string };
-    return { code: failure.status ?? 1, stderr: failure.stderr ?? '' };
-  }
+  const result = spawnSync('node', [script, ...args], { encoding: 'utf8', env });
+  return { code: result.status ?? 1, stderr: result.stderr };
 }
 
 /**
@@ -126,10 +130,19 @@ function runNode(
  * exists only for the case asserting that `MPGM_PROJECT_ROOT` no longer
  * changes anything — the guard does not read it, so the override below is
  * always deleted before `extraEnv` is layered on top.
+ *
+ * Named `entry.mjs`, deliberately not `mpgm.mjs`: the exemption the guard
+ * grants to `pause`/`kill`/`redirect`/`status` is keyed on the entry
+ * script's own path matching this fixture's `bin/mpgm.mjs` exactly, so a
+ * script under this name must never be exempt regardless of what is in
+ * `argv` — which is what the "status as an argument" case below checks.
  */
 function asDefaultRoot(
   root: string,
-): (extraEnv?: NodeJS.ProcessEnv) => { code: number; stderr: string } {
+): (
+  extraEnv?: NodeJS.ProcessEnv,
+  args?: readonly string[],
+) => { code: number; stderr: string } {
   mkdirSync(join(root, 'bin'), { recursive: true });
   for (const name of ['dist-freshness.mjs', 'source-fingerprint.mjs']) {
     copyFileSync(join(BIN, name), join(root, 'bin', name));
@@ -139,10 +152,34 @@ function asDefaultRoot(
     entry,
     `import './dist-freshness.mjs';\nprocess.stdout.write('ran\\n');\n`,
   );
-  return (extraEnv) => {
+  return (extraEnv, args) => {
     const env = { ...process.env };
     delete env.MPGM_PROJECT_ROOT;
-    return runNode(entry, { ...env, ...extraEnv });
+    return runNode(entry, { ...env, ...extraEnv }, args);
+  };
+}
+
+/**
+ * Installs the guard at `root/bin/mpgm.mjs` — the exact path the guard's
+ * exemption decision matches `process.argv[1]` against — and returns a
+ * runner that invokes it with a given verb, so the control-verb exemption
+ * (T4.3.25 rework, redirect; HIL-3) can be driven through the one entry
+ * point it actually applies to.
+ */
+function asMpgmEntry(root: string): (verb: string) => { code: number; stderr: string } {
+  mkdirSync(join(root, 'bin'), { recursive: true });
+  for (const name of ['dist-freshness.mjs', 'source-fingerprint.mjs']) {
+    copyFileSync(join(BIN, name), join(root, 'bin', name));
+  }
+  const entry = join(root, 'bin', 'mpgm.mjs');
+  writeFileSync(
+    entry,
+    `import './dist-freshness.mjs';\nprocess.stdout.write('ran\\n');\n`,
+  );
+  return (verb) => {
+    const env = { ...process.env };
+    delete env.MPGM_PROJECT_ROOT;
+    return runNode(entry, env, [verb]);
   };
 }
 
@@ -351,5 +388,51 @@ describe('dist/ freshness (T4.3.25)', () => {
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain('npm run build');
     expect(result.stderr).toContain('cannot read');
+  });
+
+  describe('operator control verbs run past a stale dist/ (T4.3.25 rework, redirect; HIL-3)', () => {
+    it("runs 'status', an exempt verb, on a stale record — warning rather than refusing", () => {
+      const repo = newRepo();
+      const run = asMpgmEntry(repo);
+      commitSource(repo, 'v1');
+      writeBuildInfo(repo);
+      commitSource(repo, 'v2'); // dist/ now predates the sources.
+
+      const result = run('status');
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain('stale');
+      expect(result.stderr).toContain('status');
+    });
+
+    it("refuses 'implement', a non-exempt verb, on the very same stale record", () => {
+      const repo = newRepo();
+      const run = asMpgmEntry(repo);
+      commitSource(repo, 'v1');
+      writeBuildInfo(repo);
+      commitSource(repo, 'v2');
+
+      const result = run('implement');
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain('npm run build');
+    });
+
+    it('does not exempt a guarded script that is merely given "status" as an argument', () => {
+      // The exemption is keyed on the entry script's own path — this
+      // fixture's bin/mpgm.mjs — never on a verb string found anywhere in
+      // argv. A script named entry.mjs invoked with 'status' must refuse
+      // exactly as any other argument would.
+      const repo = newRepo();
+      const run = asDefaultRoot(repo);
+      commitSource(repo, 'v1');
+      writeBuildInfo(repo);
+      commitSource(repo, 'v2');
+
+      const result = run(undefined, ['status']);
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain('npm run build');
+    });
   });
 });
