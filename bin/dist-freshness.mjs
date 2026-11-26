@@ -104,7 +104,7 @@
  * T4.3.25) also regenerates this record via `scripts/write-build-info.mjs`.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeSourceFingerprint } from './source-fingerprint.mjs';
@@ -184,7 +184,14 @@ function recordedBuildInfo() {
 }
 
 function refuse(reason) {
-  process.stderr.write(
+  // `writeSync` rather than `process.stderr.write` (T4.3.25 rework, finding
+  // 3): a piped stderr is written asynchronously on macOS, and the
+  // `process.exit(1)` below does not wait for that write to land, so a
+  // refusal from a guarded script spawned with piped stderr could be lost,
+  // leaving a bare exit 1 with no cause and no named fix (CONV-3). A
+  // synchronous write to fd 2 cannot be dropped that way.
+  writeSync(
+    2,
     `dist/ is stale: ${reason}.\n` +
       `Run 'npm run build' before running this command (T4.3.25).\n`,
   );
