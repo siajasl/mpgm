@@ -3194,6 +3194,65 @@ export const MPGM_PLAN = {
               dependsOn: [],
               tracesTo: ['IMP-1', 'OBS-1'],
             },
+            {
+              id: 'T4.3.31',
+              title:
+                'An exempt control verb can be killed by its own stale-dist ' +
+                'warning, and a failed build leaves a record the freshness ' +
+                'guard trusts',
+              completionCriteria: [
+                '`mpgm pause`, `kill`, `redirect` and `status` run on a ' +
+                  'stale `dist/` whatever the shape of stderr. Today the ' +
+                  'exempt-verb path in bin/dist-freshness.mjs writes its ' +
+                  'warning with `writeSync(2, ...)` and does not catch it; ' +
+                  '`writeSync` on a non-blocking pipe can throw `EAGAIN`, and ' +
+                  'the uncaught throw in the module body kills the very ' +
+                  'invocation the exemption exists to let through (HIL-3). ' +
+                  'The same throw on the refusal path still exits non-zero ' +
+                  'but loses the named fix (CONV-3). A failed write changes ' +
+                  'neither verdict: the exempt verb still runs, the refusal ' +
+                  'still exits 1. Found by the review that approved T4.3.25 ' +
+                  '(seq 27355, d32ad55), not supposed.',
+                'A build that does not reach the recorder leaves a record ' +
+                  'the guard treats as stale. Today `tsc` emits even when it ' +
+                  "reports errors and the `build` script's `&&` skips " +
+                  'scripts/write-build-info.mjs, so a failed build leaves ' +
+                  '`dist/` half-updated while `dist/build-info.json` still ' +
+                  'names the previous fingerprint; moving the checkout back ' +
+                  'to that state (a revert, a branch switch) makes the guard ' +
+                  'call a half-written `dist/` fresh -- a silent fail-open of ' +
+                  'the kind T4.3.25 exists to remove. Invalidating the record ' +
+                  'before compiling, rather than only writing it after, is ' +
+                  'one way; a test drives a failing build and asserts the ' +
+                  'guard then refuses.',
+                'The wiring test ' +
+                  '(src/implement/dist-freshness-wiring.test.ts) either also ' +
+                  'finds entry points that load `dist/` through a dynamic ' +
+                  '`import(` or `require(` specifier containing `/dist/`, or ' +
+                  'its doc says only static top-level imports are detected ' +
+                  'and other forms must be guarded by hand; and the ' +
+                  'exempt-verb case in src/implement/dist-freshness.test.ts ' +
+                  'asserts the warning names `npm run build`, as every ' +
+                  'refusal case does.',
+                "T4.3.26's refusal states only what it checked. The guard " +
+                  'in src/implement/loop.ts refuses a reported ref that does ' +
+                  "not name the worktree's tip, which includes an older " +
+                  'commit on the branch (a session that committed twice and ' +
+                  'reported the first), but the message then says the ref ' +
+                  '"named a commit the branch is not on" -- false in exactly ' +
+                  'that case. It says the ref is not the tip, and, if worth ' +
+                  'the git call, tells an older commit on this branch from ' +
+                  'one not on it at all. Found by the review that approved ' +
+                  'T4.3.26 (seq 26827, 77cdc35).',
+                'It must not weaken what holds: every non-exempt verb and ' +
+                  'every guarded script still refuses on a stale `dist/`; the ' +
+                  'exemption still applies only to the four verbs through ' +
+                  'bin/mpgm.mjs; a ref that does not name the tip is still ' +
+                  'refused before CI is asked (IMP-2).',
+              ],
+              dependsOn: [],
+              tracesTo: ['MNT-4', 'HIL-3', 'IMP-2'],
+            },
           ],
         },
       ],
