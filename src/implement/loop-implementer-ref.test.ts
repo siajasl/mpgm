@@ -170,6 +170,20 @@ describe('a ref the implementing session reported, not read from the worktree (T
         remaining: '',
         deviations: [],
       }),
+      // Scripted so that a version of `changeSchema` with the regex removed
+      // does not crash this test on an exhausted `ScriptedProvider` once the
+      // prose ref stops being refused at the session boundary — a review
+      // round is the very next thing the loop would dispatch, and without a
+      // scripted answer for it the test fails on "ran out of scripted
+      // results" rather than on the assertions below, which is not a failure
+      // this test was designed to report (review finding).
+      scriptedSuccess({
+        ref: proseRef,
+        verdict: 'approve',
+        summary: 'looked fine',
+        findings: [],
+        deviations: [],
+      }),
     ]);
     const log = openLog();
     let checksCalls = 0;
@@ -232,6 +246,20 @@ describe('a ref the implementing session reported, not read from the worktree (T
           tests: [],
           complete: true,
           remaining: '',
+          deviations: [],
+        }),
+        // Scripted so that a loop with `checksAgainstWorktreeTip` removed
+        // does not crash this test on an exhausted `ScriptedProvider` once
+        // the wrong-sha ref stops being refused — a review round is the very
+        // next thing the loop would dispatch, and without a scripted answer
+        // for it the test fails on "ran out of scripted results" rather than
+        // on the assertions below, which is not a failure this test was
+        // designed to report (review finding).
+        scriptedSuccess({
+          ref: otherCommit,
+          verdict: 'approve',
+          summary: 'looked fine',
+          findings: [],
           deviations: [],
         }),
       ]);
@@ -563,6 +591,65 @@ describe('a ref the implementing session reported, not read from the worktree (T
         expect(result.reason ?? '').not.toContain('the implementing session');
         expect(result.reason ?? '').toContain(otherCommit);
         expect(result.reason ?? '').toContain(implemented);
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    'says the commit could not be read, rather than naming a tip it never ' +
+      'had, when the worktree is gone before CI can be asked',
+    async () => {
+      // The other half of `UnplacedRefError` (`commit-ref.ts`): every test
+      // above exercises the mismatch arm, where `worktrees.head` reads a
+      // real tip that simply disagrees with the reported ref. This is the
+      // `tip === undefined` arm — the worktree vanishing between the
+      // implementing session returning and `checksAgainstWorktreeTip`
+      // reading it, the same aftermath a hard kill leaves (DESIGN §6) —
+      // which had no test and no case that could reach it.
+      const repo = newRepo();
+      const worktrees = new WorktreeManager({ repo });
+      const implemented = git(repo, ['rev-parse', 'HEAD']);
+
+      const provider = new EffectfulProvider([
+        {
+          effect: () => {
+            rmSync(worktrees.pathFor('T1'), { recursive: true, force: true });
+          },
+          result: scriptedSuccess({
+            ref: implemented,
+            summary: 'done',
+            files: ['README.md'],
+            tests: [],
+            complete: true,
+            remaining: '',
+            deviations: [],
+          }),
+        },
+      ]);
+      const log = openLog();
+      let checksCalls = 0;
+
+      try {
+        const result = await implementTask({
+          ...baseOptions(repo, provider, log),
+          worktrees,
+          checks: (ref: string) => {
+            checksCalls += 1;
+            return Promise.resolve(mergeVerdict({ ref, runs: GREEN }));
+          },
+        });
+
+        expect(result.status).toBe('blocked');
+        // CI is never asked about a tip that could not be read — asking
+        // would be a guess, and this is not a build failure to retry.
+        expect(checksCalls).toBe(0);
+        expect(result.reason ?? '').toContain(
+          "could not read the commit 'mpgm/T1' is on, so nothing can be " +
+            'checked against it',
+        );
+        expect(result.reason ?? '').not.toContain('CI could not be reached');
       } finally {
         log.close();
       }

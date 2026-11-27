@@ -90,6 +90,18 @@ export interface ImplementOptions {
    * outright). Injected rather than assumed, because a project whose CI runs
    * locally has nothing to publish, and one that pushes must do it with the
    * credential the broker holds rather than whatever the shell has.
+   *
+   * `ref` is informational, not a promise about what gets pushed: this
+   * function pushes the whole branch (`cli/commands.ts`'s implementation
+   * does not even accept the parameter), and every call site in this file
+   * hands it whatever ref the loop happens to be holding at that moment —
+   * a session's own claim at some call sites, the worktree's actual tip at
+   * others, neither reconciled nor validated against the branch before this
+   * runs (`checksAgainstWorktreeTip` only examines a ref when `checks` is
+   * about to ask CI about it, which is always later). A caller that needs
+   * to know what was actually pushed reads the worktree's tip itself
+   * (`WorktreeManager.head`), the same way every refusal in this file does,
+   * rather than trusting this parameter (T4.3.26, review 4).
    */
   readonly publish?: (branch: string, ref: string) => Promise<void>;
   /**
@@ -2156,11 +2168,17 @@ export async function implementTask(options: ImplementOptions): Promise<Implemen
       // Compared against `tip` — read from git above, at the top of this
       // round — rather than `repair.ref`. `repair.ref` traces back to the
       // implementing session's own `change.data.ref`/`fixed.data.ref`, which
-      // is never run through `reconcileRef` (only the reviewer's ref is, a
-      // few hundred lines below, for the same reason: "a seven-character ref
-      // matches nothing"). An implementer that reported an abbreviated SHA
-      // for the very commit git is already on would make this comparison
-      // true with zero new commits, manufacturing stranded work that was
+      // (T4.3.26) `checksAgainstWorktreeTip` does check against the
+      // worktree's tip before every `checks()` call — but checks, not
+      // reconciles: a mismatch throws `UnplacedRefError` rather than being
+      // silently replaced, so `repair.ref` itself still carries whatever the
+      // session wrote, abbreviation and all. Only the reviewer's ref is
+      // actually reconciled, a few hundred lines below, via `reconcileRef`,
+      // for the reason its own doc gives: "a seven-character ref matches
+      // nothing". An implementer that reported an abbreviated SHA for the
+      // very commit git is already on would still make this comparison true
+      // with zero new commits if `repair.ref` were used here instead of a
+      // second, fresh `head()` read — manufacturing stranded work that was
       // never written.
       const strandedTip = await options.worktrees.head(task.id);
       const strandedNewWork = strandedTip !== undefined && strandedTip !== tip;

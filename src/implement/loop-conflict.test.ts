@@ -670,6 +670,21 @@ describe('a conflict between a task branch and the trunk (T4.3.9, IMP-1, IMP-4, 
       const merged = readFileSync(join(repo, 'PLAN.md'), 'utf8');
       expect(merged).toContain('**Status:** v0.22');
       expect(merged).toContain('**Upstream:** DESIGN v0.36');
+
+      // The catch-up merge this conflict grew out of still carries a trace
+      // trailer (T4.3.30) even though a resolver, not `catchUp` itself,
+      // concluded it: `catchUp` prepares the message with `-m` before the
+      // merge is ever attempted, git keeps it as `MERGE_MSG` across the
+      // conflict, and `ResolvesHeaderConflict`'s `git commit --no-edit`
+      // commits it untouched. Fails against the unmodified `catchUp`, whose
+      // default message carries no trailer for `--no-edit` to preserve.
+      const catchUpCommit = git(repo, [
+        'log',
+        "--grep=^Catch up with 'main'",
+        '-1',
+        '--format=%B',
+      ]);
+      expect(catchUpCommit).toMatch(/\n\nTraces-To: T1\n/);
     } finally {
       log.close();
     }
