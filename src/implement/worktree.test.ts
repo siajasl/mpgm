@@ -343,6 +343,37 @@ describe('bringing a checkout up to the trunk', () => {
     expect(existsSync(join(worktree?.path ?? '', 'from-the-trunk.txt'))).toBe(true);
   });
 
+  it("gives its own merge commit a trace trailer, rather than leaving it to git's default (T4.3.30)", async () => {
+    // T4.3.26's review 4: the only trailer-less commit on the branch was this
+    // merge, every authored commit carried trailers, and the task was held
+    // for a CONV-8 departure its author never made. Fails against the
+    // unmodified `catchUp`, which runs `git merge --no-edit <into>` and so
+    // writes git's default "Merge branch 'main' into mpgm/T1" with no
+    // trailer at all.
+    //
+    // The branch needs a commit of its own, not merely a trunk that moved —
+    // otherwise `catchUp` fast-forwards, makes no merge commit, and there is
+    // nothing for `-m` to have written anything onto.
+    const repo = newRepo();
+    const manager = new WorktreeManager({ repo });
+    const worktree = await manager.acquire('T1');
+    writeFileSync(join(worktree.path, 'on-the-branch.txt'), "the branch's own commit\n");
+    git(worktree.path, ['add', '--all']);
+    git(worktree.path, ['commit', '-m', "the branch's own commit"]);
+    writeFileSync(join(repo, 'from-the-trunk.txt'), 'landed after the branch was cut\n');
+    git(repo, ['add', '--all']);
+    git(repo, ['commit', '-m', 'a merge the branch was cut before']);
+
+    const result = await manager.catchUp('T1', 'main');
+
+    expect(result).toStrictEqual({ status: 'merged', commits: 1 });
+    const message = git(worktree.path, ['log', '-1', '--format=%B']);
+    // The trailer sits in a paragraph of its own — blank line above, every
+    // line in it `Key: value` shaped (T4.2.11, CONV-8) — not folded into the
+    // subject line a prose-reading reviewer would skim past.
+    expect(message).toMatch(/\n\nTraces-To: T1\n?$/);
+  });
+
   it('reports which files conflict, and leaves the checkout alone', async () => {
     // The kernel does not resolve conflicts, the same choice `mergeChange`
     // makes in the other direction: a half-merged checkout is worse than a

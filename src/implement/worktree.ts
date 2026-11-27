@@ -181,6 +181,39 @@ export type CatchUp =
   | { readonly status: 'conflicted'; readonly files: readonly string[] }
   | { readonly status: 'refused'; readonly detail: string };
 
+/**
+ * The message `catchUp` gives its own merge commit (T4.3.30).
+ *
+ * Left to git's default, a non-fast-forward catch-up reads "Merge branch
+ * 'main' into mpgm/<task>" with no trailer at all — and CONV-8 holds that
+ * commit to the same standard as any other. T4.3.26's review 4 found exactly
+ * that: the only trailer-less commit on the branch was the loop's own
+ * catch-up merge (d296a87), every authored commit carried trailers, and the
+ * task was held for a departure its author never made.
+ *
+ * `Traces-To`, not `Closes-Task`: the merge serves the task — it is part of
+ * bringing the branch to a mergeable state — but does not itself close
+ * anything, and `Closes-Task` on a commit that is not the task's actual merge
+ * into the trunk would be a false claim for whatever later reads it as one
+ * (ADR-4). Both are read the same way by the trace index (`links.ts`), so
+ * either spelling would resolve; `Traces-To` is the one that does not also
+ * claim completion.
+ *
+ * Exported so a conflict this leaves in progress (`leaveConflicted: true`,
+ * below) and the resolver that concludes it with `git commit --no-edit`
+ * (`conflict.ts`) get the identical message: git keeps whatever `-m` was
+ * given as `MERGE_MSG` across a conflict, and `--no-edit` commits that
+ * untouched, so preparing it here once is what covers both the clean
+ * catch-up and the one a resolver finishes.
+ */
+export function catchUpMergeMessage(taskId: string, into: string): string {
+  return [
+    `Catch up with '${into}' before the task continues`,
+    '',
+    `Traces-To: ${taskId}`,
+  ].join('\n');
+}
+
 export class WorktreeManager {
   readonly #repo: string;
   readonly #root: string;
@@ -547,8 +580,23 @@ export class WorktreeManager {
       // difference between a real conflict and one that only looks like one
       // because the two changes happen to sit on adjacent lines (T4.3.2,
       // `conflict.ts`).
+      //
+      // `-m` rather than `--no-edit` alone (T4.3.30): git's own default
+      // merge message carries no trailer, and CONV-8 holds this commit to
+      // the same standard as any other one the loop writes. The message is
+      // prepared before the merge is attempted, not after, because that is
+      // what lets the same message survive into a conflict this leaves open
+      // for a resolver to conclude (`catchUpMergeMessage`'s own doc).
       await this.#git(
-        ['-c', 'merge.conflictStyle=diff3', 'merge', '--no-edit', into],
+        [
+          '-c',
+          'merge.conflictStyle=diff3',
+          'merge',
+          '--no-edit',
+          '-m',
+          catchUpMergeMessage(taskId, into),
+          into,
+        ],
         found.path,
       );
       return { status: 'merged', commits: behind };

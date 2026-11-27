@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { namesCommit, reconcileRef } from './commit-ref.js';
+import { namesCommit, reconcileRef, UnplacedRefError } from './commit-ref.js';
 
 const HEAD = 'ed8541d047f6c088dc6704bfc931bf71d17badea';
 
@@ -58,5 +58,36 @@ describe('what gets recorded', () => {
     // and merge the change on a review of something that no longer exists.
     expect(reconcileRef('2c0d089', HEAD)).toBe('2c0d089');
     expect(reconcileRef('HEAD', HEAD)).toBe('HEAD');
+  });
+});
+
+describe('UnplacedRefError (T4.3.26)', () => {
+  it('names the mismatch when the worktree has a tip, and this is not it', () => {
+    const error = new UnplacedRefError('2c0d089', HEAD, "repair attempt 1's output");
+    expect(error.reported).toBe('2c0d089');
+    expect(error.tip).toBe(HEAD);
+    expect(error.source).toBe("repair attempt 1's output");
+    expect(error.message).toBe(
+      `the reported ref '2c0d089' (from repair attempt 1's output) does not name the worktree's tip (${HEAD})`,
+    );
+  });
+
+  // The other arm — no test exercised it until now (T4.3.26's review 4): a
+  // worktree gone before its tip could be read (a hard kill, DESIGN §6)
+  // reports `tip: undefined` rather than any commit, and the message must
+  // say the tip could not be read rather than naming one it never had.
+  it('says the tip could not be read at all, rather than naming one, when there is none to read', () => {
+    const error = new UnplacedRefError(
+      '5925262 (branch mpgm/T4.3.22)',
+      undefined,
+      "the implementing session's output",
+    );
+    expect(error.tip).toBeUndefined();
+    expect(error.message).toBe(
+      'could not read the commit the worktree is on, so the reported ref ' +
+        "'5925262 (branch mpgm/T4.3.22)' (from the implementing session's " +
+        'output) cannot be checked against it',
+    );
+    expect(error.message).not.toContain('undefined');
   });
 });
